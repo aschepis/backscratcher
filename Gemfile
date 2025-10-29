@@ -21,3 +21,5 @@ gem "redcarpet", "~> 3.6"
 gem "mail", "~> 2.9"
 
 gem "pstore", "~> 0.2.0"
+
+gem "loofah", "~> 2.24"

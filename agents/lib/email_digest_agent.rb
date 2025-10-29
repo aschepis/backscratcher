@@ -5,6 +5,7 @@ require "google/apis/gmail_v1"
 require "googleauth"
 require "json"
 require "redcarpet"
+require "loofah"
 require "mail"
 
 # Agent that summarizes unread emails based on a filter query
@@ -23,7 +24,7 @@ class EmailDigestAgent < PromptAgent
     6. **Everything Counts:** Include all relevant email content — newsletters, alerts, op-eds, data points — without skipping
        opinionated or emotional commentary. Clearly distinguish opinion from fact, but preserve both.
 
-    Present the final report as a cleanly formatted summary with clear section headings and inline citations or references to
+    Present the final report as a cleanly formatted markdown summary with clear section headings and inline citations or references to
     the original emails when possible.
 
     Emails:
@@ -64,7 +65,7 @@ class EmailDigestAgent < PromptAgent
     profile = @gmail_client.get_user_profile("me")
     user_email = profile.email_address.to_s.strip.gsub(/[<>]/, "")
 
-    subject_line = "Your Daily Gmail Digest #{Time.now.strftime('%Y-%m-%d')}"
+    subject_line = "Your Daily Gmail Digest #{Time.now.strftime("%Y-%m-%d")}"
     html_output = markdown_to_html(output)
 
     # Construct RFC 2822 message with all standard headers
@@ -105,7 +106,7 @@ class EmailDigestAgent < PromptAgent
 
     raise "Gmail API error: #{response.body}" if response.code.to_i >= 400
 
-    puts "✅ Email sent successfully! Message ID: #{JSON.parse(response.body)['id']}"
+    puts "✅ Email sent successfully! Message ID: #{JSON.parse(response.body)["id"]}"
     response
   end
 
@@ -134,27 +135,44 @@ class EmailDigestAgent < PromptAgent
 
     Base64.urlsafe_decode64(body_data.to_s)
   rescue StandardError
-    ""
+    # it wasn't base64 encoded, so just return the string
+    # avoid incompatible character encodings: UTF-8 and BINARY (ASCII-8BIT)
+    body_data.to_s.force_encoding("UTF-8")
   end
 
   def get_main_text_part(payload)
-    if payload.parts
-      # Flatten all parts, look for "text/plain"
-      all_parts = payload.parts.flat_map { |p| p.parts || [p] }
-      text_part = all_parts.find { |part| part.mime_type == "text/plain" }
-      return decode_body(text_part.body.data) if text_part
+    # Recursively collect all parts
+    all_parts = collect_all_parts(payload)
 
-      html_part = all_parts.find { |part| part.mime_type == "text/html" }
-      return decode_body(html_part.body.data) if html_part
-    elsif ["text/plain", "text/html"].include?(payload.mime_type)
+    # Prefer text/plain, fallback to text/html
+    text_part = all_parts.find { |part| part.mime_type == "text/plain" }
+    return decode_body(text_part.body.data) if text_part
+
+    html_part = all_parts.find { |part| part.mime_type == "text/html" }
+    return decode_body(html_to_markdown(html_part.body.data)) if html_part
+
+    # If payload itself is text, decode it directly
+    if %w[text/plain text/html].include?(payload.mime_type)
       return decode_body(payload.body.data)
     end
+
     ""
   end
 
+  def collect_all_parts(payload)
+    # Base case: if no parts or empty parts, return the payload itself
+    return [payload] unless payload.parts && !payload.parts.empty?
+
+    # Recursive case: collect parts from all nested parts
+    [payload] + payload.parts.flat_map { |p| collect_all_parts(p) }
+  end
+
   def markdown_to_html(markdown)
-    markdown_to_html = Redcarpet::Markdown.new(Redcarpet::Render::HTML)
-    markdown_to_html.render(markdown)
+    Redcarpet::Markdown.new(Redcarpet::Render::HTML).render(markdown)
+  end
+
+  def html_to_markdown(html)
+    Loofah.fragment(html.to_s.force_encoding("UTF-8")).scrub!(:whitewash).to_s
   end
 
   def create_gmail_client
