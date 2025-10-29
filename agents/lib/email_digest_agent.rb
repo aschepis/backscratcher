@@ -36,12 +36,6 @@ class EmailDigestAgent < PromptAgent
     @gmail_client = create_gmail_client
   end
 
-  def process_data(data = nil)
-    # This method is called by PromptAgent to process the fetched email data
-    # and send it to the LLM along with the prompt
-    data
-  end
-
   def fetch_data
     # Fetch list of messages
     response =
