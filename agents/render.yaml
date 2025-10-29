@@ -1,0 +1,7 @@
+services:
+  - type: cron
+    name: email-digest
+    env: ruby
+    schedule: "0 5 * * *"
+    buildCommand: "bundle install"
+    startCommand: "bundle exec rake agents:email_digest"

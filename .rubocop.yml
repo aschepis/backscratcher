@@ -1,0 +1,14 @@
+AllCops:
+  NewCops: enable
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+
+Metrics/AbcSize:
+  Enabled: false
+
+Metrics/MethodLength:
+  Enabled: false
+
+Metrics/ClassLength:
+  Enabled: false
