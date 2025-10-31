@@ -21,10 +21,7 @@ class PromptAgent < BaseAgent
       )
 
     result = +"" # Creates a mutable string
-    stream.text.each do |text|
-      @logger.info("Received text chunk: #{text}")
-      result << text
-    end
+    stream.text.each { |text| result << text }
 
     result
   end
