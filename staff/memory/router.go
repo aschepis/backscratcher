@@ -1,0 +1,196 @@
+package memory
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+// MemoryRouter handles routing of memories between agent-private and global.
+type MemoryRouter struct {
+	store      *Store
+	summarizer Summarizer
+}
+
+// Config allows customizing MemoryRouter behavior.
+type Config struct {
+	Summarizer Summarizer
+}
+
+func NewMemoryRouter(store *Store, cfg Config) *MemoryRouter {
+	return &MemoryRouter{
+		store:      store,
+		summarizer: cfg.Summarizer,
+	}
+}
+
+// AddEpisode stores a detailed agent-private episode.
+func (r *MemoryRouter) AddEpisode(
+	ctx context.Context,
+	agentID string,
+	threadID string,
+	content string,
+	metadata map[string]interface{},
+) (MemoryItem, error) {
+	return r.store.RememberAgentEpisode(
+		ctx,
+		agentID,
+		threadID,
+		content,
+		0.3,
+		metadata,
+	)
+}
+
+// AddObservation is a synonym for AddEpisode.
+func (r *MemoryRouter) AddObservation(
+	ctx context.Context,
+	agentID string,
+	threadID string,
+	content string,
+	metadata map[string]interface{},
+) (MemoryItem, error) {
+	return r.AddEpisode(ctx, agentID, threadID, content, metadata)
+}
+
+// AddAgentFact stores an internal fact for this agent only.
+func (r *MemoryRouter) AddAgentFact(
+	ctx context.Context,
+	agentID string,
+	content string,
+	metadata map[string]interface{},
+) (MemoryItem, error) {
+	return r.store.RememberAgentFact(
+		ctx,
+		agentID,
+		content,
+		0.7,
+		metadata,
+	)
+}
+
+// AddGlobalFact stores a shared fact that all agents should know.
+func (r *MemoryRouter) AddGlobalFact(
+	ctx context.Context,
+	content string,
+	metadata map[string]interface{},
+) (MemoryItem, error) {
+	return r.store.RememberGlobalFact(
+		ctx,
+		content,
+		0.9,
+		metadata,
+	)
+}
+
+// AddArtifact stores a shared, durable document.
+func (r *MemoryRouter) AddArtifact(
+	ctx context.Context,
+	agentID *string,
+	title string,
+	body string,
+	metadata map[string]interface{},
+) (Artifact, error) {
+	return r.store.CreateArtifact(
+		ctx,
+		ScopeGlobal,
+		agentID,
+		nil,
+		title,
+		body,
+		metadata,
+	)
+}
+
+// Reflect consolidates an agent's recent episodes into a global fact.
+func (r *MemoryRouter) Reflect(
+	ctx context.Context,
+	agentID string,
+	threadID string,
+) (MemoryItem, error) {
+	if r.summarizer == nil {
+		return MemoryItem{}, errors.New("MemoryRouter: no summarizer configured")
+	}
+	return r.store.ReflectThread(ctx, agentID, threadID, r.summarizer)
+}
+
+// AutoReflect performs time-based reflection.
+func (r *MemoryRouter) AutoReflect(
+	ctx context.Context,
+	agentID string,
+	threadID string,
+	lastReflected *time.Time,
+	minInterval time.Duration,
+) (*MemoryItem, error) {
+	if lastReflected != nil && time.Since(*lastReflected) < minInterval {
+		return nil, nil
+	}
+	item, err := r.Reflect(ctx, agentID, threadID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	if lastReflected != nil {
+		*lastReflected = now
+	}
+	return &item, nil
+}
+
+// QueryAgentMemory returns agent-private memory plus optional global.
+func (r *MemoryRouter) QueryAgentMemory(
+	ctx context.Context,
+	agentID string,
+	text string,
+	embedding []float32,
+	includeGlobal bool,
+	limit int,
+	types []MemoryType,
+) ([]SearchResult, error) {
+	return r.store.SearchMemory(ctx, SearchQuery{
+		AgentID:        &agentID,
+		IncludeGlobal:  includeGlobal,
+		QueryText:      text,
+		QueryEmbedding: embedding,
+		Limit:          limit,
+		UseHybrid:      true,
+		Types:          types,
+	})
+}
+
+// QueryGlobalMemory searches only global memories.
+func (r *MemoryRouter) QueryGlobalMemory(
+	ctx context.Context,
+	text string,
+	embedding []float32,
+	limit int,
+	types []MemoryType,
+) ([]SearchResult, error) {
+	return r.store.SearchMemory(ctx, SearchQuery{
+		AgentID:        nil,
+		IncludeGlobal:  true,
+		QueryText:      text,
+		QueryEmbedding: embedding,
+		Limit:          limit,
+		UseHybrid:      true,
+		Types:          types,
+	})
+}
+
+// QueryAllMemory searches everything regardless of scope.
+func (r *MemoryRouter) QueryAllMemory(
+	ctx context.Context,
+	text string,
+	embedding []float32,
+	limit int,
+	types []MemoryType,
+) ([]SearchResult, error) {
+	return r.store.SearchMemory(ctx, SearchQuery{
+		AgentID:        nil,
+		IncludeGlobal:  false,
+		QueryText:      text,
+		QueryEmbedding: embedding,
+		Limit:          limit,
+		UseHybrid:      true,
+		Types:          types,
+	})
+}
