@@ -73,6 +73,18 @@ CREATE TABLE IF NOT EXISTS inbox (
     updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(agent_id, thread_id, role, content, created_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_agent_thread ON conversations(agent_id, thread_id, created_at);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
     content,
     content_rowid='id'

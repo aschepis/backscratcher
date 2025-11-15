@@ -42,12 +42,12 @@ func NewAgentRunner(
 
 // AgentConfig is the per-agent config you already have.
 type AgentConfig struct {
-	ID        string
-	Name      string
-	System    string
-	Model     string
-	MaxTokens int64
-	Tools     []string
+	ID        string   `yaml:"id" json:"id"`
+	Name      string   `yaml:"name" json:"name"`
+	System    string   `yaml:"system" json:"system"`
+	Model     string   `yaml:"model" json:"model"`
+	MaxTokens int64    `yaml:"max_tokens" json:"max_tokens"`
+	Tools     []string `yaml:"tools" json:"tools"`
 }
 
 // RunAgent executes a single turn for an agent, with optional history.

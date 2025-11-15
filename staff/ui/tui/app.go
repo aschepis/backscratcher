@@ -104,7 +104,9 @@ func (a *App) setupUI() {
 		SetBorder(true).
 		SetTitle("Content")
 
-	a.showInbox()
+	// Initialize content with a simple welcome message
+	// The inbox will be shown when user selects it from the menu
+	a.content.SetText("Welcome to Staff\n\nSelect an option from the menu to get started.")
 
 	// Footer
 	a.footer = tview.NewTextView().

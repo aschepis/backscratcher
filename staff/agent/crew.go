@@ -21,7 +21,7 @@ type Crew struct {
 }
 
 type CrewConfig struct {
-	Agents map[string]*AgentConfig `json:"agents"`
+	Agents map[string]*AgentConfig `yaml:"agents" json:"agents"`
 }
 
 func NewCrew(apiKey string) *Crew {

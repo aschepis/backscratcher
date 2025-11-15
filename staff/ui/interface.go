@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"time"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 )
@@ -26,6 +27,21 @@ type ChatService interface {
 
 	// ListAgents returns a list of available agents.
 	ListAgents() []AgentInfo
+
+	// ListInboxItems returns a list of inbox items, optionally filtered by archived status.
+	ListInboxItems(ctx context.Context, includeArchived bool) ([]InboxItem, error)
+
+	// ArchiveInboxItem marks an inbox item as archived.
+	ArchiveInboxItem(ctx context.Context, inboxID int64) error
+
+	// GetOrCreateThreadID gets an existing thread ID for an agent, or creates a new one if none exists.
+	GetOrCreateThreadID(ctx context.Context, agentID string) (string, error)
+
+	// LoadConversationHistory loads conversation history for a given agent and thread ID.
+	LoadConversationHistory(ctx context.Context, agentID, threadID string) ([]anthropic.MessageParam, error)
+
+	// SaveMessage saves a user or assistant message to the conversation history.
+	SaveMessage(ctx context.Context, agentID, threadID, role, content string) error
 }
 
 // AgentInfo provides basic information about an agent for UI display.
@@ -34,3 +50,16 @@ type AgentInfo struct {
 	Name string
 }
 
+// InboxItem represents an inbox notification item.
+type InboxItem struct {
+	ID               int64
+	AgentID          string
+	ThreadID         string
+	Message          string
+	RequiresResponse bool
+	Response         string
+	ResponseAt       *time.Time
+	ArchivedAt       *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}

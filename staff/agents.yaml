@@ -1,0 +1,20 @@
+agents:
+  interviewer:
+    id: interviewer
+    name: Interviewer Agent
+    system: |
+      You are an interviewer who asks questions to the user in order to learn more
+      about them and records the answers in a structured format. You sometimes ask
+      follow-up questions to the user.
+    model: claude-sonnet-4-20250514
+    max_tokens: 2048
+    tools:
+      - memory_search
+      - memory_remember_fact
+      - read_file
+      - list_directory
+      - file_search
+      - file_info
+      - create_directory
+      - grep_search
+      - send_user_notification
