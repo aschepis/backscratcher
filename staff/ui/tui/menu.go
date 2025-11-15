@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -17,6 +18,10 @@ func (a *App) showInbox() {
 	inboxList := tview.NewList()
 	inboxList.SetBorder(true).SetTitle("Inbox - Select to View Details (a: Archive, r: Refresh)")
 
+	// Store current items for archiving - this will be updated on each refresh
+	var currentItems []ui.InboxItem
+	var itemsMutex sync.RWMutex
+
 	// Load inbox items
 	var refreshInbox func()
 	refreshInbox = func() {
@@ -28,12 +33,18 @@ func (a *App) showInbox() {
 			a.app.QueueUpdateDraw(func() {
 				inboxList.Clear()
 				inboxList.AddItem("Error", fmt.Sprintf("Failed to load inbox: %v", err), ' ', nil)
+				itemsMutex.Lock()
+				currentItems = nil
+				itemsMutex.Unlock()
 			})
 			return
 		}
 
 		a.app.QueueUpdateDraw(func() {
 			inboxList.Clear()
+			itemsMutex.Lock()
+			currentItems = items // Store items for archiving
+			itemsMutex.Unlock()
 			if len(items) == 0 {
 				inboxList.AddItem("No messages", "Your inbox is empty", ' ', nil)
 			} else {
@@ -90,21 +101,61 @@ func (a *App) showInbox() {
 				return nil
 			case 'a', 'A':
 				// Archive selected item
-				currentItem := inboxList.GetCurrentItem()
-				if currentItem >= 0 {
+				currentItemIndex := inboxList.GetCurrentItem()
+
+				itemsMutex.RLock()
+				items := currentItems
+				itemsCount := len(items)
+				itemsMutex.RUnlock()
+
+				originalTitle := inboxList.GetTitle()
+
+				// Validate selection
+				if currentItemIndex < 0 {
+					return nil
+				}
+
+				// Check if we're trying to archive the "Back" item
+				// The "Back" item is always the last item in the list
+				if items == nil || currentItemIndex >= itemsCount {
+					return nil
+				}
+
+				item := items[currentItemIndex]
+
+				// Perform ALL work in background goroutine to avoid blocking the input handler
+				go func() {
+					// Update title to show archiving status
+					a.app.QueueUpdateDraw(func() {
+						inboxList.SetTitle(fmt.Sprintf("Inbox - Archiving item %d/%d...", currentItemIndex+1, itemsCount))
+					})
+
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
 
-					items, err := a.chatService.ListInboxItems(ctx, false)
-					if err == nil && currentItem < len(items) {
-						item := items[currentItem]
-						go func() {
-							if err := a.chatService.ArchiveInboxItem(ctx, item.ID); err == nil {
-								refreshInbox()
-							}
-						}()
+					err := a.chatService.ArchiveInboxItem(ctx, item.ID)
+
+					a.app.QueueUpdateDraw(func() {
+						if err != nil {
+							inboxList.SetTitle(fmt.Sprintf("Inbox - Archive failed: %v", err))
+							// Reset title after a delay
+							go func() {
+								time.Sleep(2 * time.Second)
+								a.app.QueueUpdateDraw(func() {
+									inboxList.SetTitle(originalTitle)
+								})
+							}()
+						} else {
+							inboxList.SetTitle(originalTitle)
+						}
+					})
+
+					// Refresh inbox AFTER the UI update, in a separate goroutine
+					// to avoid nesting QueueUpdateDraw calls (which causes deadlock)
+					if err == nil {
+						go refreshInbox()
 					}
-				}
+				}()
 				return nil
 			}
 		}
@@ -131,7 +182,7 @@ func (a *App) showInboxItemDetail(item ui.InboxItem) {
 		content.WriteString(fmt.Sprintf("[yellow]Thread[white]: %s\n", item.ThreadID))
 	}
 	content.WriteString(fmt.Sprintf("[yellow]Date[white]: %s\n\n", item.CreatedAt.Format("2006-01-02 15:04:05")))
-	
+
 	content.WriteString(fmt.Sprintf("[cyan]Message[white]:\n%s\n\n", item.Message))
 
 	if item.RequiresResponse {
@@ -209,4 +260,3 @@ func (a *App) showCrewMembers() {
 	a.pages.SwitchToPage("agent_list")
 	a.app.SetFocus(agentList)
 }
-

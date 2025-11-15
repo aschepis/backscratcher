@@ -102,10 +102,44 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
 	_, err := s.db.Exec(schema)
 	if err != nil {
 		logger.Error("Error executing schema migration: %v", err)
-	} else {
-		logger.Info("Schema migration executed successfully")
+		return err
 	}
-	return err
+	logger.Info("Schema migration executed successfully")
+
+	// Add next_wake column to agent_states if it doesn't exist
+	// SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we check first
+	var columnExists int
+	checkColumnQuery := `
+		SELECT COUNT(*) FROM pragma_table_info('agent_states')
+		WHERE name = 'next_wake'
+	`
+	err = s.db.QueryRow(checkColumnQuery).Scan(&columnExists)
+	if err != nil {
+		logger.Error("Error checking if next_wake column exists: %v", err)
+		return err
+	}
+
+	if columnExists == 0 {
+		logger.Info("Adding next_wake column to agent_states table")
+		_, err = s.db.Exec(`
+			ALTER TABLE agent_states ADD COLUMN next_wake INTEGER;
+		`)
+		if err != nil {
+			logger.Error("Error adding next_wake column: %v", err)
+			return err
+		}
+
+		_, err = s.db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_agent_states_next_wake ON agent_states(next_wake);
+		`)
+		if err != nil {
+			logger.Error("Error creating next_wake index: %v", err)
+			return err
+		}
+		logger.Info("Successfully added next_wake column and index")
+	}
+
+	return nil
 }
 
 func now() int64 { return time.Now().Unix() }

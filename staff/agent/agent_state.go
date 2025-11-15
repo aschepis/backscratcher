@@ -71,6 +71,11 @@ func (sm *StateManager) GetState(agentID string) (State, error) {
 
 // SetState updates the state of an agent
 func (sm *StateManager) SetState(agentID string, state State) error {
+	return sm.SetStateWithNextWake(agentID, state, nil)
+}
+
+// SetStateWithNextWake updates the state of an agent and optionally sets next_wake
+func (sm *StateManager) SetStateWithNextWake(agentID string, state State, nextWake *time.Time) error {
 	now := time.Now().Unix()
 	
 	// Validate state
@@ -85,23 +90,32 @@ func (sm *StateManager) SetState(agentID string, state State) error {
 	if !valid {
 		return fmt.Errorf("invalid state: %s", state)
 	}
+
+	var nextWakeUnix interface{}
+	if nextWake != nil {
+		nextWakeUnix = nextWake.Unix()
+	} else {
+		nextWakeUnix = nil
+	}
 	
 	_, err := sm.db.Exec(
-		`INSERT INTO agent_states (agent_id, state, updated_at)
-		 VALUES (?, ?, ?)
+		`INSERT INTO agent_states (agent_id, state, updated_at, next_wake)
+		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(agent_id) DO UPDATE SET
 		   state = excluded.state,
-		   updated_at = excluded.updated_at`,
+		   updated_at = excluded.updated_at,
+		   next_wake = excluded.next_wake`,
 		agentID,
 		string(state),
 		now,
+		nextWakeUnix,
 	)
 	if err != nil {
 		logger.Error("Failed to set agent state: agentID=%s state=%s error=%v", agentID, state, err)
 		return fmt.Errorf("failed to set agent state: %w", err)
 	}
 	
-	logger.Info("Agent state updated: agentID=%s state=%s", agentID, state)
+	logger.Info("Agent state updated: agentID=%s state=%s next_wake=%v", agentID, state, nextWakeUnix)
 	return nil
 }
 
@@ -149,6 +163,78 @@ func (sm *StateManager) GetAgentsByState(state State) ([]string, error) {
 	
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating agents by state: %w", err)
+	}
+	
+	return agentIDs, nil
+}
+
+// SetNextWake sets the next wake time for an agent
+func (sm *StateManager) SetNextWake(agentID string, nextWake time.Time) error {
+	nextWakeUnix := nextWake.Unix()
+	
+	_, err := sm.db.Exec(
+		`UPDATE agent_states SET next_wake = ? WHERE agent_id = ?`,
+		nextWakeUnix,
+		agentID,
+	)
+	if err != nil {
+		logger.Error("Failed to set next wake: agentID=%s nextWake=%d error=%v", agentID, nextWakeUnix, err)
+		return fmt.Errorf("failed to set next wake: %w", err)
+	}
+	
+	logger.Info("Agent next wake updated: agentID=%s nextWake=%d", agentID, nextWakeUnix)
+	return nil
+}
+
+// GetNextWake retrieves the next wake time for an agent
+func (sm *StateManager) GetNextWake(agentID string) (*time.Time, error) {
+	var nextWakeUnix sql.NullInt64
+	err := sm.db.QueryRow(
+		`SELECT next_wake FROM agent_states WHERE agent_id = ?`,
+		agentID,
+	).Scan(&nextWakeUnix)
+	
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get next wake: %w", err)
+	}
+	
+	if !nextWakeUnix.Valid {
+		return nil, nil
+	}
+	
+	nextWake := time.Unix(nextWakeUnix.Int64, 0)
+	return &nextWake, nil
+}
+
+// GetAgentsReadyToWake retrieves all agent IDs that are ready to wake
+// (state='waiting_external' AND next_wake <= NOW())
+func (sm *StateManager) GetAgentsReadyToWake() ([]string, error) {
+	now := time.Now().Unix()
+	rows, err := sm.db.Query(
+		`SELECT agent_id FROM agent_states 
+		 WHERE state = ? AND next_wake IS NOT NULL AND next_wake <= ?`,
+		string(StateWaitingExternal),
+		now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query agents ready to wake: %w", err)
+	}
+	defer rows.Close()
+	
+	var agentIDs []string
+	for rows.Next() {
+		var agentID string
+		if err := rows.Scan(&agentID); err != nil {
+			return nil, fmt.Errorf("failed to scan agent ID: %w", err)
+		}
+		agentIDs = append(agentIDs, agentID)
+	}
+	
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating agents ready to wake: %w", err)
 	}
 	
 	return agentIDs, nil

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/memory"
 	"github.com/aschepis/backscratcher/staff/memory/ollama"
+	"github.com/aschepis/backscratcher/staff/runtime"
 	"github.com/aschepis/backscratcher/staff/ui"
 	"github.com/aschepis/backscratcher/staff/ui/tui"
 	_ "github.com/mattn/go-sqlite3"
@@ -274,7 +277,23 @@ func main() {
 	logger.Info("Agents initialized successfully")
 
 	// ---------------------------
-	// 4. Create UI Service and TUI
+	// 4. Start Background Scheduler
+	// ---------------------------
+
+	logger.Info("Starting background scheduler")
+	// Create context for graceful shutdown
+	schedulerCtx, cancelScheduler := context.WithCancel(context.Background())
+	defer cancelScheduler()
+
+	// Create scheduler with 15 second poll interval
+	scheduler := runtime.NewScheduler(crew, crew.StateManager(), 15*time.Second)
+
+	// Start scheduler in background goroutine
+	go scheduler.Start(schedulerCtx)
+	logger.Info("Background scheduler goroutine started")
+
+	// ---------------------------
+	// 5. Create UI Service and TUI
 	// ---------------------------
 
 	logger.Info("Initializing UI")

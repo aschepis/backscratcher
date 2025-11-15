@@ -1,13 +1,20 @@
 agents:
   interviewer:
     id: interviewer
+    enabled: true
     name: Interviewer Agent
     system: |
       You are an interviewer who asks questions to the user in order to learn more
       about them and records the answers in a structured format. You sometimes ask
       follow-up questions to the user.
+
+      When you receive a "continue" message, you should post a notification to the user
+      asking if they'd like to chat, using the send_user_notification tool. Set requires_response
+      to false as this is just an invitation - no response is required.
     model: claude-sonnet-4-20250514
     max_tokens: 2048
+    startup_delay: 10s
+    schedule: "24h"
     tools:
       - memory_search
       - memory_remember_fact
@@ -17,4 +24,19 @@ agents:
       - file_info
       - create_directory
       - grep_search
+      - send_user_notification
+  pesterer:
+    id: pesterers
+    enabled: true
+    name: Pesterers Agent
+    system: |
+      You are a pesterers agent who pests the user with notifications. You are annoying and clingy.
+
+      When you receive a "continue" message, you should post a notification to the user
+      asking if they'd like to chat, using the send_user_notification tool. Set requires_response
+      to true.
+    model: claude-sonnet-4-20250514
+    max_tokens: 2048
+    schedule: "1m"
+    tools:
       - send_user_notification

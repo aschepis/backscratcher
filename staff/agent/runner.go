@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -48,12 +49,15 @@ func NewAgentRunner(
 
 // AgentConfig is the per-agent config you already have.
 type AgentConfig struct {
-	ID        string   `yaml:"id" json:"id"`
-	Name      string   `yaml:"name" json:"name"`
-	System    string   `yaml:"system" json:"system"`
-	Model     string   `yaml:"model" json:"model"`
-	MaxTokens int64    `yaml:"max_tokens" json:"max_tokens"`
-	Tools     []string `yaml:"tools" json:"tools"`
+	ID           string   `yaml:"id" json:"id"`
+	Name         string   `yaml:"name" json:"name"`
+	System       string   `yaml:"system" json:"system"`
+	Model        string   `yaml:"model" json:"model"`
+	MaxTokens    int64    `yaml:"max_tokens" json:"max_tokens"`
+	Tools        []string `yaml:"tools" json:"tools"`
+	Schedule     string   `yaml:"schedule" json:"schedule"`       // e.g., "15m", "2h", "0 */15 * * * *" (cron)
+	Enabled      bool     `yaml:"enabled" json:"enabled"`         // default: true
+	StartupDelay string   `yaml:"startup_delay" json:"startup_delay"` // e.g., "5m", "30s", "1h" - one-time delay after app launch
 }
 
 // RunAgent executes a single turn for an agent, with optional history.
@@ -77,10 +81,31 @@ func (r *AgentRunner) RunAgent(
 		fmt.Printf("Warning: failed to set agent state to running: %v\n", err)
 	}
 
-	// Ensure state is set to idle when execution completes (normal or error)
+	// Ensure state is updated when execution completes (normal or error)
 	defer func() {
-		if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
-			fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+		// Check if agent has a schedule - if so, compute next wake and set to waiting_external
+		// Otherwise, set to idle
+		if r.agent.Config.Schedule != "" && r.agent.Config.Enabled {
+			// Agent is scheduled, compute next wake time
+			now := time.Now()
+			nextWake, err := ComputeNextWake(r.agent.Config.Schedule, now)
+			if err != nil {
+				fmt.Printf("Warning: failed to compute next wake for agent %s: %v\n", r.agent.ID, err)
+				// Fall back to idle on error
+				if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
+					fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+				}
+				return
+			}
+			// Set state to waiting_external with next_wake
+			if err := r.stateManager.SetStateWithNextWake(r.agent.ID, StateWaitingExternal, &nextWake); err != nil {
+				fmt.Printf("Warning: failed to set agent state to waiting_external: %v\n", err)
+			}
+		} else {
+			// Agent is not scheduled, set to idle
+			if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
+				fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+			}
 		}
 	}()
 
@@ -182,10 +207,31 @@ func (r *AgentRunner) RunAgentStream(
 		fmt.Printf("Warning: failed to set agent state to running: %v\n", err)
 	}
 
-	// Ensure state is set to idle when execution completes (normal or error)
+	// Ensure state is updated when execution completes (normal or error)
 	defer func() {
-		if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
-			fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+		// Check if agent has a schedule - if so, compute next wake and set to waiting_external
+		// Otherwise, set to idle
+		if r.agent.Config.Schedule != "" && r.agent.Config.Enabled {
+			// Agent is scheduled, compute next wake time
+			now := time.Now()
+			nextWake, err := ComputeNextWake(r.agent.Config.Schedule, now)
+			if err != nil {
+				fmt.Printf("Warning: failed to compute next wake for agent %s: %v\n", r.agent.ID, err)
+				// Fall back to idle on error
+				if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
+					fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+				}
+				return
+			}
+			// Set state to waiting_external with next_wake
+			if err := r.stateManager.SetStateWithNextWake(r.agent.ID, StateWaitingExternal, &nextWake); err != nil {
+				fmt.Printf("Warning: failed to set agent state to waiting_external: %v\n", err)
+			}
+		} else {
+			// Agent is not scheduled, set to idle
+			if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
+				fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+			}
 		}
 	}()
 
