@@ -23,6 +23,7 @@ type AgentRunner struct {
 	agent        *Agent
 	toolExec     ToolExecutor
 	toolProvider ToolProvider
+	stateManager *StateManager
 }
 
 func NewAgentRunner(
@@ -30,13 +31,18 @@ func NewAgentRunner(
 	agent *Agent,
 	toolExec ToolExecutor,
 	toolProvider ToolProvider,
+	stateManager *StateManager,
 ) *AgentRunner {
+	if stateManager == nil {
+		panic("stateManager is required for AgentRunner")
+	}
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	return &AgentRunner{
 		client:       &client,
 		agent:        agent,
 		toolExec:     toolExec,
 		toolProvider: toolProvider,
+		stateManager: stateManager,
 	}
 }
 
@@ -64,6 +70,19 @@ func (r *AgentRunner) RunAgent(
 	if r.agent.Config.Model == "" {
 		return "", errors.New("agent.Model is required")
 	}
+
+	// Set state to running at start of execution
+	if err := r.stateManager.SetState(r.agent.ID, StateRunning); err != nil {
+		// Log error but don't fail execution
+		fmt.Printf("Warning: failed to set agent state to running: %v\n", err)
+	}
+
+	// Ensure state is set to idle when execution completes (normal or error)
+	defer func() {
+		if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
+			fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+		}
+	}()
 
 	// Get debug callback from context
 	debugCallback, _ := GetDebugCallback(ctx)
@@ -156,6 +175,19 @@ func (r *AgentRunner) RunAgentStream(
 	if r.agent.Config.Model == "" {
 		return "", errors.New("agent.Model is required")
 	}
+
+	// Set state to running at start of execution
+	if err := r.stateManager.SetState(r.agent.ID, StateRunning); err != nil {
+		// Log error but don't fail execution
+		fmt.Printf("Warning: failed to set agent state to running: %v\n", err)
+	}
+
+	// Ensure state is set to idle when execution completes (normal or error)
+	defer func() {
+		if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
+			fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+		}
+	}()
 
 	// Get debug callback from context
 	debugCallback, _ := GetDebugCallback(ctx)

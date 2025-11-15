@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 
@@ -15,6 +16,7 @@ type Crew struct {
 	Runners      map[string]*AgentRunner
 	ToolRegistry *tools.Registry
 	ToolProvider *ToolProviderFromRegistry
+	stateManager *StateManager
 
 	apiKey string
 	mu     sync.RWMutex
@@ -24,17 +26,27 @@ type CrewConfig struct {
 	Agents map[string]*AgentConfig `yaml:"agents" json:"agents"`
 }
 
-func NewCrew(apiKey string) *Crew {
+func NewCrew(apiKey string, db *sql.DB) *Crew {
+	if db == nil {
+		panic("database connection is required for Crew")
+	}
 	reg := tools.NewRegistry()
 	provider := NewToolProvider(reg)
+	stateManager := NewStateManager(db)
 
 	return &Crew{
 		Agents:       make(map[string]*AgentConfig),
 		Runners:      make(map[string]*AgentRunner),
 		ToolRegistry: reg,
 		ToolProvider: provider,
+		stateManager: stateManager,
 		apiKey:       apiKey,
 	}
+}
+
+// StateManager returns the state manager for this crew
+func (c *Crew) StateManager() *StateManager {
+	return c.stateManager
 }
 
 func (c *Crew) LoadCrewConfig(cfg CrewConfig) error {
@@ -52,8 +64,19 @@ func (c *Crew) InitializeAgents() error {
 	defer c.mu.Unlock()
 
 	for id, cfg := range c.Agents {
-		runner := NewAgentRunner(c.apiKey, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider)
+		runner := NewAgentRunner(c.apiKey, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider, c.stateManager)
 		c.Runners[id] = runner
+		// Initialize agent state to idle if not exists
+		exists, err := c.stateManager.StateExists(id)
+		if err != nil {
+			return fmt.Errorf("failed to check agent state for %s: %w", id, err)
+		}
+		if !exists {
+			// Agent has no persisted state, initialize to idle
+			if err := c.stateManager.SetState(id, StateIdle); err != nil {
+				return fmt.Errorf("failed to initialize agent state for %s: %w", id, err)
+			}
+		}
 	}
 	return nil
 }

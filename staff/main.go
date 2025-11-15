@@ -19,12 +19,18 @@ import (
 
 // registerAllTools registers all tool handlers and schemas with the crew.
 // This centralizes all tool registration logic.
-func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, workspacePath string, db *sql.DB) {
+func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, workspacePath string, db *sql.DB, stateManager *agent.StateManager) {
 	// Register tool handlers
 	crew.ToolRegistry.RegisterMemoryTools(memoryRouter)
 	crew.ToolRegistry.RegisterFilesystemTools(workspacePath)
 	crew.ToolRegistry.RegisterSystemTools(workspacePath)
-	crew.ToolRegistry.RegisterNotificationTools(db)
+	// TODO: it is a bit weird that we pass a state change func that uses statemanager to
+	// update the datababase when we have the database right there. This exists because
+	// the agents themselves will not have access to the database. NOTE: this may eventually
+	// cause issues if we want to have multi-query transactions.
+	crew.ToolRegistry.RegisterNotificationTools(db, func(agentID string, state string) error {
+		return stateManager.SetState(agentID, agent.State(state))
+	})
 
 	// Register schemas for memory tools
 	// Note: Tool names must match pattern ^[a-zA-Z0-9_-]{1,128}$ (no dots allowed)
@@ -226,7 +232,7 @@ func main() {
 	// ---------------------------
 
 	logger.Info("Creating crew and registering tools")
-	crew := agent.NewCrew(anthropicAPIKey)
+	crew := agent.NewCrew(anthropicAPIKey, db)
 
 	// Get workspace path (default to current directory, or staff directory)
 	workspacePath, err := os.Getwd()
@@ -236,7 +242,7 @@ func main() {
 	}
 
 	// Register all tools (handlers and schemas)
-	registerAllTools(crew, memoryRouter, workspacePath, db)
+	registerAllTools(crew, memoryRouter, workspacePath, db, crew.StateManager())
 
 	// ---------------------------
 	// 3. Load Agents from YAML

@@ -11,8 +11,12 @@ import (
 	"github.com/gen2brain/beeep"
 )
 
+// SetStateFunc is a function that sets an agent's state.
+// This avoids import cycles by not importing the agent package.
+type SetStateFunc func(agentID string, state string) error
+
 // RegisterNotificationTools registers notification-related tools
-func (r *Registry) RegisterNotificationTools(db *sql.DB) {
+func (r *Registry) RegisterNotificationTools(db *sql.DB, setState SetStateFunc) {
 	logger.Info("Registering notification tools in registry")
 
 	r.Register("send_user_notification", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
@@ -78,6 +82,16 @@ func (r *Registry) RegisterNotificationTools(db *sql.DB) {
 			logger.Info("Note: If notifications aren't appearing, check macOS System Settings > Notifications > Staff")
 		} else {
 			logger.Info("Desktop notification sent successfully")
+		}
+
+		// If notification requires response, set agent state to waiting_human
+		if payload.RequiresResponse && setState != nil {
+			if err := setState(agentID, "waiting_human"); err != nil {
+				logger.Warn("Failed to set agent state to waiting_human: %v", err)
+				// Don't fail the tool - notification was successfully sent
+			} else {
+				logger.Info("Agent state set to waiting_human for agent %s", agentID)
+			}
 		}
 
 		return map[string]any{

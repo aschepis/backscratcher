@@ -85,6 +85,14 @@ CREATE TABLE IF NOT EXISTS conversations (
 
 CREATE INDEX IF NOT EXISTS idx_conversations_agent_thread ON conversations(agent_id, thread_id, created_at);
 
+CREATE TABLE IF NOT EXISTS agent_states (
+    agent_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK(state IN ('idle','running','waiting_human','waiting_external','sleeping')),
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_states_state ON agent_states(state);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
     content,
     content_rowid='id'
