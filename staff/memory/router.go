@@ -24,6 +24,23 @@ func NewMemoryRouter(store *Store, cfg Config) *MemoryRouter {
 	}
 }
 
+// StorePersonalMemory stores a normalized personal memory for a specific agent.
+// This is a thin wrapper around Store.StorePersonalMemory to keep tools decoupled
+// from the underlying storage implementation.
+func (r *MemoryRouter) StorePersonalMemory(
+	ctx context.Context,
+	agentID string,
+	rawText string,
+	normalized string,
+	memoryType string,
+	tags []string,
+	threadID *string,
+	importance float64,
+	metadata map[string]interface{},
+) (MemoryItem, error) {
+	return r.store.StorePersonalMemory(ctx, agentID, rawText, normalized, memoryType, tags, threadID, importance, metadata)
+}
+
 // AddEpisode stores a detailed agent-private episode.
 func (r *MemoryRouter) AddEpisode(
 	ctx context.Context,

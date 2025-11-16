@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -20,10 +21,13 @@ type chatService struct {
 
 // NewChatService creates a new ChatService that wraps the given crew and database.
 func NewChatService(crew *agent.Crew, db *sql.DB) ChatService {
-	return &chatService{
+	cs := &chatService{
 		crew: crew,
 		db:   db,
 	}
+	// Register chatService as the message persister for the crew
+	crew.SetMessagePersister(cs)
+	return cs
 }
 
 // SendMessage sends a message to an agent and returns the response.
@@ -162,9 +166,16 @@ func (s *chatService) GetOrCreateThreadID(ctx context.Context, agentID string) (
 }
 
 // LoadConversationHistory loads conversation history for a given agent and thread ID.
+// Also available as LoadThread for API consistency.
 func (s *chatService) LoadConversationHistory(ctx context.Context, agentID, threadID string) ([]anthropic.MessageParam, error) {
+	return s.LoadThread(ctx, agentID, threadID)
+}
+
+// LoadThread loads conversation history for a given agent and thread ID.
+// Reconstructs proper Anthropic message structures from database rows.
+func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) ([]anthropic.MessageParam, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT role, content, created_at FROM conversations 
+		`SELECT role, content, tool_name, created_at FROM conversations 
 		 WHERE agent_id = ? AND thread_id = ? 
 		 ORDER BY created_at ASC`,
 		agentID, threadID,
@@ -175,46 +186,115 @@ func (s *chatService) LoadConversationHistory(ctx context.Context, agentID, thre
 	defer rows.Close()
 
 	var messages []anthropic.MessageParam
-	var currentUserMessages []string
-	var currentAssistantMessages []string
+	var currentUserTextBlocks []string
+	var currentAssistantTextBlocks []string
+	var currentAssistantToolBlocks []anthropic.ContentBlockParamUnion
+	var currentToolResultBlocks []anthropic.ContentBlockParamUnion
 	var lastRole string
 
 	for rows.Next() {
 		var role string
 		var content string
+		var toolName sql.NullString
 		var createdAt int64
 
-		if err := rows.Scan(&role, &content, &createdAt); err != nil {
+		if err := rows.Scan(&role, &content, &toolName, &createdAt); err != nil {
 			return nil, err
 		}
 
-		// Group consecutive messages from the same role
-		if lastRole == "" || lastRole == role {
-			if role == "user" {
-				currentUserMessages = append(currentUserMessages, content)
+		// Handle different message types
+		switch role {
+		case "user":
+			// User text message
+			if lastRole == "user" {
+				currentUserTextBlocks = append(currentUserTextBlocks, content)
 			} else {
-				currentAssistantMessages = append(currentAssistantMessages, content)
-			}
-		} else {
-			// Role changed, commit the previous messages
-			if len(currentUserMessages) > 0 {
-				messages = append(messages, anthropic.NewUserMessage(
-					anthropic.NewTextBlock(strings.Join(currentUserMessages, "\n")),
-				))
-				currentUserMessages = nil
-			}
-			if len(currentAssistantMessages) > 0 {
-				messages = append(messages, anthropic.NewAssistantMessage(
-					anthropic.NewTextBlock(strings.Join(currentAssistantMessages, "\n")),
-				))
-				currentAssistantMessages = nil
+				// Role changed, commit previous messages
+				s.commitPendingMessages(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
+					currentAssistantToolBlocks, currentToolResultBlocks, lastRole)
+
+				currentUserTextBlocks = []string{content}
+				currentAssistantTextBlocks = nil
+				currentAssistantToolBlocks = nil
+				currentToolResultBlocks = nil
 			}
 
-			// Start new message group
-			if role == "user" {
-				currentUserMessages = append(currentUserMessages, content)
+		case "assistant":
+			if toolName.Valid && toolName.String != "" {
+				// Assistant message with tool call
+				// Parse the JSON content to extract tool use block information
+				var toolUseData map[string]interface{}
+				if err := json.Unmarshal([]byte(content), &toolUseData); err != nil {
+					// If JSON parsing fails, skip this message or log error
+					continue
+				}
+
+				// Extract tool use block fields
+				toolID, _ := toolUseData["id"].(string)
+				toolInput := toolUseData["input"]
+				toolNameStr := toolName.String
+
+				// Create tool use block
+				toolUseBlock := anthropic.NewToolUseBlock(toolID, toolInput, toolNameStr)
+				currentAssistantToolBlocks = append(currentAssistantToolBlocks, toolUseBlock)
+
+				// Commit if role changed
+				if lastRole != "assistant" && lastRole != "" {
+					s.commitPendingMessages(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
+						currentAssistantToolBlocks, currentToolResultBlocks, lastRole)
+					currentUserTextBlocks = nil
+					currentAssistantTextBlocks = nil
+				}
 			} else {
-				currentAssistantMessages = append(currentAssistantMessages, content)
+				// Assistant text message
+				if lastRole == "assistant" && len(currentAssistantToolBlocks) == 0 {
+					currentAssistantTextBlocks = append(currentAssistantTextBlocks, content)
+				} else {
+					// Role changed or we have tool blocks, commit previous messages
+					s.commitPendingMessages(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
+						currentAssistantToolBlocks, currentToolResultBlocks, lastRole)
+
+					currentUserTextBlocks = nil
+					currentAssistantTextBlocks = []string{content}
+					currentAssistantToolBlocks = nil
+					currentToolResultBlocks = nil
+				}
+			}
+
+		case "tool":
+			// Tool result message - these are sent as user messages with ToolResultBlock
+			if toolName.Valid && toolName.String != "" {
+				// Parse the JSON content to extract tool result information
+				var toolResultData map[string]interface{}
+				if err := json.Unmarshal([]byte(content), &toolResultData); err != nil {
+					// If JSON parsing fails, skip this message or log error
+					continue
+				}
+
+				// Extract tool result block fields
+				toolID, _ := toolResultData["id"].(string)
+				resultStr, _ := toolResultData["result"].(string)
+				isError, _ := toolResultData["is_error"].(bool)
+
+				// If result is not a string, marshal it back to JSON
+				if resultStr == "" {
+					if resultBytes, err := json.Marshal(toolResultData["result"]); err == nil {
+						resultStr = string(resultBytes)
+					}
+				}
+
+				// Create tool result block
+				toolResultBlock := anthropic.NewToolResultBlock(toolID, resultStr, isError)
+				currentToolResultBlocks = append(currentToolResultBlocks, toolResultBlock)
+
+				// Commit if role changed
+				if lastRole != "tool" && lastRole != "" {
+					s.commitPendingMessages(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
+						currentAssistantToolBlocks, currentToolResultBlocks, lastRole)
+					currentUserTextBlocks = nil
+					currentAssistantTextBlocks = nil
+					currentAssistantToolBlocks = nil
+				}
 			}
 		}
 
@@ -222,16 +302,8 @@ func (s *chatService) LoadConversationHistory(ctx context.Context, agentID, thre
 	}
 
 	// Commit any remaining messages
-	if len(currentUserMessages) > 0 {
-		messages = append(messages, anthropic.NewUserMessage(
-			anthropic.NewTextBlock(strings.Join(currentUserMessages, "\n")),
-		))
-	}
-	if len(currentAssistantMessages) > 0 {
-		messages = append(messages, anthropic.NewAssistantMessage(
-			anthropic.NewTextBlock(strings.Join(currentAssistantMessages, "\n")),
-		))
-	}
+	s.commitPendingMessages(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
+		currentAssistantToolBlocks, currentToolResultBlocks, lastRole)
 
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -240,13 +312,126 @@ func (s *chatService) LoadConversationHistory(ctx context.Context, agentID, thre
 	return messages, nil
 }
 
+// commitPendingMessages commits any pending message groups to the messages slice.
+func (s *chatService) commitPendingMessages(
+	messages *[]anthropic.MessageParam,
+	userTextBlocks []string,
+	assistantTextBlocks []string,
+	assistantToolBlocks []anthropic.ContentBlockParamUnion,
+	toolResultBlocks []anthropic.ContentBlockParamUnion,
+	lastRole string,
+) {
+	// Commit user text messages
+	if len(userTextBlocks) > 0 {
+		*messages = append(*messages, anthropic.NewUserMessage(
+			anthropic.NewTextBlock(strings.Join(userTextBlocks, "\n")),
+		))
+	}
+
+	// Commit assistant messages (text or tool calls)
+	if len(assistantTextBlocks) > 0 {
+		*messages = append(*messages, anthropic.NewAssistantMessage(
+			anthropic.NewTextBlock(strings.Join(assistantTextBlocks, "\n")),
+		))
+	}
+	if len(assistantToolBlocks) > 0 {
+		*messages = append(*messages, anthropic.NewAssistantMessage(assistantToolBlocks...))
+	}
+
+	// Commit tool result messages as user messages
+	if len(toolResultBlocks) > 0 {
+		*messages = append(*messages, anthropic.NewUserMessage(toolResultBlocks...))
+	}
+}
+
 // SaveMessage saves a user or assistant message to the conversation history.
 func (s *chatService) SaveMessage(ctx context.Context, agentID, threadID, role, content string) error {
 	now := time.Now().Unix()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO conversations (agent_id, thread_id, role, content, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO conversations (agent_id, thread_id, role, content, tool_name, created_at)
+		 VALUES (?, ?, ?, ?, NULL, ?)`,
 		agentID, threadID, role, content, now,
+	)
+	return err
+}
+
+// AppendUserMessage saves a user text message to the conversation history.
+func (s *chatService) AppendUserMessage(ctx context.Context, agentID, threadID, content string) error {
+	now := time.Now().Unix()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO conversations (agent_id, thread_id, role, content, tool_name, created_at)
+		 VALUES (?, ?, 'user', ?, NULL, ?)`,
+		agentID, threadID, content, now,
+	)
+	return err
+}
+
+// AppendAssistantMessage saves an assistant text-only message to the conversation history.
+func (s *chatService) AppendAssistantMessage(ctx context.Context, agentID, threadID, content string) error {
+	now := time.Now().Unix()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO conversations (agent_id, thread_id, role, content, tool_name, created_at)
+		 VALUES (?, ?, 'assistant', ?, NULL, ?)`,
+		agentID, threadID, content, now,
+	)
+	return err
+}
+
+// AppendToolCall saves an assistant message with tool use blocks to the conversation history.
+// toolID is the unique ID for this tool call.
+// toolName is the name of the tool being called.
+// toolInput is the input parameters for the tool (will be JSON-marshaled).
+func (s *chatService) AppendToolCall(ctx context.Context, agentID, threadID, toolID, toolName string, toolInput any) error {
+	// Create a JSON object with id, input, and name fields
+	toolUseData := map[string]interface{}{
+		"id":    toolID,
+		"input": toolInput,
+		"name":  toolName,
+	}
+	contentJSON, err := json.Marshal(toolUseData)
+	if err != nil {
+		return fmt.Errorf("marshal tool use data: %w", err)
+	}
+
+	now := time.Now().Unix()
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO conversations (agent_id, thread_id, role, content, tool_name, created_at)
+		 VALUES (?, ?, 'assistant', ?, ?, ?)`,
+		agentID, threadID, string(contentJSON), toolName, now,
+	)
+	return err
+}
+
+// AppendToolResult saves a tool result message to the conversation history.
+// toolID is the unique ID for the tool call that produced this result.
+// toolName is the name of the tool that produced the result.
+// result is the tool result (will be JSON-marshaled).
+// isError indicates if the result represents an error.
+func (s *chatService) AppendToolResult(ctx context.Context, agentID, threadID, toolID, toolName string, result any, isError bool) error {
+	// Marshal the result to JSON string
+	var resultStr string
+	if resultBytes, err := json.Marshal(result); err == nil {
+		resultStr = string(resultBytes)
+	} else {
+		resultStr = fmt.Sprintf("%v", result)
+	}
+
+	// Create a JSON object with id, result, and is_error fields
+	toolResultData := map[string]interface{}{
+		"id":       toolID,
+		"result":   resultStr,
+		"is_error": isError,
+	}
+	contentJSON, err := json.Marshal(toolResultData)
+	if err != nil {
+		return fmt.Errorf("marshal tool result data: %w", err)
+	}
+
+	now := time.Now().Unix()
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO conversations (agent_id, thread_id, role, content, tool_name, created_at)
+		 VALUES (?, ?, 'tool', ?, ?, ?)`,
+		agentID, threadID, string(contentJSON), toolName, now,
 	)
 	return err
 }

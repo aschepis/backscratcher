@@ -110,6 +110,10 @@ func (r *Registry) Handle(ctx context.Context, toolName, agentID string, argsStr
 // Note: Tool names must match pattern ^[a-zA-Z0-9_-]{1,128}$ (no dots allowed)
 func (r *Registry) RegisterMemoryTools(router *memory.MemoryRouter) {
 	logger.Info("Registering memory tools in registry")
+
+	// Normalizer instance shared by memory tools that only transform text.
+	normalizer := memory.NewNormalizer("claude-3.5-haiku-latest", "", 256)
+
 	r.Register("memory_remember_episode", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
 		var payload struct {
 			ThreadID string                 `json:"thread_id"`
@@ -209,6 +213,98 @@ func (r *Registry) RegisterMemoryTools(router *memory.MemoryRouter) {
 			})
 		}
 		return out, nil
+	})
+
+	r.Register("memory_store_personal", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
+		var payload struct {
+			AgentID    *string                `json:"agent_id,omitempty"`
+			Text       string                 `json:"text"`       // original/raw text
+			Normalized string                 `json:"normalized"` // normalized third-person text
+			Type       string                 `json:"type"`       // normalized memory type
+			Tags       []string               `json:"tags"`       // tags from memory_normalize
+			ThreadID   string                 `json:"thread_id"`  // optional conversation/thread id
+			Importance float64                `json:"importance"` // optional importance; default handled by store
+			Metadata   map[string]interface{} `json:"metadata"`   // optional extra metadata
+		}
+
+		logger.Debug("Received call to memory_store_personal from agent=%s", agentID)
+		if err := json.Unmarshal(args, &payload); err != nil {
+			logger.Warn("Failed to decode arguments for memory_store_personal: %v", err)
+			return nil, fmt.Errorf("failed to unmarshal arguments: %w", err)
+		}
+
+		effectiveAgentID := agentID
+		if payload.AgentID != nil && strings.TrimSpace(*payload.AgentID) != "" {
+			effectiveAgentID = strings.TrimSpace(*payload.AgentID)
+		}
+
+		rawText := strings.TrimSpace(payload.Text)
+		normalized := strings.TrimSpace(payload.Normalized)
+		if rawText == "" && normalized == "" {
+			logger.Warn("Empty text and normalized passed to memory_store_personal for agent=%s", effectiveAgentID)
+			return nil, fmt.Errorf("either text or normalized must be provided")
+		}
+
+		var threadPtr *string
+		if strings.TrimSpace(payload.ThreadID) != "" {
+			tid := strings.TrimSpace(payload.ThreadID)
+			threadPtr = &tid
+		}
+
+		item, err := router.StorePersonalMemory(
+			ctx,
+			effectiveAgentID,
+			rawText,
+			normalized,
+			payload.Type,
+			payload.Tags,
+			threadPtr,
+			payload.Importance,
+			payload.Metadata,
+		)
+		if err != nil {
+			logger.Error("memory_store_personal failed for agent=%s: %v", effectiveAgentID, err)
+			return nil, err
+		}
+
+		return map[string]any{
+			"id":              item.ID,
+			"scope":           item.Scope,
+			"type":            item.Type,
+			"memory_type":     item.MemoryType,
+			"created":         item.CreatedAt,
+			"raw_content":     item.RawContent,
+			"normalized_text": item.Content,
+			"tags":            item.Tags,
+		}, nil
+	})
+
+	r.Register("memory_normalize", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
+		var payload struct {
+			Text string `json:"text"`
+		}
+		logger.Debug("Received call to memory_normalize from agent=%s", agentID)
+		if err := json.Unmarshal(args, &payload); err != nil {
+			logger.Warn("Failed to decode arguments for memory_normalize: %v", err)
+			return nil, fmt.Errorf("failed to unmarshal arguments: %w", err)
+		}
+		payload.Text = strings.TrimSpace(payload.Text)
+		if payload.Text == "" {
+			logger.Warn("Empty text passed to memory_normalize for agent=%s", agentID)
+			return nil, fmt.Errorf("text cannot be empty")
+		}
+
+		normalized, memType, tags, err := normalizer.Normalize(ctx, payload.Text)
+		if err != nil {
+			logger.Error("memory_normalize failed for agent=%s: %v", agentID, err)
+			return nil, err
+		}
+
+		return map[string]any{
+			"normalized": normalized,
+			"type":       memType,
+			"tags":       tags,
+		}, nil
 	})
 }
 

@@ -4,7 +4,7 @@
 BINARY_NAME=staff
 
 # Build flags
-BUILD_FLAGS=-tags fts5
+BUILD_FLAGS=-tags sqlite_fts5
 
 # Go parameters
 GOCMD=go
@@ -31,8 +31,8 @@ clean: ## Remove build artifacts
 run: build ## Build and run the application
 	./$(BINARY_NAME)
 
-test: ## Run tests
-	$(GOTEST) -v ./...
+test: ## Run tests (with FTS5 enabled)
+	CGO_ENABLED=1 $(GOTEST) -v $(BUILD_FLAGS) ./...
 
 tidy: ## Tidy go modules
 	$(GOMOD) tidy

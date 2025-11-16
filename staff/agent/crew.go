@@ -14,11 +14,12 @@ import (
 )
 
 type Crew struct {
-	Agents       map[string]*AgentConfig
-	Runners      map[string]*AgentRunner
-	ToolRegistry *tools.Registry
-	ToolProvider *ToolProviderFromRegistry
-	stateManager *StateManager
+	Agents          map[string]*AgentConfig
+	Runners         map[string]*AgentRunner
+	ToolRegistry    *tools.Registry
+	ToolProvider    *ToolProviderFromRegistry
+	stateManager    *StateManager
+	messagePersister MessagePersister // Optional message persister
 
 	apiKey string
 	mu     sync.RWMutex
@@ -51,6 +52,18 @@ func (c *Crew) StateManager() *StateManager {
 	return c.stateManager
 }
 
+// SetMessagePersister sets the message persister for this crew.
+// All runners will use this persister to save conversation messages.
+func (c *Crew) SetMessagePersister(persister MessagePersister) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.messagePersister = persister
+	// Update existing runners
+	for _, runner := range c.Runners {
+		runner.messagePersister = persister
+	}
+}
+
 func (c *Crew) LoadCrewConfig(cfg CrewConfig) error {
 	for id, agentCfg := range cfg.Agents {
 		if agentCfg.ID == "" {
@@ -66,7 +79,7 @@ func (c *Crew) InitializeAgents() error {
 	defer c.mu.Unlock()
 
 	for id, cfg := range c.Agents {
-		runner := NewAgentRunner(c.apiKey, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider, c.stateManager)
+		runner := NewAgentRunnerWithPersister(c.apiKey, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider, c.stateManager, c.messagePersister)
 		c.Runners[id] = runner
 		// Initialize agent state to idle if not exists
 		exists, err := c.stateManager.StateExists(id)

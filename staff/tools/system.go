@@ -34,6 +34,13 @@ func isDangerousCommand(command string) bool {
 		}
 	}
 
+	// Explicitly block curl/wget pipelines that execute shells, even with args between.
+	if (strings.Contains(cmdLower, "curl") || strings.Contains(cmdLower, "wget")) &&
+		strings.Contains(cmdLower, "|") &&
+		(strings.Contains(cmdLower, "| sh") || strings.Contains(cmdLower, "| bash")) {
+		return true
+	}
+
 	// Block commands that try to write outside workspace
 	if strings.Contains(cmdLower, "> ") {
 		// Check if redirecting outside workspace
@@ -57,11 +64,11 @@ func (r *Registry) RegisterSystemTools(workspacePath string) {
 
 	r.Register("execute_command", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
 		var payload struct {
-			Command   string   `json:"command"`
-			Args      []string `json:"args"`
-			Timeout   int      `json:"timeout"`    // in seconds
-			WorkingDir string  `json:"working_dir"`
-			Stdin     string   `json:"stdin"`
+			Command    string   `json:"command"`
+			Args       []string `json:"args"`
+			Timeout    int      `json:"timeout"` // in seconds
+			WorkingDir string   `json:"working_dir"`
+			Stdin      string   `json:"stdin"`
 		}
 		if err := json.Unmarshal(args, &payload); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal arguments: %w", err)
@@ -219,4 +226,3 @@ func (r *Registry) RegisterSystemTools(workspacePath string) {
 		}
 	})
 }
-

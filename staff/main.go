@@ -61,6 +61,39 @@ func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, works
 		},
 	})
 
+	crew.ToolProvider.RegisterSchema("memory_normalize", agent.ToolSchema{
+		Description: "Normalize a raw user or agent statement into a structured personal memory triple: normalized text, type, and tags.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"text": map[string]any{"type": "string", "description": "Raw user or agent statement to normalize into a long-term memory."},
+			},
+			"required": []string{"text"},
+		},
+	})
+
+	crew.ToolProvider.RegisterSchema("memory_store_personal", agent.ToolSchema{
+		Description: "Store a normalized personal memory about the user, using the output from memory_normalize.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"agent_id":   map[string]any{"type": "string", "description": "Optional agent ID on whose behalf the memory is stored (defaults to calling agent)."},
+				"text":       map[string]any{"type": "string", "description": "Original raw statement, if available."},
+				"normalized": map[string]any{"type": "string", "description": "Normalized third-person text from memory_normalize."},
+				"type":       map[string]any{"type": "string", "description": "Normalized memory type from memory_normalize (preference, biographical, habit, goal, value, project, other)."},
+				"tags": map[string]any{
+					"type":        "array",
+					"description": "Tags returned by memory_normalize.",
+					"items":       map[string]any{"type": "string"},
+				},
+				"thread_id":  map[string]any{"type": "string", "description": "Optional thread or conversation identifier."},
+				"importance": map[string]any{"type": "number", "description": "Optional importance score; if omitted, a reasonable default is used."},
+				"metadata":   map[string]any{"type": "object", "description": "Optional additional metadata to associate with this memory."},
+			},
+			"required": []string{"normalized", "type", "tags"},
+		},
+	})
+
 	// Register schemas for filesystem tools
 	crew.ToolProvider.RegisterSchema("read_file", agent.ToolSchema{
 		Description: "Read the contents of a file. Returns the file content, size, and path.",

@@ -45,7 +45,11 @@ CREATE TABLE IF NOT EXISTS memory_items (
     metadata TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    importance REAL NOT NULL DEFAULT 0.0
+    importance REAL NOT NULL DEFAULT 0.0,
+    -- Normalization fields for personal memories
+    raw_content TEXT,      -- original user/agent statement
+    memory_type TEXT,      -- normalized memory type: preference, biographical, habit, goal, value, project, other
+    tags_json TEXT         -- JSON array of tags: [\"music\",\"triathlon\",\"age\"]
 );
 
 CREATE TABLE IF NOT EXISTS artifacts (
@@ -77,8 +81,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY,
     agent_id TEXT NOT NULL,
     thread_id TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'tool')),
     content TEXT NOT NULL,
+    tool_name TEXT NULL,
     created_at INTEGER NOT NULL,
     UNIQUE(agent_id, thread_id, role, content, created_at)
 );
@@ -88,57 +93,24 @@ CREATE INDEX IF NOT EXISTS idx_conversations_agent_thread ON conversations(agent
 CREATE TABLE IF NOT EXISTS agent_states (
     agent_id TEXT PRIMARY KEY,
     state TEXT NOT NULL CHECK(state IN ('idle','running','waiting_human','waiting_external','sleeping')),
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    next_wake INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_states_state ON agent_states(state);
-
+CREATE INDEX IF NOT EXISTS idx_agent_states_next_wake ON agent_states(next_wake);
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
     content,
     content_rowid='id'
 );
 `
 	logger.Info("Running schema migration for Store")
-	_, err := s.db.Exec(schema)
-	if err != nil {
+	if _, err := s.db.Exec(schema); err != nil {
 		logger.Error("Error executing schema migration: %v", err)
 		return err
 	}
+
 	logger.Info("Schema migration executed successfully")
-
-	// Add next_wake column to agent_states if it doesn't exist
-	// SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we check first
-	var columnExists int
-	checkColumnQuery := `
-		SELECT COUNT(*) FROM pragma_table_info('agent_states')
-		WHERE name = 'next_wake'
-	`
-	err = s.db.QueryRow(checkColumnQuery).Scan(&columnExists)
-	if err != nil {
-		logger.Error("Error checking if next_wake column exists: %v", err)
-		return err
-	}
-
-	if columnExists == 0 {
-		logger.Info("Adding next_wake column to agent_states table")
-		_, err = s.db.Exec(`
-			ALTER TABLE agent_states ADD COLUMN next_wake INTEGER;
-		`)
-		if err != nil {
-			logger.Error("Error adding next_wake column: %v", err)
-			return err
-		}
-
-		_, err = s.db.Exec(`
-			CREATE INDEX IF NOT EXISTS idx_agent_states_next_wake ON agent_states(next_wake);
-		`)
-		if err != nil {
-			logger.Error("Error creating next_wake index: %v", err)
-			return err
-		}
-		logger.Info("Successfully added next_wake column and index")
-	}
-
 	return nil
 }
 
@@ -297,6 +269,133 @@ INSERT INTO memory_items_fts (rowid, content) VALUES (?, ?)
 		CreatedAt:  time.Unix(nowUnix, 0),
 		UpdatedAt:  time.Unix(nowUnix, 0),
 		Importance: importance,
+	}
+	return item, nil
+}
+
+// StorePersonalMemory writes an enriched, normalized personal memory for a specific agent.
+// It is intended to be used together with the memory_normalize tool.
+func (s *Store) StorePersonalMemory(
+	ctx context.Context,
+	agentID string,
+	rawText string,
+	normalized string,
+	memoryType string,
+	tags []string,
+	threadID *string,
+	importance float64,
+	metadata map[string]interface{},
+) (MemoryItem, error) {
+	logger.Debug("StorePersonalMemory called. AgentID: %s, Raw: %.60q, Normalized: %.60q, MemoryType: %s, Tags: %v, ThreadID: %v, Importance: %.2f",
+		agentID, rawText, normalized, memoryType, tags, threadID, importance)
+
+	rawText = strings.TrimSpace(rawText)
+	normalized = strings.TrimSpace(normalized)
+	if rawText == "" && normalized == "" {
+		logger.Warn("Attempted to store personal memory with empty raw and normalized text")
+		return MemoryItem{}, errors.New("raw and normalized text cannot both be empty")
+	}
+	if normalized == "" {
+		normalized = rawText
+	}
+	if importance == 0 {
+		importance = 0.8
+	}
+
+	// Encode metadata and tags.
+	var (
+		metaJSON []byte
+		err      error
+	)
+	if metadata != nil {
+		metaJSON, err = json.Marshal(metadata)
+		if err != nil {
+			logger.Error("StorePersonalMemory: failed to marshal metadata: %v", err)
+			return MemoryItem{}, fmt.Errorf("marshal metadata: %w", err)
+		}
+	}
+	var tagsJSON []byte
+	if tags != nil {
+		tagsJSON, err = json.Marshal(tags)
+		if err != nil {
+			logger.Error("StorePersonalMemory: failed to marshal tags: %v", err)
+			return MemoryItem{}, fmt.Errorf("marshal tags: %w", err)
+		}
+	}
+
+	// Embed normalized text for vector search.
+	var embedding []float32
+	if s.embedder != nil {
+		embedding, err = s.embedder.Embed(ctx, normalized)
+		if err != nil {
+			logger.Error("StorePersonalMemory: embedding failed: %v. Saving without embedding.", err)
+			embedding = nil
+		}
+	}
+
+	nowUnix := now()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		logger.Error("StorePersonalMemory: failed to begin transaction: %v", err)
+		return MemoryItem{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	agentVal := interface{}(agentID)
+	var threadVal interface{}
+	if threadID != nil {
+		threadVal = *threadID
+	}
+
+	res, err := tx.ExecContext(ctx, `
+INSERT INTO memory_items (
+    agent_id, thread_id, scope, type, content,
+    embedding, metadata, created_at, updated_at, importance,
+    raw_content, memory_type, tags_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, agentVal, threadVal, string(ScopeAgent), string(MemoryTypeProfile), normalized,
+		EncodeEmbedding(embedding), metaJSON, nowUnix, nowUnix, importance,
+		rawText, memoryType, tagsJSON)
+	if err != nil {
+		logger.Error("StorePersonalMemory: failed to insert memory_item: %v", err)
+		return MemoryItem{}, fmt.Errorf("insert personal memory_item: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		logger.Error("StorePersonalMemory: failed to retrieve LastInsertId: %v", err)
+		return MemoryItem{}, err
+	}
+
+	// Index normalized text in the FTS table to support hybrid search.
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO memory_items_fts (rowid, content) VALUES (?, ?)
+`, id, normalized); err != nil {
+		logger.Error("StorePersonalMemory: failed to insert memory_items_fts row: %v", err)
+		return MemoryItem{}, fmt.Errorf("insert personal fts: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Error("StorePersonalMemory: transaction commit failed: %v", err)
+		return MemoryItem{}, err
+	}
+
+	logger.Info("StorePersonalMemory: stored personal memory. AgentID: %s, ID: %d", agentID, id)
+
+	item := MemoryItem{
+		ID:         id,
+		AgentID:    &agentID,
+		ThreadID:   threadID,
+		Scope:      ScopeAgent,
+		Type:       MemoryTypeProfile,
+		Content:    normalized,
+		Embedding:  embedding,
+		Metadata:   metadata,
+		CreatedAt:  time.Unix(nowUnix, 0),
+		UpdatedAt:  time.Unix(nowUnix, 0),
+		Importance: importance,
+		RawContent: rawText,
+		MemoryType: memoryType,
+		Tags:       append([]string(nil), tags...),
 	}
 	return item, nil
 }

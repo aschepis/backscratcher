@@ -40,8 +40,31 @@ type ChatService interface {
 	// LoadConversationHistory loads conversation history for a given agent and thread ID.
 	LoadConversationHistory(ctx context.Context, agentID, threadID string) ([]anthropic.MessageParam, error)
 
+	// LoadThread loads conversation history for a given agent and thread ID.
+	// Reconstructs proper Anthropic message structures from database rows.
+	LoadThread(ctx context.Context, agentID, threadID string) ([]anthropic.MessageParam, error)
+
 	// SaveMessage saves a user or assistant message to the conversation history.
 	SaveMessage(ctx context.Context, agentID, threadID, role, content string) error
+
+	// AppendUserMessage saves a user text message to the conversation history.
+	AppendUserMessage(ctx context.Context, agentID, threadID, content string) error
+
+	// AppendAssistantMessage saves an assistant text-only message to the conversation history.
+	AppendAssistantMessage(ctx context.Context, agentID, threadID, content string) error
+
+	// AppendToolCall saves an assistant message with tool use blocks to the conversation history.
+	// toolID is the unique ID for this tool call.
+	// toolName is the name of the tool being called.
+	// toolInput is the input parameters for the tool (will be JSON-marshaled).
+	AppendToolCall(ctx context.Context, agentID, threadID, toolID, toolName string, toolInput any) error
+
+	// AppendToolResult saves a tool result message to the conversation history.
+	// toolID is the unique ID for the tool call that produced this result.
+	// toolName is the name of the tool that produced the result.
+	// result is the tool result (will be JSON-marshaled).
+	// isError indicates if the result represents an error.
+	AppendToolResult(ctx context.Context, agentID, threadID, toolID, toolName string, result any, isError bool) error
 }
 
 // AgentInfo provides basic information about an agent for UI display.

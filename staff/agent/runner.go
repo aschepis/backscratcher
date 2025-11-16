@@ -19,12 +19,28 @@ type ToolExecutor interface {
 	Handle(ctx context.Context, toolName, agentID string, inputJSON []byte) (any, error)
 }
 
+// MessagePersister provides an interface for persisting conversation messages.
+type MessagePersister interface {
+	// AppendUserMessage saves a user text message to the conversation history.
+	AppendUserMessage(ctx context.Context, agentID, threadID, content string) error
+
+	// AppendAssistantMessage saves an assistant text-only message to the conversation history.
+	AppendAssistantMessage(ctx context.Context, agentID, threadID, content string) error
+
+	// AppendToolCall saves an assistant message with tool use blocks to the conversation history.
+	AppendToolCall(ctx context.Context, agentID, threadID, toolID, toolName string, toolInput any) error
+
+	// AppendToolResult saves a tool result message to the conversation history.
+	AppendToolResult(ctx context.Context, agentID, threadID, toolID, toolName string, result any, isError bool) error
+}
+
 type AgentRunner struct {
-	client       *anthropic.Client
-	agent        *Agent
-	toolExec     ToolExecutor
-	toolProvider ToolProvider
-	stateManager *StateManager
+	client          *anthropic.Client
+	agent           *Agent
+	toolExec        ToolExecutor
+	toolProvider    ToolProvider
+	stateManager    *StateManager
+	messagePersister MessagePersister // Optional message persister
 }
 
 func NewAgentRunner(
@@ -34,16 +50,29 @@ func NewAgentRunner(
 	toolProvider ToolProvider,
 	stateManager *StateManager,
 ) *AgentRunner {
+	return NewAgentRunnerWithPersister(apiKey, agent, toolExec, toolProvider, stateManager, nil)
+}
+
+// NewAgentRunnerWithPersister creates a new AgentRunner with an optional message persister.
+func NewAgentRunnerWithPersister(
+	apiKey string,
+	agent *Agent,
+	toolExec ToolExecutor,
+	toolProvider ToolProvider,
+	stateManager *StateManager,
+	messagePersister MessagePersister,
+) *AgentRunner {
 	if stateManager == nil {
 		panic("stateManager is required for AgentRunner")
 	}
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	return &AgentRunner{
-		client:       &client,
-		agent:        agent,
-		toolExec:     toolExec,
-		toolProvider: toolProvider,
-		stateManager: stateManager,
+		client:          &client,
+		agent:           agent,
+		toolExec:        toolExec,
+		toolProvider:    toolProvider,
+		stateManager:    stateManager,
+		messagePersister: messagePersister,
 	}
 }
 
@@ -143,6 +172,11 @@ func (r *AgentRunner) RunAgent(
 		var (
 			finalText   strings.Builder
 			toolResults []anthropic.ContentBlockParamUnion
+			toolNameMap = make(map[string]string)      // Map tool ID to tool name for persistence
+			toolResultMap = make(map[string]struct {   // Map tool ID to result data for persistence
+				result  any
+				isError bool
+			})
 		)
 
 		for _, blockUnion := range message.Content {
@@ -156,6 +190,9 @@ func (r *AgentRunner) RunAgent(
 				// Get raw JSON input the way the official example does.
 				raw := []byte(block.JSON.Input.Raw())
 
+				// Track tool name for persistence
+				toolNameMap[block.ID] = block.Name
+
 				// Execute tool (debug callback is retrieved from context if needed)
 				result, callErr := r.toolExec.Handle(ctx, block.Name, r.agent.ID, raw)
 				if callErr != nil {
@@ -163,20 +200,65 @@ func (r *AgentRunner) RunAgent(
 					result = map[string]any{"error": callErr.Error()}
 				}
 
+				// Track result for persistence
+				toolResultMap[block.ID] = struct {
+					result  any
+					isError bool
+				}{result: result, isError: callErr != nil}
+
 				b, _ := json.Marshal(result)
+				isError := callErr != nil
 				toolResults = append(
 					toolResults,
-					anthropic.NewToolResultBlock(block.ID, string(b), false),
+					anthropic.NewToolResultBlock(block.ID, string(b), isError),
 				)
 			}
 		}
 
 		// Add the assistant message to history
-		msgs = append(msgs, message.ToParam())
+		assistantMsg := message.ToParam()
+		msgs = append(msgs, assistantMsg)
 
-		// If no tool calls, we’re done.
+		// Persist assistant message if we have tool calls
+		if len(toolResults) > 0 && r.messagePersister != nil {
+			// Save assistant message with tool calls
+			for _, blockUnion := range message.Content {
+				if toolUse, ok := blockUnion.AsAny().(anthropic.ToolUseBlock); ok {
+					var toolInput any
+					raw := []byte(toolUse.JSON.Input.Raw())
+					if err := json.Unmarshal(raw, &toolInput); err != nil {
+						// Fallback to raw string if unmarshal fails
+						toolInput = string(raw)
+					}
+					if err := r.messagePersister.AppendToolCall(ctx, r.agent.ID, threadID, toolUse.ID, toolUse.Name, toolInput); err != nil {
+						// Log error but don't fail execution
+						fmt.Printf("Warning: failed to persist tool call: %v\n", err)
+					}
+				}
+			}
+		}
+
+		// If no tool calls, we're done.
 		if len(toolResults) == 0 {
+			// Persist assistant text message if we have a persister
+			if r.messagePersister != nil && finalText.Len() > 0 {
+				if err := r.messagePersister.AppendAssistantMessage(ctx, r.agent.ID, threadID, strings.TrimSpace(finalText.String())); err != nil {
+					// Log error but don't fail execution
+					fmt.Printf("Warning: failed to persist assistant message: %v\n", err)
+				}
+			}
 			return strings.TrimSpace(finalText.String()), nil
+		}
+
+		// Persist tool results
+		if r.messagePersister != nil {
+			for toolID, resultData := range toolResultMap {
+				toolName := toolNameMap[toolID]
+				if err := r.messagePersister.AppendToolResult(ctx, r.agent.ID, threadID, toolID, toolName, resultData.result, resultData.isError); err != nil {
+					// Log error but don't fail execution
+					fmt.Printf("Warning: failed to persist tool result: %v\n", err)
+				}
+			}
 		}
 
 		// Otherwise, send tool results back as a user message and loop.
@@ -381,8 +463,15 @@ func (r *AgentRunner) RunAgentStream(
 			// Build assistant message content with tool uses and execute tools
 			var assistantContent []anthropic.ContentBlockParamUnion
 			var toolResults []anthropic.ContentBlockParamUnion
+			toolNameMap := make(map[string]string) // Map tool ID to tool name for persistence
+			toolResultMap := make(map[string]struct { // Map tool ID to result data for persistence
+				result  any
+				isError bool
+			})
 
 			for _, toolUse := range toolUseBlocks {
+				// Track tool name for persistence
+				toolNameMap[toolUse.ID] = toolUse.Name
 				// Get the input JSON for this tool
 				var inputJSON any
 				if builder, ok := toolInputs[toolUse.ID]; ok {
@@ -422,13 +511,56 @@ func (r *AgentRunner) RunAgentStream(
 					result = map[string]any{"error": callErr.Error()}
 				}
 
+				// Track result for persistence
+				isError := callErr != nil
+				toolResultMap[toolUse.ID] = struct {
+					result  any
+					isError bool
+				}{result: result, isError: isError}
+
 				b, _ := json.Marshal(result)
-				toolResults = append(toolResults, anthropic.NewToolResultBlock(toolUse.ID, string(b), false))
+				toolResults = append(toolResults, anthropic.NewToolResultBlock(toolUse.ID, string(b), isError))
+			}
+
+			// Persist assistant message with tool calls
+			if r.messagePersister != nil {
+				for _, toolUse := range toolUseBlocks {
+					var toolInput any
+					if builder, ok := toolInputs[toolUse.ID]; ok {
+						inputStr := builder.String()
+						if err := json.Unmarshal([]byte(inputStr), &toolInput); err != nil {
+							toolInput = inputStr
+						}
+					} else {
+						var parsedInput any
+						rawJSON := toolUse.JSON.Input.Raw()
+						if err := json.Unmarshal([]byte(rawJSON), &parsedInput); err == nil {
+							toolInput = parsedInput
+						} else {
+							toolInput = rawJSON
+						}
+					}
+					if err := r.messagePersister.AppendToolCall(ctx, r.agent.ID, threadID, toolUse.ID, toolUse.Name, toolInput); err != nil {
+						// Log error but don't fail execution
+						fmt.Printf("Warning: failed to persist tool call: %v\n", err)
+					}
+				}
 			}
 
 			// Add assistant message with tool uses to history
 			assistantMsg := anthropic.NewAssistantMessage(assistantContent...)
 			msgs = append(msgs, assistantMsg)
+
+			// Persist tool results
+			if r.messagePersister != nil {
+				for toolID, resultData := range toolResultMap {
+					toolName := toolNameMap[toolID]
+					if err := r.messagePersister.AppendToolResult(ctx, r.agent.ID, threadID, toolID, toolName, resultData.result, resultData.isError); err != nil {
+						// Log error but don't fail execution
+						fmt.Printf("Warning: failed to persist tool result: %v\n", err)
+					}
+				}
+			}
 
 			// Add tool results as user message and continue loop
 			msgs = append(msgs, anthropic.NewUserMessage(toolResults...))
@@ -438,6 +570,13 @@ func (r *AgentRunner) RunAgentStream(
 		// If we have text, return it
 		if hasText && textBuilder.Len() > 0 {
 			text := strings.TrimSpace(textBuilder.String())
+			// Persist assistant text message if we have a persister
+			if r.messagePersister != nil {
+				if err := r.messagePersister.AppendAssistantMessage(ctx, r.agent.ID, threadID, text); err != nil {
+					// Log error but don't fail execution
+					fmt.Printf("Warning: failed to persist assistant message: %v\n", err)
+				}
+			}
 			return text, nil
 		}
 

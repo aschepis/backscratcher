@@ -33,6 +33,10 @@ type MemoryItem struct {
 	CreatedAt  time.Time              `json:"created_at"`
 	UpdatedAt  time.Time              `json:"updated_at"`
 	Importance float64                `json:"importance"`
+	// Normalization-enriched fields for personal memories
+	RawContent string   `json:"raw_content,omitempty"` // original user/agent statement
+	MemoryType string   `json:"memory_type,omitempty"` // preference, biographical, habit, goal, value, project, other
+	Tags       []string `json:"tags,omitempty"`        // denormalized view of tags_json
 }
 
 // Artifact is a durable document / handoff object.
@@ -52,14 +56,14 @@ type Artifact struct {
 type SearchQuery struct {
 	QueryText      string
 	QueryEmbedding []float32
-	Types         []MemoryType
-	MinImportance float64
-	After         *time.Time
-	Before        *time.Time
-	AgentID       *string
-	IncludeGlobal bool
-	Limit         int
-	UseHybrid     bool
+	Types          []MemoryType
+	MinImportance  float64
+	After          *time.Time
+	Before         *time.Time
+	AgentID        *string
+	IncludeGlobal  bool
+	Limit          int
+	UseHybrid      bool
 }
 
 // SearchResult includes a MemoryItem plus a relevance score.
