@@ -14,11 +14,11 @@ import (
 )
 
 type Crew struct {
-	Agents          map[string]*AgentConfig
-	Runners         map[string]*AgentRunner
-	ToolRegistry    *tools.Registry
-	ToolProvider    *ToolProviderFromRegistry
-	stateManager    *StateManager
+	Agents           map[string]*AgentConfig
+	Runners          map[string]*AgentRunner
+	ToolRegistry     *tools.Registry
+	ToolProvider     *ToolProviderFromRegistry
+	stateManager     *StateManager
 	messagePersister MessagePersister // Optional message persister
 
 	apiKey string
@@ -79,6 +79,12 @@ func (c *Crew) InitializeAgents() error {
 	defer c.mu.Unlock()
 
 	for id, cfg := range c.Agents {
+		// Skip disabled agents - they don't need runners or state initialization
+		if cfg.Disabled {
+			logger.Info("Agent %s: disabled, skipping initialization", id)
+			continue
+		}
+
 		runner := NewAgentRunnerWithPersister(c.apiKey, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider, c.stateManager, c.messagePersister)
 		c.Runners[id] = runner
 		// Initialize agent state to idle if not exists
@@ -104,14 +110,11 @@ func (c *Crew) InitializeAgents() error {
 				logger.Info("Agent %s: configured with startup_delay of %v, will wake at %v", id, delay, wakeTime.Format(time.RFC3339))
 			}
 
-			// Check if agent has a schedule and is enabled
-			// Default Enabled to true if not specified (as per plan requirements)
-			// Since bool zero value is false in Go, we can't distinguish "not set" from "set to false"
-			// Therefore, we enable scheduling if Schedule is set (default behavior per plan requirements)
+			// Check if agent has a schedule and is not disabled
+			// Default Disabled to false (agent is enabled by default)
 			hasSchedule := cfg.Schedule != ""
-			// Enable if schedule is set (default behavior) - we can't check enabled=false reliably since
-			// zero value is false and we can't distinguish between "not set" and "explicitly false"
-			enabled := hasSchedule
+			// Agent is enabled by default (Disabled defaults to false)
+			enabled := hasSchedule && !cfg.Disabled
 
 			if enabled {
 				// Agent has a schedule and is enabled, compute initial next_wake
@@ -245,4 +248,16 @@ func (c *Crew) ListAgents() []*Agent {
 		out = append(out, runner.agent)
 	}
 	return out
+}
+
+// IsAgentDisabled checks if an agent is disabled
+func (c *Crew) IsAgentDisabled(agentID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	agent, ok := c.Agents[agentID]
+	if !ok {
+		return true // If agent doesn't exist, consider it disabled
+	}
+	return agent.Disabled
 }

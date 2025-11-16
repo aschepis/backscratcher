@@ -85,7 +85,7 @@ type AgentConfig struct {
 	MaxTokens    int64    `yaml:"max_tokens" json:"max_tokens"`
 	Tools        []string `yaml:"tools" json:"tools"`
 	Schedule     string   `yaml:"schedule" json:"schedule"`       // e.g., "15m", "2h", "0 */15 * * * *" (cron)
-	Enabled      bool     `yaml:"enabled" json:"enabled"`         // default: true
+	Disabled     bool     `yaml:"disabled" json:"disabled"`       // default: false (agent is enabled by default)
 	StartupDelay string   `yaml:"startup_delay" json:"startup_delay"` // e.g., "5m", "30s", "1h" - one-time delay after app launch
 }
 
@@ -114,7 +114,7 @@ func (r *AgentRunner) RunAgent(
 	defer func() {
 		// Check if agent has a schedule - if so, compute next wake and set to waiting_external
 		// Otherwise, set to idle
-		if r.agent.Config.Schedule != "" && r.agent.Config.Enabled {
+		if r.agent.Config.Schedule != "" && !r.agent.Config.Disabled {
 			// Agent is scheduled, compute next wake time
 			now := time.Now()
 			nextWake, err := ComputeNextWake(r.agent.Config.Schedule, now)
@@ -293,7 +293,7 @@ func (r *AgentRunner) RunAgentStream(
 	defer func() {
 		// Check if agent has a schedule - if so, compute next wake and set to waiting_external
 		// Otherwise, set to idle
-		if r.agent.Config.Schedule != "" && r.agent.Config.Enabled {
+		if r.agent.Config.Schedule != "" && !r.agent.Config.Disabled {
 			// Agent is scheduled, compute next wake time
 			now := time.Now()
 			nextWake, err := ComputeNextWake(r.agent.Config.Schedule, now)

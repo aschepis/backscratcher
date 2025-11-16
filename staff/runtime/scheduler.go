@@ -11,8 +11,8 @@ import (
 
 // Scheduler manages automatic waking of scheduled agents
 type Scheduler struct {
-	crew       *agent.Crew
-	stateMgr   *agent.StateManager
+	crew         *agent.Crew
+	stateMgr     *agent.StateManager
 	pollInterval time.Duration
 }
 
@@ -28,7 +28,7 @@ func NewScheduler(crew *agent.Crew, stateMgr *agent.StateManager, pollInterval t
 // Start begins the scheduler goroutine that polls for agents ready to wake
 func (s *Scheduler) Start(ctx context.Context) {
 	logger.Info("Starting scheduler with poll interval: %v", s.pollInterval)
-	
+
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
 
@@ -69,6 +69,11 @@ func (s *Scheduler) checkAndWakeAgents(ctx context.Context) {
 
 	// Wake each agent
 	for _, agentID := range agentIDs {
+		// Skip disabled agents
+		if s.crew.IsAgentDisabled(agentID) {
+			logger.Debug("Scheduler: skipping disabled agent %s", agentID)
+			continue
+		}
 		s.wakeAgent(ctx, agentID)
 	}
 }
@@ -90,4 +95,3 @@ func (s *Scheduler) wakeAgent(ctx context.Context, agentID string) {
 
 	logger.Info("Successfully woke agent: %s", agentID)
 }
-
