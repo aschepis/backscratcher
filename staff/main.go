@@ -50,6 +50,33 @@ func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, works
 		},
 	})
 
+	crew.ToolProvider.RegisterSchema("memory_search_personal", agent.ToolSchema{
+		Description: "Search personal memories (type='profile') for the agent using hybrid retrieval (embeddings, tag matching, and FTS). Returns memories with raw_content, memory_type, and tags.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{
+					"type":        "string",
+					"description": "Text query to search for in personal memories. Uses hybrid search with embeddings, tags, and FTS.",
+				},
+				"tags": map[string]any{
+					"type":        "array",
+					"description": "Optional tags to match against memory tags (intersection matching).",
+					"items":       map[string]any{"type": "string"},
+				},
+				"limit": map[string]any{
+					"type":        "number",
+					"description": "Maximum number of results to return (default: 10).",
+				},
+				"memory_type": map[string]any{
+					"type":        "string",
+					"description": "Optional filter by normalized memory type (preference, biographical, habit, goal, value, project, other).",
+				},
+			},
+			"required": []string{},
+		},
+	})
+
 	crew.ToolProvider.RegisterSchema("memory_remember_fact", agent.ToolSchema{
 		Description: "Store a global factual memory about the user.",
 		Schema: map[string]any{

@@ -64,6 +64,9 @@ type SearchQuery struct {
 	IncludeGlobal  bool
 	Limit          int
 	UseHybrid      bool
+	Tags           []string // Tags to match against memory tags (intersection)
+	UseFTS         *bool    // Whether to use FTS (nil = default true when query text exists, false = explicitly disabled, true = explicitly enabled)
+	MemoryTypes    []string // Filter by normalized memory types (preference, biographical, etc.)
 }
 
 // SearchResult includes a MemoryItem plus a relevance score.

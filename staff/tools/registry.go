@@ -194,13 +194,16 @@ func (r *Registry) RegisterMemoryTools(router *memory.MemoryRouter) {
 			payload.Limit = 10
 			logger.Debug("Defaulting memory_search limit to 10 for agent=%s", agentID)
 		}
-		logger.Info("Querying memory: agentID=%s query=%.80q global=%v limit=%d", agentID, payload.Query, payload.IncludeGlobal, payload.Limit)
+		logger.Info("memory_search: Querying memory: agentID=%s query=%.80q global=%v limit=%d", agentID, payload.Query, payload.IncludeGlobal, payload.Limit)
 		results, err := router.QueryAgentMemory(ctx, agentID, payload.Query, nil, payload.IncludeGlobal, payload.Limit, nil)
 		if err != nil {
 			logger.Error("memory_search failed for agent=%s: %v", agentID, err)
 			return nil, err
 		}
-		logger.Debug("memory_search returned %d results for agent=%s", len(results), agentID)
+		logger.Info("memory_search: returned %d results for agent=%s", len(results), agentID)
+		if len(results) == 0 {
+			logger.Warn("memory_search: WARNING - no results found for query=%q, agentID=%s, includeGlobal=%v", payload.Query, agentID, payload.IncludeGlobal)
+		}
 		out := make([]map[string]any, 0, len(results))
 		for _, r := range results {
 			out = append(out, map[string]any{
@@ -211,6 +214,57 @@ func (r *Registry) RegisterMemoryTools(router *memory.MemoryRouter) {
 				"metadata": r.Item.Metadata,
 				"score":    r.Score,
 			})
+		}
+		return out, nil
+	})
+
+	r.Register("memory_search_personal", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
+		var payload struct {
+			Query      string   `json:"query"`
+			Tags       []string `json:"tags"`
+			Limit      int      `json:"limit"`
+			MemoryType string   `json:"memory_type"` // optional filter by normalized memory type
+		}
+		logger.Debug("Received call to memory_search_personal from agent=%s", agentID)
+		if err := json.Unmarshal(args, &payload); err != nil {
+			logger.Warn("Failed to decode arguments for memory_search_personal: %v", err)
+			return nil, err
+		}
+		if payload.Limit == 0 {
+			payload.Limit = 10
+			logger.Debug("Defaulting memory_search_personal limit to 10 for agent=%s", agentID)
+		}
+
+		var memoryTypes []string
+		if payload.MemoryType != "" {
+			memoryTypes = []string{payload.MemoryType}
+		}
+
+		logger.Info("Querying personal memory: agentID=%s query=%.80q tags=%v limit=%d", agentID, payload.Query, payload.Tags, payload.Limit)
+		results, err := router.QueryPersonalMemory(ctx, agentID, payload.Query, payload.Tags, payload.Limit, memoryTypes)
+		if err != nil {
+			logger.Error("memory_search_personal failed for agent=%s: %v", agentID, err)
+			return nil, err
+		}
+		logger.Debug("memory_search_personal returned %d results for agent=%s", len(results), agentID)
+		out := make([]map[string]any, 0, len(results))
+		for _, r := range results {
+			resultMap := map[string]any{
+				"id":          r.Item.ID,
+				"scope":       r.Item.Scope,
+				"type":        r.Item.Type,
+				"content":     r.Item.Content,
+				"metadata":    r.Item.Metadata,
+				"score":       r.Score,
+				"raw_content": r.Item.RawContent,
+			}
+			if r.Item.MemoryType != "" {
+				resultMap["memory_type"] = r.Item.MemoryType
+			}
+			if len(r.Item.Tags) > 0 {
+				resultMap["tags"] = r.Item.Tags
+			}
+			out = append(out, resultMap)
 		}
 		return out, nil
 	})

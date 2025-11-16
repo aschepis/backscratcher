@@ -191,6 +191,9 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 	var currentAssistantToolBlocks []anthropic.ContentBlockParamUnion
 	var currentToolResultBlocks []anthropic.ContentBlockParamUnion
 	var lastRole string
+	// Track tool_use IDs to prevent duplicates within the same message
+	seenToolUseIDs := make(map[string]bool)
+	seenToolResultIDs := make(map[string]bool)
 
 	for rows.Next() {
 		var role string
@@ -217,6 +220,9 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 				currentAssistantTextBlocks = nil
 				currentAssistantToolBlocks = nil
 				currentToolResultBlocks = nil
+				// Reset seen IDs when role changes
+				seenToolUseIDs = make(map[string]bool)
+				seenToolResultIDs = make(map[string]bool)
 			}
 
 		case "assistant":
@@ -231,6 +237,18 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 
 				// Extract tool use block fields
 				toolID, _ := toolUseData["id"].(string)
+				if toolID == "" {
+					// Skip if no tool ID
+					continue
+				}
+
+				// Check for duplicate tool_use ID
+				if seenToolUseIDs[toolID] {
+					// Skip duplicate tool_use ID
+					continue
+				}
+				seenToolUseIDs[toolID] = true
+
 				toolInput := toolUseData["input"]
 				toolNameStr := toolName.String
 
@@ -244,6 +262,11 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 						currentAssistantToolBlocks, currentToolResultBlocks, lastRole)
 					currentUserTextBlocks = nil
 					currentAssistantTextBlocks = nil
+					currentAssistantToolBlocks = nil
+					currentToolResultBlocks = nil
+					// Reset seen IDs when role changes
+					seenToolUseIDs = make(map[string]bool)
+					seenToolResultIDs = make(map[string]bool)
 				}
 			} else {
 				// Assistant text message
@@ -258,6 +281,9 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 					currentAssistantTextBlocks = []string{content}
 					currentAssistantToolBlocks = nil
 					currentToolResultBlocks = nil
+					// Reset seen IDs when role changes
+					seenToolUseIDs = make(map[string]bool)
+					seenToolResultIDs = make(map[string]bool)
 				}
 			}
 
@@ -273,6 +299,18 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 
 				// Extract tool result block fields
 				toolID, _ := toolResultData["id"].(string)
+				if toolID == "" {
+					// Skip if no tool ID
+					continue
+				}
+
+				// Check for duplicate tool result ID
+				if seenToolResultIDs[toolID] {
+					// Skip duplicate tool result ID
+					continue
+				}
+				seenToolResultIDs[toolID] = true
+
 				resultStr, _ := toolResultData["result"].(string)
 				isError, _ := toolResultData["is_error"].(bool)
 
@@ -294,6 +332,10 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 					currentUserTextBlocks = nil
 					currentAssistantTextBlocks = nil
 					currentAssistantToolBlocks = nil
+					currentToolResultBlocks = nil
+					// Reset seen IDs when role changes
+					seenToolUseIDs = make(map[string]bool)
+					seenToolResultIDs = make(map[string]bool)
 				}
 			}
 		}
@@ -381,6 +423,7 @@ func (s *chatService) AppendAssistantMessage(ctx context.Context, agentID, threa
 // toolID is the unique ID for this tool call.
 // toolName is the name of the tool being called.
 // toolInput is the input parameters for the tool (will be JSON-marshaled).
+// Uses INSERT OR IGNORE to prevent duplicate tool_use IDs in case of crashes/restarts.
 func (s *chatService) AppendToolCall(ctx context.Context, agentID, threadID, toolID, toolName string, toolInput any) error {
 	// Create a JSON object with id, input, and name fields
 	toolUseData := map[string]interface{}{
@@ -394,10 +437,11 @@ func (s *chatService) AppendToolCall(ctx context.Context, agentID, threadID, too
 	}
 
 	now := time.Now().Unix()
+	// Use INSERT OR IGNORE to prevent duplicates based on unique index on (agent_id, thread_id, tool_id)
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO conversations (agent_id, thread_id, role, content, tool_name, created_at)
-		 VALUES (?, ?, 'assistant', ?, ?, ?)`,
-		agentID, threadID, string(contentJSON), toolName, now,
+		`INSERT OR IGNORE INTO conversations (agent_id, thread_id, role, content, tool_name, tool_id, created_at)
+		 VALUES (?, ?, 'assistant', ?, ?, ?, ?)`,
+		agentID, threadID, string(contentJSON), toolName, toolID, now,
 	)
 	return err
 }
@@ -407,6 +451,7 @@ func (s *chatService) AppendToolCall(ctx context.Context, agentID, threadID, too
 // toolName is the name of the tool that produced the result.
 // result is the tool result (will be JSON-marshaled).
 // isError indicates if the result represents an error.
+// Uses INSERT OR IGNORE to prevent duplicate tool results in case of crashes/restarts.
 func (s *chatService) AppendToolResult(ctx context.Context, agentID, threadID, toolID, toolName string, result any, isError bool) error {
 	// Marshal the result to JSON string
 	var resultStr string
@@ -428,10 +473,12 @@ func (s *chatService) AppendToolResult(ctx context.Context, agentID, threadID, t
 	}
 
 	now := time.Now().Unix()
+	// Use INSERT OR IGNORE to prevent duplicates based on unique index on (agent_id, thread_id, tool_id, role)
+	// The unique index allows one 'assistant' row and one 'tool' row per tool_id, preventing duplicate results
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO conversations (agent_id, thread_id, role, content, tool_name, created_at)
-		 VALUES (?, ?, 'tool', ?, ?, ?)`,
-		agentID, threadID, string(contentJSON), toolName, now,
+		`INSERT OR IGNORE INTO conversations (agent_id, thread_id, role, content, tool_name, tool_id, created_at)
+		 VALUES (?, ?, 'tool', ?, ?, ?, ?)`,
+		agentID, threadID, string(contentJSON), toolName, toolID, now,
 	)
 	return err
 }

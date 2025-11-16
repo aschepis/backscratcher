@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/aschepis/backscratcher/staff/logger"
 )
 
 // MemoryRouter handles routing of memories between agent-private and global.
@@ -163,7 +165,9 @@ func (r *MemoryRouter) QueryAgentMemory(
 	limit int,
 	types []MemoryType,
 ) ([]SearchResult, error) {
-	return r.store.SearchMemory(ctx, SearchQuery{
+	logger.Info("QueryAgentMemory: agentID=%s, text=%q, hasEmbedding=%v, includeGlobal=%v, limit=%d, types=%v",
+		agentID, text, embedding != nil, includeGlobal, limit, types)
+	results, err := r.store.SearchMemory(ctx, SearchQuery{
 		AgentID:        &agentID,
 		IncludeGlobal:  includeGlobal,
 		QueryText:      text,
@@ -172,6 +176,12 @@ func (r *MemoryRouter) QueryAgentMemory(
 		UseHybrid:      true,
 		Types:          types,
 	})
+	if err != nil {
+		logger.Error("QueryAgentMemory: search failed: %v", err)
+		return nil, err
+	}
+	logger.Info("QueryAgentMemory: returning %d results", len(results))
+	return results, nil
 }
 
 // QueryGlobalMemory searches only global memories.
@@ -210,4 +220,42 @@ func (r *MemoryRouter) QueryAllMemory(
 		UseHybrid:      true,
 		Types:          types,
 	})
+}
+
+// QueryPersonalMemory searches for personal memories (type='profile') for a specific agent.
+// It uses hybrid retrieval combining embeddings, tag matching, and optional FTS.
+func (r *MemoryRouter) QueryPersonalMemory(
+	ctx context.Context,
+	agentID string,
+	text string,
+	tags []string,
+	limit int,
+	memoryTypes []string,
+) ([]SearchResult, error) {
+	// Generate embedding for query text if available
+	var embedding []float32
+	var err error
+	if text != "" {
+		embedding, err = r.store.EmbedText(ctx, text)
+		if err != nil {
+			// Log error but continue without embedding
+			embedding = nil
+		}
+	}
+
+	// Build query with personal memory filters
+	query := SearchQuery{
+		AgentID:        &agentID,
+		IncludeGlobal:  false, // Personal memories are agent-scoped
+		QueryText:      text,
+		QueryEmbedding: embedding,
+		Tags:           tags,
+		Limit:          limit,
+		UseHybrid:      true,
+		Types:          []MemoryType{MemoryTypeProfile}, // Only personal memories
+		MemoryTypes:    memoryTypes,
+		UseFTS:         nil, // nil = default to true when query text exists
+	}
+
+	return r.store.SearchMemory(ctx, query)
 }

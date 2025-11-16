@@ -30,6 +30,15 @@ func NewStore(db *sql.DB, embedder Embedder) (*Store, error) {
 	return s, nil
 }
 
+// EmbedText generates an embedding for the given text.
+// Returns an error if no embedder is configured.
+func (s *Store) EmbedText(ctx context.Context, text string) ([]float32, error) {
+	if s.embedder == nil {
+		return nil, fmt.Errorf("no embedder configured")
+	}
+	return s.embedder.Embed(ctx, text)
+}
+
 func (s *Store) migrate() error {
 	const schema = `
 PRAGMA foreign_keys = ON;
@@ -84,6 +93,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'tool')),
     content TEXT NOT NULL,
     tool_name TEXT NULL,
+    tool_id TEXT NULL,
     created_at INTEGER NOT NULL,
     UNIQUE(agent_id, thread_id, role, content, created_at)
 );
@@ -108,6 +118,29 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
 	if _, err := s.db.Exec(schema); err != nil {
 		logger.Error("Error executing schema migration: %v", err)
 		return err
+	}
+
+	// Migration: Add tool_id column if it doesn't exist (for existing databases)
+	_, err := s.db.Exec(`
+		ALTER TABLE conversations ADD COLUMN tool_id TEXT NULL;
+	`)
+	if err != nil {
+		// Column might already exist, which is fine
+		logger.Debug("tool_id column migration: %v (may already exist)", err)
+	}
+
+	// Migration: Add unique constraint on (agent_id, thread_id, tool_id, role) for tool calls/results
+	// SQLite doesn't support adding unique constraints directly, so we'll use a unique index
+	// Note: This allows multiple NULLs but prevents duplicate non-NULL tool_ids per thread and role
+	// This ensures each tool_id appears at most once per role (one 'assistant' tool call, one 'tool' result)
+	_, err = s.db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_tool_id 
+		ON conversations(agent_id, thread_id, tool_id, role) 
+		WHERE tool_id IS NOT NULL;
+	`)
+	if err != nil {
+		logger.Warn("Failed to create unique index on tool_id: %v", err)
+		// Non-fatal, continue
 	}
 
 	logger.Info("Schema migration executed successfully")
