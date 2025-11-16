@@ -391,3 +391,35 @@ func (r *Registry) RegisterRemoteTool(name string, caller RemoteCaller) {
 		return out, nil
 	})
 }
+
+// MCPToolInvoker represents something that can invoke an MCP tool.
+type MCPToolInvoker interface {
+	InvokeTool(ctx context.Context, originalName string, input map[string]interface{}) (map[string]interface{}, error)
+}
+
+// RegisterMCPTool registers a tool whose implementation is provided by an MCP client.
+// safeName is the tool name safe for Anthropic API (no dots).
+// originalName is the original MCP tool name (may contain dots).
+func (r *Registry) RegisterMCPTool(safeName, originalName string, invoker MCPToolInvoker) {
+	logger.Info("Registering MCP tool: safeName=%s originalName=%s", safeName, originalName)
+	r.Register(safeName, func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
+		logger.Info("Calling MCP tool: safeName=%s originalName=%s agent=%s", safeName, originalName, agentID)
+
+		// Unmarshal args to map[string]interface{}
+		var input map[string]interface{}
+		if err := json.Unmarshal(args, &input); err != nil {
+			logger.Error("Failed to unmarshal MCP tool args: %v", err)
+			return nil, fmt.Errorf("failed to unmarshal tool arguments: %w", err)
+		}
+
+		// Invoke the tool using the original name
+		result, err := invoker.InvokeTool(ctx, originalName, input)
+		if err != nil {
+			logger.Error("MCP tool '%s' (original: %s) call failed: %v", safeName, originalName, err)
+			return nil, err
+		}
+
+		logger.Debug("MCP tool '%s' (original: %s) returned result: %v", safeName, originalName, result)
+		return result, nil
+	})
+}

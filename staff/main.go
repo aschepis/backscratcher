@@ -12,6 +12,7 @@ import (
 
 	"github.com/aschepis/backscratcher/staff/agent"
 	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/aschepis/backscratcher/staff/mcp"
 	"github.com/aschepis/backscratcher/staff/memory"
 	"github.com/aschepis/backscratcher/staff/memory/ollama"
 	"github.com/aschepis/backscratcher/staff/runtime"
@@ -243,6 +244,99 @@ func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, works
 	})
 }
 
+// registerMCPServers discovers and registers tools from MCP servers.
+func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerConfig) error {
+	if len(servers) == 0 {
+		logger.Info("No MCP servers configured")
+		return nil
+	}
+
+	ctx := context.Background()
+	adapter := mcp.NewNameAdapter()
+
+	for serverName, serverConfig := range servers {
+		if serverConfig == nil {
+			logger.Warn("MCP server %s has nil config, skipping", serverName)
+			continue
+		}
+
+		logger.Info("Registering MCP server: %s", serverName)
+
+		var mcpClient mcp.MCPClient
+		var err error
+
+		// Create client based on transport type
+		if serverConfig.Command != "" {
+			// STDIO transport
+			logger.Info("Creating STDIO MCP client: command=%s", serverConfig.Command)
+			mcpClient, err = mcp.NewStdioMCPClient(serverConfig.Command, serverConfig.ConfigFile, serverConfig.Args, serverConfig.Env)
+			if err != nil {
+				logger.Error("Failed to create STDIO MCP client for %s: %v", serverName, err)
+				continue
+			}
+		} else if serverConfig.URL != "" {
+			// HTTP transport
+			logger.Info("Creating HTTP MCP client: url=%s", serverConfig.URL)
+			mcpClient, err = mcp.NewHttpMCPClient(serverConfig.URL, serverConfig.ConfigFile)
+			if err != nil {
+				logger.Error("Failed to create HTTP MCP client for %s: %v", serverName, err)
+				continue
+			}
+		} else {
+			logger.Warn("MCP server %s has neither command nor url, skipping", serverName)
+			continue
+		}
+
+		// Start the client
+		if err := mcpClient.Start(ctx); err != nil {
+			logger.Error("Failed to start MCP client for %s: %v", serverName, err)
+			mcpClient.Close()
+			continue
+		}
+
+		// Discover tools
+		tools, err := mcpClient.ListTools(ctx)
+		if err != nil {
+			logger.Error("Failed to list tools from MCP server %s: %v", serverName, err)
+			mcpClient.Close()
+			continue
+		}
+
+		logger.Info("Discovered %d tools from MCP server %s", len(tools), serverName)
+
+		// Register each tool
+		for _, tool := range tools {
+			originalName := tool.Name
+			safeName := adapter.GetSafeName(originalName)
+
+			// Register the tool handler
+			crew.ToolRegistry.RegisterMCPTool(safeName, originalName, mcpClient)
+
+			// Register the tool schema
+			// Convert inputSchema to the format expected by ToolProvider
+			schema := make(map[string]any)
+			if tool.InputSchema != nil {
+				schema = tool.InputSchema
+			} else {
+				// Default schema if none provided
+				schema = map[string]any{
+					"type":       "object",
+					"properties": make(map[string]any),
+				}
+			}
+
+			crew.ToolProvider.RegisterSchema(safeName, agent.ToolSchema{
+				Description: tool.Description,
+				Schema:      schema,
+			})
+
+			logger.Info("Registered MCP tool: safeName=%s originalName=%s server=%s", safeName, originalName, serverName)
+		}
+	}
+
+	return nil
+}
+
 func main() {
 	// Initialize logger
 	if err := logger.Init(); err != nil {
@@ -326,6 +420,13 @@ func main() {
 	if err := crew.LoadCrewConfig(*cfg); err != nil {
 		logger.Error("Failed to load crew config: %v", err)
 		log.Fatalf("Failed to load crew config: %v", err)
+	}
+
+	// Register MCP servers and their tools
+	if err := registerMCPServers(crew, cfg.MCPServers); err != nil {
+		logger.Error("Failed to register MCP servers: %v", err)
+		// Don't fail - MCP servers are optional
+		logger.Warn("Continuing without MCP servers")
 	}
 
 	// Initialize AgentRunners

@@ -7,6 +7,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// MCPServerConfig represents configuration for an MCP server.
+type MCPServerConfig struct {
+	Command    string   `yaml:"command,omitempty"`    // For STDIO transport
+	URL        string   `yaml:"url,omitempty"`        // For HTTP transport
+	ConfigFile string   `yaml:"config_file,omitempty"` // Path to server config YAML
+	Args       []string `yaml:"args,omitempty"`        // Additional args for STDIO command
+	Env        []string `yaml:"env,omitempty"`         // Environment variables for STDIO
+}
+
 // LoadCrewConfigFromFile loads a CrewConfig from a YAML file.
 func LoadCrewConfigFromFile(path string) (*CrewConfig, error) {
 	data, err := os.ReadFile(path)

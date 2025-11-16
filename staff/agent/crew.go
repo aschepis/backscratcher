@@ -26,7 +26,8 @@ type Crew struct {
 }
 
 type CrewConfig struct {
-	Agents map[string]*AgentConfig `yaml:"agents" json:"agents"`
+	Agents     map[string]*AgentConfig            `yaml:"agents" json:"agents"`
+	MCPServers map[string]*MCPServerConfig        `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
 }
 
 func NewCrew(apiKey string, db *sql.DB) *Crew {

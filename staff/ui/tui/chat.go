@@ -49,7 +49,7 @@ func (a *App) showChat(agentID string) {
 	chatDisplay.SetDynamicColors(true).
 		SetWordWrap(true).
 		SetBorder(true).
-		SetTitle(fmt.Sprintf("Chat with %s (Esc to go back, Tab to focus input)", agentName))
+		SetTitle(fmt.Sprintf("Chat with %s (Esc to go back, Tab to focus input, type 'exit' to leave)", agentName))
 	chatDisplay.SetScrollable(true)
 
 	// Display existing chat history
@@ -60,7 +60,7 @@ func (a *App) showChat(agentID string) {
 	inputField.SetLabel("You: ").
 		SetFieldWidth(0).
 		SetBorder(true).
-		SetTitle("Message (Enter to send, Tab to scroll chat, Esc to go back)")
+		SetTitle("Message (Enter to send, Tab to scroll chat, type 'exit' to leave, Esc to go back)")
 
 	// Add input capture to chat display for arrow key scrolling
 	// Must be after inputField is declared so we can reference it
@@ -121,6 +121,14 @@ func (a *App) showChat(agentID string) {
 		if key == tcell.KeyEnter {
 			message := strings.TrimSpace(inputField.GetText())
 			if message == "" {
+				return
+			}
+
+			// Check if user wants to exit the chat
+			if strings.ToLower(message) == "exit" {
+				inputField.SetText("")
+				a.pages.SwitchToPage("main")
+				a.app.SetFocus(a.sidebar)
 				return
 			}
 

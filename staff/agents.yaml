@@ -1,3 +1,16 @@
+# MCP server configuration
+mcp_servers:
+  doman_lookup:
+    command: "/Users/adamschepis/src/github.com/dotemacs/domain-lookup-mcp/domain-lookup-mcp"
+    config_file: "~/.staff/mcp/doman_lookup.json"
+# Example additional MCP server configurations:
+#   google:
+#     command: "/usr/local/bin/mcp-google"
+#     config_file: "~/.staff/mcp/google.yaml"
+#   jira:
+#     url: "https://jira.mycompany.com/mcp"
+#     config_file: "~/.staff/mcp/jira.yaml"
+
 agents:
   interviewer:
     id: interviewer
@@ -24,6 +37,7 @@ agents:
       - create_directory
       - grep_search
       - send_user_notification
+      - lookup_domains
   pesterer:
     id: pesterers
     disabled: true
