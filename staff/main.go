@@ -15,6 +15,7 @@ import (
 	"github.com/aschepis/backscratcher/staff/mcp"
 	"github.com/aschepis/backscratcher/staff/memory"
 	"github.com/aschepis/backscratcher/staff/memory/ollama"
+	"github.com/aschepis/backscratcher/staff/migrations"
 	"github.com/aschepis/backscratcher/staff/runtime"
 	"github.com/aschepis/backscratcher/staff/tools"
 	"github.com/aschepis/backscratcher/staff/ui"
@@ -554,6 +555,12 @@ func main() {
 		log.Fatalf("Failed to open database: %v", err)
 	}
 	defer db.Close() //nolint:errcheck // No remedy for db close errors
+
+	// Run database migrations
+	if err := migrations.RunMigrations(db, "./migrations"); err != nil {
+		logger.Error("Failed to run migrations: %v", err)
+		log.Fatalf("Failed to run migrations: %v", err)
+	}
 
 	embedder, err := ollama.NewEmbedder(ollama.ModelMXBAI)
 	if err != nil {
