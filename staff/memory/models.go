@@ -71,7 +71,7 @@ type SearchQuery struct {
 
 // SearchResult includes a MemoryItem plus a relevance score.
 type SearchResult struct {
-	Item  MemoryItem
+	Item  *MemoryItem
 	Score float64
 }
 

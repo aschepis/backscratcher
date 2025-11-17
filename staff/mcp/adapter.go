@@ -47,4 +47,3 @@ func (a *NameAdapter) GetSafeName(original string) string {
 	a.RegisterMapping(original, safe)
 	return safe
 }
-

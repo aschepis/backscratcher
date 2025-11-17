@@ -12,17 +12,17 @@ import (
 type State string
 
 const (
-	StateIdle           State = "idle"
-	StateRunning        State = "running"
-	StateWaitingHuman   State = "waiting_human"
+	StateIdle            State = "idle"
+	StateRunning         State = "running"
+	StateWaitingHuman    State = "waiting_human"
 	StateWaitingExternal State = "waiting_external"
-	StateSleeping       State = "sleeping"
+	StateSleeping        State = "sleeping"
 )
 
 // AgentState represents the state of an agent in the database
 type AgentState struct {
-	AgentID  string
-	State    State
+	AgentID   string
+	State     State
 	UpdatedAt int64
 }
 
@@ -57,7 +57,7 @@ func (sm *StateManager) GetState(agentID string) (State, error) {
 		`SELECT state, updated_at FROM agent_states WHERE agent_id = ?`,
 		agentID,
 	).Scan(&stateStr, &updatedAt)
-	
+
 	if err == sql.ErrNoRows {
 		// Agent has no state yet, return idle as default
 		return StateIdle, nil
@@ -65,7 +65,7 @@ func (sm *StateManager) GetState(agentID string) (State, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to get agent state: %w", err)
 	}
-	
+
 	return State(stateStr), nil
 }
 
@@ -77,7 +77,7 @@ func (sm *StateManager) SetState(agentID string, state State) error {
 // SetStateWithNextWake updates the state of an agent and optionally sets next_wake
 func (sm *StateManager) SetStateWithNextWake(agentID string, state State, nextWake *time.Time) error {
 	now := time.Now().Unix()
-	
+
 	// Validate state
 	validStates := []State{StateIdle, StateRunning, StateWaitingHuman, StateWaitingExternal, StateSleeping}
 	valid := false
@@ -97,7 +97,7 @@ func (sm *StateManager) SetStateWithNextWake(agentID string, state State, nextWa
 	} else {
 		nextWakeUnix = nil
 	}
-	
+
 	_, err := sm.db.Exec(
 		`INSERT INTO agent_states (agent_id, state, updated_at, next_wake)
 		 VALUES (?, ?, ?, ?)
@@ -114,7 +114,7 @@ func (sm *StateManager) SetStateWithNextWake(agentID string, state State, nextWa
 		logger.Error("Failed to set agent state: agentID=%s state=%s error=%v", agentID, state, err)
 		return fmt.Errorf("failed to set agent state: %w", err)
 	}
-	
+
 	logger.Info("Agent state updated: agentID=%s state=%s next_wake=%v", agentID, state, nextWakeUnix)
 	return nil
 }
@@ -125,8 +125,8 @@ func (sm *StateManager) GetAllStates() (map[string]State, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query agent states: %w", err)
 	}
-	defer rows.Close()
-	
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
+
 	states := make(map[string]State)
 	for rows.Next() {
 		var agentID string
@@ -136,11 +136,11 @@ func (sm *StateManager) GetAllStates() (map[string]State, error) {
 		}
 		states[agentID] = State(stateStr)
 	}
-	
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating agent states: %w", err)
 	}
-	
+
 	return states, nil
 }
 
@@ -150,8 +150,8 @@ func (sm *StateManager) GetAgentsByState(state State) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query agents by state: %w", err)
 	}
-	defer rows.Close()
-	
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
+
 	var agentIDs []string
 	for rows.Next() {
 		var agentID string
@@ -160,18 +160,18 @@ func (sm *StateManager) GetAgentsByState(state State) ([]string, error) {
 		}
 		agentIDs = append(agentIDs, agentID)
 	}
-	
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating agents by state: %w", err)
 	}
-	
+
 	return agentIDs, nil
 }
 
 // SetNextWake sets the next wake time for an agent
 func (sm *StateManager) SetNextWake(agentID string, nextWake time.Time) error {
 	nextWakeUnix := nextWake.Unix()
-	
+
 	_, err := sm.db.Exec(
 		`UPDATE agent_states SET next_wake = ? WHERE agent_id = ?`,
 		nextWakeUnix,
@@ -181,7 +181,7 @@ func (sm *StateManager) SetNextWake(agentID string, nextWake time.Time) error {
 		logger.Error("Failed to set next wake: agentID=%s nextWake=%d error=%v", agentID, nextWakeUnix, err)
 		return fmt.Errorf("failed to set next wake: %w", err)
 	}
-	
+
 	logger.Info("Agent next wake updated: agentID=%s nextWake=%d", agentID, nextWakeUnix)
 	return nil
 }
@@ -193,18 +193,18 @@ func (sm *StateManager) GetNextWake(agentID string) (*time.Time, error) {
 		`SELECT next_wake FROM agent_states WHERE agent_id = ?`,
 		agentID,
 	).Scan(&nextWakeUnix)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get next wake: %w", err)
 	}
-	
+
 	if !nextWakeUnix.Valid {
 		return nil, nil
 	}
-	
+
 	nextWake := time.Unix(nextWakeUnix.Int64, 0)
 	return &nextWake, nil
 }
@@ -222,8 +222,8 @@ func (sm *StateManager) GetAgentsReadyToWake() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query agents ready to wake: %w", err)
 	}
-	defer rows.Close()
-	
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
+
 	var agentIDs []string
 	for rows.Next() {
 		var agentID string
@@ -232,11 +232,11 @@ func (sm *StateManager) GetAgentsReadyToWake() ([]string, error) {
 		}
 		agentIDs = append(agentIDs, agentID)
 	}
-	
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating agents ready to wake: %w", err)
 	}
-	
+
 	return agentIDs, nil
 }
 
@@ -269,7 +269,7 @@ func (sm *StatsManager) IncrementExecutionCount(agentID string) error {
 }
 
 // IncrementFailureCount increments the failure count and updates last_failure timestamp and message
-func (sm *StatsManager) IncrementFailureCount(agentID string, errorMessage string) error {
+func (sm *StatsManager) IncrementFailureCount(agentID, errorMessage string) error {
 	now := time.Now().Unix()
 	_, err := sm.db.Exec(
 		`INSERT INTO agent_stats (agent_id, failure_count, last_failure, last_failure_message)
@@ -318,12 +318,12 @@ func (sm *StatsManager) GetStats(agentID string) (map[string]interface{}, error)
 	if err == sql.ErrNoRows {
 		// Return zero stats if agent has no stats yet
 		return map[string]interface{}{
-			"agent_id":           agentID,
-			"execution_count":    0,
-			"failure_count":      0,
-			"wakeup_count":       0,
-			"last_execution":     nil,
-			"last_failure":       nil,
+			"agent_id":             agentID,
+			"execution_count":      0,
+			"failure_count":        0,
+			"wakeup_count":         0,
+			"last_execution":       nil,
+			"last_failure":         nil,
 			"last_failure_message": nil,
 		}, nil
 	}
@@ -368,7 +368,7 @@ func (sm *StatsManager) GetAllStats() ([]map[string]interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query agent stats: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
 
 	var results []map[string]interface{}
 	for rows.Next() {
@@ -415,4 +415,3 @@ func (sm *StatsManager) GetAllStats() ([]map[string]interface{}, error) {
 
 	return results, nil
 }
-

@@ -20,7 +20,7 @@ type AnthropicSummarizer struct {
 }
 
 // NewAnthropicSummarizer returns a configured summarizer.
-func NewAnthropicSummarizer(model string, apiKey string, maxTokens int) *AnthropicSummarizer {
+func NewAnthropicSummarizer(model, apiKey string, maxTokens int) *AnthropicSummarizer {
 	if apiKey == "" {
 		apiKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
@@ -75,8 +75,8 @@ Episodes:
 %s`, transcript)
 
 	payload := map[string]interface{}{
-		"model":      s.Model,
-		"max_tokens": s.MaxTokens,
+		"model":       s.Model,
+		"max_tokens":  s.MaxTokens,
 		"temperature": 0.1,
 		"messages": []map[string]interface{}{
 			{
@@ -112,7 +112,7 @@ Episodes:
 	if err != nil {
 		return "", fmt.Errorf("AnthropicSummarizer: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // Body close error can be ignored
 
 	if resp.StatusCode >= 400 {
 		var apiErr map[string]interface{}

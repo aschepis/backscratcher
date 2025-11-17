@@ -12,14 +12,14 @@ import (
 // StaffToolsData provides the data needed for staff tools without creating import cycles
 type StaffToolsData struct {
 	// Agent data
-	GetAgents      func() map[string]AgentConfigData
-	GetAgentState  func(agentID string) (string, *int64, error) // returns state, next_wake unix timestamp, error
-	GetAllStates   func() (map[string]string, error)             // returns map[agentID]state
-	GetNextWake    func(agentID string) (*int64, error)          // returns next_wake unix timestamp
+	GetAgents     func() map[string]AgentConfigData
+	GetAgentState func(agentID string) (string, *int64, error) // returns state, next_wake unix timestamp, error
+	GetAllStates  func() (map[string]string, error)            // returns map[agentID]state
+	GetNextWake   func(agentID string) (*int64, error)         // returns next_wake unix timestamp
 
 	// Stats data
-	GetStats      func(agentID string) (map[string]interface{}, error)
-	GetAllStats   func() ([]map[string]interface{}, error)
+	GetStats    func(agentID string) (map[string]interface{}, error)
+	GetAllStats func() ([]map[string]interface{}, error)
 
 	// Tool data
 	GetAllToolSchemas func() map[string]ToolSchemaData
@@ -30,14 +30,14 @@ type StaffToolsData struct {
 }
 
 type AgentConfigData struct {
-	ID          string
-	Name        string
-	System      string
-	Model       string
-	MaxTokens   int64
-	Tools       []string
-	Schedule    string
-	Disabled    bool
+	ID           string
+	Name         string
+	System       string
+	Model        string
+	MaxTokens    int64
+	Tools        []string
+	Schedule     string
+	Disabled     bool
 	StartupDelay string
 }
 
@@ -46,12 +46,12 @@ type ToolSchemaData struct {
 }
 
 type MCPServerData struct {
-	Name      string
-	Command   string
-	URL       string
+	Name       string
+	Command    string
+	URL        string
 	ConfigFile string
-	Args      []string
-	Env       []string
+	Args       []string
+	Env        []string
 }
 
 type MCPClientData interface {
@@ -63,7 +63,6 @@ type MCPToolDefinition struct {
 	Description string
 	InputSchema map[string]interface{}
 }
-
 
 // RegisterStaffTools registers staff-specific introspection tools for the chief_of_staff agent
 func (r *Registry) RegisterStaffTools(
@@ -81,13 +80,13 @@ func (r *Registry) RegisterStaffTools(
 		agentConfigs := data.GetAgents()
 		for id, cfg := range agentConfigs {
 			agentMap := map[string]any{
-				"id":        id,
-				"name":      cfg.Name,
-				"disabled":  cfg.Disabled,
-				"schedule":  cfg.Schedule,
-				"model":     cfg.Model,
+				"id":         id,
+				"name":       cfg.Name,
+				"disabled":   cfg.Disabled,
+				"schedule":   cfg.Schedule,
+				"model":      cfg.Model,
 				"max_tokens": cfg.MaxTokens,
-				"tools":     cfg.Tools,
+				"tools":      cfg.Tools,
 			}
 			if cfg.System != "" {
 				agentMap["system"] = cfg.System
@@ -285,9 +284,9 @@ func (r *Registry) RegisterStaffTools(
 
 			for _, tool := range tools {
 				allTools = append(allTools, map[string]any{
-					"server":      payload.ServerName,
-					"name":        tool.Name,
-					"description": tool.Description,
+					"server":       payload.ServerName,
+					"name":         tool.Name,
+					"description":  tool.Description,
 					"input_schema": tool.InputSchema,
 				})
 			}
@@ -302,9 +301,9 @@ func (r *Registry) RegisterStaffTools(
 
 				for _, tool := range tools {
 					allTools = append(allTools, map[string]any{
-						"server":      serverName,
-						"name":        tool.Name,
-						"description": tool.Description,
+						"server":       serverName,
+						"name":         tool.Name,
+						"description":  tool.Description,
 						"input_schema": tool.InputSchema,
 					})
 				}
@@ -317,4 +316,3 @@ func (r *Registry) RegisterStaffTools(
 		}, nil
 	})
 }
-

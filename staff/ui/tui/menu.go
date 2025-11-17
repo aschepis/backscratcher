@@ -19,12 +19,11 @@ func (a *App) showInbox() {
 	inboxList.SetBorder(true).SetTitle("Inbox - Select to View Details (a: Archive, r: Refresh)")
 
 	// Store current items for archiving - this will be updated on each refresh
-	var currentItems []ui.InboxItem
+	var currentItems []*ui.InboxItem
 	var itemsMutex sync.RWMutex
 
 	// Load inbox items
-	var refreshInbox func()
-	refreshInbox = func() {
+	refreshInbox := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -168,7 +167,7 @@ func (a *App) showInbox() {
 	a.app.SetFocus(inboxList)
 }
 
-func (a *App) showInboxItemDetail(item ui.InboxItem) {
+func (a *App) showInboxItemDetail(item *ui.InboxItem) {
 	detailView := tview.NewTextView()
 	detailView.SetDynamicColors(true).
 		SetWordWrap(true).

@@ -171,37 +171,36 @@ func (c *Crew) InitializeAgents() error {
 					return fmt.Errorf("failed to initialize agent state for %s: %w", id, err)
 				}
 			}
-		} else {
+			return nil
+		} else if cfg.StartupDelay != "" {
 			// Agent state already exists - check if we need to apply startup delay
 			// Startup delay should apply on every app startup if the agent is idle or doesn't have a next_wake set
-			if cfg.StartupDelay != "" {
-				currentState, err := c.stateManager.GetState(id)
-				if err != nil {
-					return fmt.Errorf("failed to get state for agent %s: %w", id, err)
-				}
-				currentNextWake, err := c.stateManager.GetNextWake(id)
-				if err != nil {
-					return fmt.Errorf("failed to get next_wake for agent %s: %w", id, err)
-				}
+			currentState, err := c.stateManager.GetState(id)
+			if err != nil {
+				return fmt.Errorf("failed to get state for agent %s: %w", id, err)
+			}
+			currentNextWake, err := c.stateManager.GetNextWake(id)
+			if err != nil {
+				return fmt.Errorf("failed to get next_wake for agent %s: %w", id, err)
+			}
 
-				// Apply startup delay if agent is idle and has no next_wake, or if next_wake is in the past
-				shouldApplyDelay := (currentState == StateIdle && currentNextWake == nil) ||
-					(currentNextWake != nil && currentNextWake.Before(time.Now()))
+			// Apply startup delay if agent is idle and has no next_wake, or if next_wake is in the past
+			shouldApplyDelay := (currentState == StateIdle && currentNextWake == nil) ||
+				(currentNextWake != nil && currentNextWake.Before(time.Now()))
 
-				if shouldApplyDelay {
-					delay, err := time.ParseDuration(cfg.StartupDelay)
-					if err != nil {
-						return fmt.Errorf("failed to parse startup_delay for agent %s: %w", id, err)
-					}
-					now := time.Now()
-					wakeTime := now.Add(delay)
-					logger.Info("Agent %s: applying startup_delay of %v (existing state=%s), will wake at %v", id, delay, currentState, wakeTime.Format(time.RFC3339))
-					if err := c.stateManager.SetStateWithNextWake(id, StateWaitingExternal, &wakeTime); err != nil {
-						return fmt.Errorf("failed to apply startup_delay for agent %s: %w", id, err)
-					}
-				} else {
-					logger.Info("Agent %s: state exists, skipping startup_delay (state=%s, next_wake=%v)", id, currentState, currentNextWake)
+			if shouldApplyDelay {
+				delay, err := time.ParseDuration(cfg.StartupDelay)
+				if err != nil {
+					return fmt.Errorf("failed to parse startup_delay for agent %s: %w", id, err)
 				}
+				now := time.Now()
+				wakeTime := now.Add(delay)
+				logger.Info("Agent %s: applying startup_delay of %v (existing state=%s), will wake at %v", id, delay, currentState, wakeTime.Format(time.RFC3339))
+				if err := c.stateManager.SetStateWithNextWake(id, StateWaitingExternal, &wakeTime); err != nil {
+					return fmt.Errorf("failed to apply startup_delay for agent %s: %w", id, err)
+				}
+			} else {
+				logger.Info("Agent %s: state exists, skipping startup_delay (state=%s, next_wake=%v)", id, currentState, currentNextWake)
 			}
 		}
 	}

@@ -13,7 +13,7 @@ import (
 )
 
 // SearchMemory executes keyword / embedding / tag / hybrid search over memory_items.
-func (s *Store) SearchMemory(ctx context.Context, q SearchQuery) ([]SearchResult, error) {
+func (s *Store) SearchMemory(ctx context.Context, q *SearchQuery) ([]SearchResult, error) {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = 20
@@ -124,7 +124,7 @@ func (s *Store) SearchMemory(ctx context.Context, q SearchQuery) ([]SearchResult
 	for _, r := range byTags {
 		if existing, ok := results[r.Item.ID]; ok {
 			// Combine scores: weighted average
-			existing.Score = existing.Score + r.Score*tagWeight
+			existing.Score += r.Score * tagWeight
 			results[r.Item.ID] = existing
 		} else {
 			results[r.Item.ID] = SearchResult{
@@ -138,7 +138,7 @@ func (s *Store) SearchMemory(ctx context.Context, q SearchQuery) ([]SearchResult
 	for _, r := range byKeyword {
 		if existing, ok := results[r.Item.ID]; ok {
 			// Combine scores: weighted average
-			existing.Score = existing.Score + r.Score*ftsWeight
+			existing.Score += r.Score * ftsWeight
 			results[r.Item.ID] = existing
 		} else {
 			results[r.Item.ID] = SearchResult{
@@ -164,7 +164,7 @@ func (s *Store) SearchMemory(ctx context.Context, q SearchQuery) ([]SearchResult
 	return merged, nil
 }
 
-func (s *Store) searchByKeyword(ctx context.Context, q SearchQuery, limit int) ([]SearchResult, error) {
+func (s *Store) searchByKeyword(ctx context.Context, q *SearchQuery, limit int) ([]SearchResult, error) {
 	logger.Debug("searchByKeyword: query=%q, limit=%d", q.QueryText, limit)
 	rows, err := s.db.QueryContext(ctx, `
 SELECT rowid
@@ -176,7 +176,7 @@ LIMIT ?
 		logger.Error("searchByKeyword: FTS query failed: %v", err)
 		return nil, fmt.Errorf("fts query: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
 
 	var ids []int64
 	for rows.Next() {
@@ -226,7 +226,7 @@ LIMIT ?
 // loadMemoryItemFromRow scans a database row and returns a MemoryItem.
 // It expects the SELECT to include: id, agent_id, thread_id, scope, type, content,
 // embedding, metadata, created_at, updated_at, importance, raw_content, memory_type, tags_json
-func loadMemoryItemFromRow(rows *sql.Rows) (MemoryItem, error) {
+func loadMemoryItemFromRow(rows *sql.Rows) (*MemoryItem, error) {
 	var (
 		id          int64
 		agentIDStr  sql.NullString
@@ -246,12 +246,12 @@ func loadMemoryItemFromRow(rows *sql.Rows) (MemoryItem, error) {
 	if err := rows.Scan(&id, &agentIDStr, &threadIDStr, &scopeStr, &typStr, &content,
 		&embBlob, &metaJSON, &createdAt, &updatedAt, &importance,
 		&rawContent, &memoryType, &tagsJSON); err != nil {
-		return MemoryItem{}, err
+		return nil, err
 	}
 
 	vec, err := DecodeEmbedding(embBlob)
 	if err != nil {
-		return MemoryItem{}, err
+		return nil, err
 	}
 
 	var meta map[string]interface{}
@@ -278,7 +278,7 @@ func loadMemoryItemFromRow(rows *sql.Rows) (MemoryItem, error) {
 		}
 	}
 
-	item := MemoryItem{
+	item := &MemoryItem{
 		ID:         id,
 		AgentID:    agentPtr,
 		ThreadID:   threadPtr,
@@ -304,28 +304,32 @@ func loadMemoryItemFromRow(rows *sql.Rows) (MemoryItem, error) {
 	return item, nil
 }
 
-func (s *Store) searchByVector(ctx context.Context, q SearchQuery, limit int) ([]SearchResult, error) {
+func (s *Store) searchByVector(ctx context.Context, q *SearchQuery, limit int) ([]SearchResult, error) {
 	const candidateLimit = 500
 
 	where, args := buildFilterWhere(q)
-	query := `
+	var query strings.Builder
+	query.WriteString(`
 SELECT id, agent_id, thread_id, scope, type, content,
        embedding, metadata, created_at, updated_at, importance,
        raw_content, memory_type, tags_json
 FROM memory_items
-` + where + `
+WHERE `)
+	query.WriteString(where)
+	query.WriteString(`
 ORDER BY created_at DESC
 LIMIT ?
-`
+`)
 	args = append(args, candidateLimit)
-	logger.Debug("searchByVector: query=%q, args=%v", query, args)
+	queryStr := query.String()
+	logger.Debug("searchByVector: query=%q, args=%v", queryStr, args)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
 		logger.Error("searchByVector: query failed: %v", err)
 		return nil, fmt.Errorf("vector query: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
 
 	var results []SearchResult
 	scannedCount := 0
@@ -382,7 +386,7 @@ LIMIT ?
 
 // searchByTags searches memories by tag intersection.
 // Returns results with scores based on the ratio of matching tags.
-func (s *Store) searchByTags(ctx context.Context, q SearchQuery, limit int) ([]SearchResult, error) {
+func (s *Store) searchByTags(ctx context.Context, q *SearchQuery, limit int) ([]SearchResult, error) {
 	if len(q.Tags) == 0 {
 		return nil, nil
 	}
@@ -390,24 +394,28 @@ func (s *Store) searchByTags(ctx context.Context, q SearchQuery, limit int) ([]S
 	where, args := buildFilterWhere(q)
 	// We need to load all candidate memories and filter by tags in Go
 	// since SQLite JSON extraction can be tricky for array intersection
-	query := `
+	var query strings.Builder
+	query.WriteString(`
 SELECT id, agent_id, thread_id, scope, type, content,
        embedding, metadata, created_at, updated_at, importance,
        raw_content, memory_type, tags_json
 FROM memory_items
-` + where + `
+WHERE `)
+	query.WriteString(where)
+	query.WriteString(`
 ORDER BY created_at DESC
 LIMIT ?
-`
+`)
 	// Use a higher limit to get candidates, then filter by tags
 	const candidateLimit = 500
 	args = append(args, candidateLimit)
+	queryStr := query.String()
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
 		return nil, fmt.Errorf("tag query: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
 
 	// Build a set of query tags for fast lookup
 	queryTagSet := make(map[string]bool)
@@ -470,7 +478,7 @@ LIMIT ?
 	return results, nil
 }
 
-func (s *Store) loadItemsByIDs(ctx context.Context, ids []int64) ([]MemoryItem, error) {
+func (s *Store) loadItemsByIDs(ctx context.Context, ids []int64) ([]*MemoryItem, error) {
 	if len(ids) == 0 {
 		logger.Debug("loadItemsByIDs: no IDs provided")
 		return nil, nil
@@ -481,22 +489,26 @@ func (s *Store) loadItemsByIDs(ctx context.Context, ids []int64) ([]MemoryItem, 
 		placeholders[i] = "?"
 		args[i] = id
 	}
-	query := `
+	var query strings.Builder
+	query.WriteString(`
 SELECT id, agent_id, thread_id, scope, type, content,
        embedding, metadata, created_at, updated_at, importance,
        raw_content, memory_type, tags_json
 FROM memory_items
-WHERE id IN (` + strings.Join(placeholders, ",") + `)
-`
+WHERE id IN (`)
+	query.WriteString(strings.Join(placeholders, ","))
+	query.WriteString(`)
+`)
+	queryStr := query.String()
 	logger.Debug("loadItemsByIDs: loading %d items with IDs: %v", len(ids), ids)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
 		logger.Error("loadItemsByIDs: query failed: %v", err)
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
 
-	var items []MemoryItem
+	var items []*MemoryItem
 	for rows.Next() {
 		item, err := loadMemoryItemFromRow(rows)
 		if err != nil {
@@ -516,9 +528,9 @@ WHERE id IN (` + strings.Join(placeholders, ",") + `)
 	return items, nil
 }
 
-func buildFilterWhere(q SearchQuery) (string, []interface{}) {
+func buildFilterWhere(q *SearchQuery) (string, []any) {
 	var clauses []string
-	var args []interface{}
+	var args []any
 
 	if q.AgentID != nil {
 		if q.IncludeGlobal {
@@ -556,14 +568,14 @@ func buildFilterWhere(q SearchQuery) (string, []interface{}) {
 	}
 	if len(clauses) == 0 {
 		logger.Debug("buildFilterWhere: no filters, returning WHERE 1=1")
-		return "WHERE 1=1", nil
+		return "1=1", nil
 	}
-	whereClause := "WHERE " + strings.Join(clauses, " AND ")
+	whereClause := strings.Join(clauses, " AND ")
 	logger.Debug("buildFilterWhere: built WHERE clause: %q with args: %v", whereClause, args)
 	return whereClause, args
 }
 
-func applyFilters(item MemoryItem, q SearchQuery) bool {
+func applyFilters(item *MemoryItem, q *SearchQuery) bool {
 	if q.AgentID != nil {
 		if q.IncludeGlobal {
 			if item.Scope == ScopeAgent {

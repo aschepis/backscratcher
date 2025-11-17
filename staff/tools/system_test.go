@@ -110,7 +110,7 @@ func TestExecuteCommandWorkingDir(t *testing.T) {
 
 	// Create a subdirectory
 	subDir := filepath.Join(workspacePath, "subdir")
-	os.MkdirAll(subDir, 0755)
+	_ = os.MkdirAll(subDir, 0o750) //nolint:errcheck // Test setup
 
 	reg := NewRegistry()
 	reg.RegisterSystemTools(workspacePath)
@@ -186,4 +186,3 @@ func TestExecuteCommandSecurity(t *testing.T) {
 		})
 	}
 }
-

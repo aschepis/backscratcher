@@ -13,7 +13,7 @@ func TestStorePersonalMemory_Smoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open in-memory sqlite: %v", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck // Test cleanup
 
 	store, err := NewStore(db, nil)
 	if err != nil {

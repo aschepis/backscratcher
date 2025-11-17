@@ -9,8 +9,8 @@ import (
 
 // MCPServerConfig represents configuration for an MCP server.
 type MCPServerConfig struct {
-	Command    string   `yaml:"command,omitempty"`    // For STDIO transport
-	URL        string   `yaml:"url,omitempty"`        // For HTTP transport
+	Command    string   `yaml:"command,omitempty"`     // For STDIO transport
+	URL        string   `yaml:"url,omitempty"`         // For HTTP transport
 	ConfigFile string   `yaml:"config_file,omitempty"` // Path to server config YAML
 	Args       []string `yaml:"args,omitempty"`        // Additional args for STDIO command
 	Env        []string `yaml:"env,omitempty"`         // Environment variables for STDIO
@@ -18,7 +18,7 @@ type MCPServerConfig struct {
 
 // LoadCrewConfigFromFile loads a CrewConfig from a YAML file.
 func LoadCrewConfigFromFile(path string) (*CrewConfig, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //#nosec 304 -- intentional file read for config
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %q: %w", path, err)
 	}

@@ -39,7 +39,7 @@ ORDER BY created_at ASC
 	if err != nil {
 		return MemoryItem{}, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
 
 	var episodes []MemoryItem
 	for rows.Next() {

@@ -428,10 +428,10 @@ func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, works
 }
 
 // registerMCPServers discovers and registers tools from MCP servers.
-func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerConfig) error {
+func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerConfig) {
 	if len(servers) == 0 {
 		logger.Info("No MCP servers configured")
-		return nil
+		return
 	}
 
 	ctx := context.Background()
@@ -449,7 +449,8 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 		var err error
 
 		// Create client based on transport type
-		if serverConfig.Command != "" {
+		switch {
+		case serverConfig.Command != "":
 			// STDIO transport
 			logger.Info("Creating STDIO MCP client: command=%s", serverConfig.Command)
 			mcpClient, err = mcp.NewStdioMCPClient(serverConfig.Command, serverConfig.ConfigFile, serverConfig.Args, serverConfig.Env)
@@ -457,7 +458,7 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 				logger.Error("Failed to create STDIO MCP client for %s: %v", serverName, err)
 				continue
 			}
-		} else if serverConfig.URL != "" {
+		case serverConfig.URL != "":
 			// HTTP transport
 			logger.Info("Creating HTTP MCP client: url=%s", serverConfig.URL)
 			mcpClient, err = mcp.NewHttpMCPClient(serverConfig.URL, serverConfig.ConfigFile)
@@ -465,7 +466,7 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 				logger.Error("Failed to create HTTP MCP client for %s: %v", serverName, err)
 				continue
 			}
-		} else {
+		default:
 			logger.Warn("MCP server %s has neither command nor url, skipping", serverName)
 			continue
 		}
@@ -473,7 +474,7 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 		// Start the client
 		if err := mcpClient.Start(ctx); err != nil {
 			logger.Error("Failed to start MCP client for %s: %v", serverName, err)
-			mcpClient.Close()
+			_ = mcpClient.Close() //nolint:errcheck // Cleanup on error
 			continue
 		}
 
@@ -481,7 +482,7 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 		tools, err := mcpClient.ListTools(ctx)
 		if err != nil {
 			logger.Error("Failed to list tools from MCP server %s: %v", serverName, err)
-			mcpClient.Close()
+			_ = mcpClient.Close() //nolint:errcheck // Cleanup on error
 			continue
 		}
 
@@ -497,7 +498,7 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 
 			// Register the tool schema
 			// Convert inputSchema to the format expected by ToolProvider
-			schema := make(map[string]any)
+			var schema map[string]any
 			if tool.InputSchema != nil {
 				schema = tool.InputSchema
 			} else {
@@ -520,8 +521,6 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 		crew.MCPServers[serverName] = serverConfig
 		crew.MCPClients[serverName] = mcpClient
 	}
-
-	return nil
 }
 
 func main() {
@@ -529,7 +528,7 @@ func main() {
 	if err := logger.Init(); err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
-	defer logger.Close()
+	defer logger.Close() //nolint:errcheck // No remedy for logger close errors
 
 	logger.Info("Starting Staff application")
 
@@ -540,7 +539,8 @@ func main() {
 	anthropicAPIKey := os.Getenv("ANTHROPIC_API_KEY")
 	if anthropicAPIKey == "" {
 		logger.Error("Missing ANTHROPIC_API_KEY")
-		log.Fatalf("Missing ANTHROPIC_API_KEY")
+		_ = logger.Close()                      //nolint:errcheck // Closing before fatal exit
+		log.Fatalf("Missing ANTHROPIC_API_KEY") //nolint:gocritic // Fatal exit
 	}
 
 	// ---------------------------
@@ -553,7 +553,7 @@ func main() {
 		logger.Error("Failed to open database: %v", err)
 		log.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck // No remedy for db close errors
 
 	embedder, err := ollama.NewEmbedder(ollama.ModelMXBAI)
 	if err != nil {
@@ -610,11 +610,7 @@ func main() {
 	}
 
 	// Register MCP servers and their tools
-	if err := registerMCPServers(crew, cfg.MCPServers); err != nil {
-		logger.Error("Failed to register MCP servers: %v", err)
-		// Don't fail - MCP servers are optional
-		logger.Warn("Continuing without MCP servers")
-	}
+	registerMCPServers(crew, cfg.MCPServers)
 
 	// Initialize AgentRunners
 	if err := crew.InitializeAgents(); err != nil {

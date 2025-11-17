@@ -111,14 +111,14 @@ func (r *Registry) RegisterSystemTools(workspacePath string) {
 		// Build command
 		var cmd *exec.Cmd
 		if len(payload.Args) > 0 {
-			cmd = exec.CommandContext(cmdCtx, payload.Command, payload.Args...)
+			cmd = exec.CommandContext(cmdCtx, payload.Command, payload.Args...) //#nosec G204 -- intentional command execution
 		} else {
 			// If no args, try to split the command string (for shell commands)
 			parts := strings.Fields(payload.Command)
 			if len(parts) > 1 {
-				cmd = exec.CommandContext(cmdCtx, parts[0], parts[1:]...)
+				cmd = exec.CommandContext(cmdCtx, parts[0], parts[1:]...) //#nosec G204 -- intentional command execution
 			} else {
-				cmd = exec.CommandContext(cmdCtx, payload.Command)
+				cmd = exec.CommandContext(cmdCtx, payload.Command) //#nosec G204 -- intentional command execution
 			}
 		}
 

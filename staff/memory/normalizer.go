@@ -22,7 +22,7 @@ type Normalizer struct {
 }
 
 // NewNormalizer constructs a Normalizer configured for the Anthropic Messages API.
-func NewNormalizer(model string, apiKey string, maxTokens int) *Normalizer {
+func NewNormalizer(model, apiKey string, maxTokens int) *Normalizer {
 	if apiKey == "" {
 		apiKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
@@ -154,7 +154,7 @@ func (n *Normalizer) callAnthropic(ctx context.Context, body []byte) (string, st
 		if resp.StatusCode >= 400 {
 			var apiErr map[string]interface{}
 			_ = json.NewDecoder(resp.Body).Decode(&apiErr)
-			resp.Body.Close()
+			_ = resp.Body.Close() //nolint:errcheck // Body close error can be ignored
 			lastErr = fmt.Errorf("normalizer: API error %s: %v", resp.Status, apiErr)
 			continue
 		}
@@ -166,11 +166,11 @@ func (n *Normalizer) callAnthropic(ctx context.Context, body []byte) (string, st
 			} `json:"content"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&msgResp); err != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close() //nolint:errcheck // Body close error can be ignored
 			lastErr = fmt.Errorf("normalizer: decode response: %w", err)
 			continue
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close() //nolint:errcheck // Body close error can be ignored
 
 		if len(msgResp.Content) == 0 {
 			lastErr = fmt.Errorf("normalizer: empty content in response")
@@ -199,13 +199,13 @@ func (n *Normalizer) callAnthropic(ctx context.Context, body []byte) (string, st
 
 var (
 	allowedTypes = map[string]struct{}{
-		"preference":  {},
+		"preference":   {},
 		"biographical": {},
-		"habit":       {},
-		"goal":        {},
-		"value":       {},
-		"project":     {},
-		"other":       {},
+		"habit":        {},
+		"goal":         {},
+		"value":        {},
+		"project":      {},
+		"other":        {},
 	}
 
 	tagSanitizer = regexp.MustCompile(`[^a-z0-9_-]+`)
@@ -243,5 +243,3 @@ func sanitizeTags(tags []string) []string {
 func stripSecrets(s string) string {
 	return secretLike.ReplaceAllString(s, "[redacted]")
 }
-
-

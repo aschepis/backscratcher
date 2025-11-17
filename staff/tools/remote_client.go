@@ -16,9 +16,10 @@ import (
 // process.
 //
 // Expected server contract (you can adapt as needed):
-//   POST {BaseURL}/tools/{toolName}
-//   Body:  { "args": { ... } }
-//   Response: arbitrary JSON, returned as-is to the model.
+//
+//	POST {BaseURL}/tools/{toolName}
+//	Body:  { "args": { ... } }
+//	Response: arbitrary JSON, returned as-is to the model.
 type HTTPRemoteCaller struct {
 	BaseURL    string
 	HTTPClient *http.Client
@@ -61,7 +62,7 @@ func (c *HTTPRemoteCaller) Call(ctx context.Context, toolName string, args json.
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // Body close error can be ignored
 
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("HTTPRemoteCaller: remote error %s", resp.Status)

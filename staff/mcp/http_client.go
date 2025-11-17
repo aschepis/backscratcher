@@ -44,7 +44,7 @@ func NewHttpMCPClient(baseURL, configFile string) (*HttpMCPClient, error) {
 }
 
 // NewHttpMCPClientWithAuth creates a new HTTP MCP client with authentication.
-func NewHttpMCPClientWithAuth(baseURL, configFile string, authToken string) (*HttpMCPClient, error) {
+func NewHttpMCPClientWithAuth(baseURL, configFile, authToken string) (*HttpMCPClient, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("baseURL is required for HTTP MCP client")
 	}
@@ -143,7 +143,7 @@ func (c *HttpMCPClient) ListTools(ctx context.Context) ([]ToolDefinition, error)
 		if len(tool.InputSchema.Required) > 0 {
 			inputSchema["required"] = tool.InputSchema.Required
 		}
-		if tool.InputSchema.Defs != nil && len(tool.InputSchema.Defs) > 0 {
+		if len(tool.InputSchema.Defs) > 0 {
 			inputSchema["$defs"] = tool.InputSchema.Defs
 		}
 
@@ -173,7 +173,7 @@ func (c *HttpMCPClient) InvokeTool(ctx context.Context, name string, input map[s
 
 	// Convert result to map[string]interface{}
 	output := make(map[string]interface{})
-	if result.Content != nil && len(result.Content) > 0 {
+	if len(result.Content) > 0 {
 		// Extract text from content
 		var texts []string
 		for _, content := range result.Content {

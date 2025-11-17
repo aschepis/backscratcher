@@ -16,5 +16,3 @@ func TestNormalizerRejectsEmptyInput(t *testing.T) {
 		t.Fatalf("expected error for empty input, got nil")
 	}
 }
-
-

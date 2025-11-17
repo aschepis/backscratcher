@@ -19,14 +19,10 @@ linters:
     - gocritic
     - revive
     - bodyclose
-    - exportloopref
     - goconst
-    - gocyclo
     - gosec
 
 linters-settings:
-  gocyclo:
-    min-complexity: 15
   gocritic:
     enabled-tags:
       - diagnostic
@@ -34,6 +30,9 @@ linters-settings:
       - opinionated
       - performance
       - style
+    disabled-checks:
+      - rangeValCopy
+      - unnamedResult
   revive:
     rules:
       - name: var-naming

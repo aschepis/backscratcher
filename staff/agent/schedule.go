@@ -58,4 +58,3 @@ func ComputeNextWake(schedule string, baseTime time.Time) (time.Time, error) {
 
 	return parser.Next(baseTime), nil
 }
-

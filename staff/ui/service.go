@@ -13,6 +13,10 @@ import (
 	"github.com/aschepis/backscratcher/staff/agent"
 )
 
+const (
+	roleAssistant = "assistant"
+)
+
 // chatService implements ChatService by wrapping an agent.Crew
 type chatService struct {
 	crew *agent.Crew
@@ -59,7 +63,7 @@ func (s *chatService) ListAgents() []AgentInfo {
 }
 
 // ListInboxItems returns a list of inbox items, optionally filtered by archived status.
-func (s *chatService) ListInboxItems(ctx context.Context, includeArchived bool) ([]InboxItem, error) {
+func (s *chatService) ListInboxItems(ctx context.Context, includeArchived bool) ([]*InboxItem, error) {
 	var query string
 	if includeArchived {
 		query = `SELECT id, agent_id, thread_id, message, requires_response, response, 
@@ -78,9 +82,9 @@ func (s *chatService) ListInboxItems(ctx context.Context, includeArchived bool) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
 
-	var items []InboxItem
+	var items []*InboxItem
 	for rows.Next() {
 		var item InboxItem
 		var agentID, threadID sql.NullString
@@ -127,7 +131,7 @@ func (s *chatService) ListInboxItems(ctx context.Context, includeArchived bool) 
 			item.UpdatedAt = time.Unix(updatedAt.Int64, 0)
 		}
 
-		items = append(items, item)
+		items = append(items, &item)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -183,7 +187,7 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
 
 	var messages []anthropic.MessageParam
 	var currentUserTextBlocks []string
@@ -214,7 +218,7 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 			} else {
 				// Role changed, commit previous messages
 				s.commitPendingMessages(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
-					currentAssistantToolBlocks, currentToolResultBlocks, lastRole)
+					currentAssistantToolBlocks, currentToolResultBlocks)
 
 				currentUserTextBlocks = []string{content}
 				currentAssistantTextBlocks = nil
@@ -225,7 +229,7 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 				seenToolResultIDs = make(map[string]bool)
 			}
 
-		case "assistant":
+		case roleAssistant:
 			if toolName.Valid && toolName.String != "" {
 				// Assistant message with tool call
 				// Parse the JSON content to extract tool use block information
@@ -257,9 +261,9 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 				currentAssistantToolBlocks = append(currentAssistantToolBlocks, toolUseBlock)
 
 				// Commit if role changed
-				if lastRole != "assistant" && lastRole != "" {
+				if lastRole != roleAssistant && lastRole != "" {
 					s.commitPendingMessages(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
-						currentAssistantToolBlocks, currentToolResultBlocks, lastRole)
+						currentAssistantToolBlocks, currentToolResultBlocks)
 					currentUserTextBlocks = nil
 					currentAssistantTextBlocks = nil
 					currentAssistantToolBlocks = nil
@@ -270,12 +274,12 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 				}
 			} else {
 				// Assistant text message
-				if lastRole == "assistant" && len(currentAssistantToolBlocks) == 0 {
+				if lastRole == roleAssistant && len(currentAssistantToolBlocks) == 0 {
 					currentAssistantTextBlocks = append(currentAssistantTextBlocks, content)
 				} else {
 					// Role changed or we have tool blocks, commit previous messages
 					s.commitPendingMessages(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
-						currentAssistantToolBlocks, currentToolResultBlocks, lastRole)
+						currentAssistantToolBlocks, currentToolResultBlocks)
 
 					currentUserTextBlocks = nil
 					currentAssistantTextBlocks = []string{content}
@@ -328,7 +332,7 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 				// Commit if role changed
 				if lastRole != "tool" && lastRole != "" {
 					s.commitPendingMessages(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
-						currentAssistantToolBlocks, currentToolResultBlocks, lastRole)
+						currentAssistantToolBlocks, currentToolResultBlocks)
 					currentUserTextBlocks = nil
 					currentAssistantTextBlocks = nil
 					currentAssistantToolBlocks = nil
@@ -345,7 +349,7 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 
 	// Commit any remaining messages
 	s.commitPendingMessages(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
-		currentAssistantToolBlocks, currentToolResultBlocks, lastRole)
+		currentAssistantToolBlocks, currentToolResultBlocks)
 
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -361,7 +365,6 @@ func (s *chatService) commitPendingMessages(
 	assistantTextBlocks []string,
 	assistantToolBlocks []anthropic.ContentBlockParamUnion,
 	toolResultBlocks []anthropic.ContentBlockParamUnion,
-	lastRole string,
 ) {
 	// Commit user text messages
 	if len(userTextBlocks) > 0 {

@@ -167,7 +167,7 @@ func (r *MemoryRouter) QueryAgentMemory(
 ) ([]SearchResult, error) {
 	logger.Info("QueryAgentMemory: agentID=%s, text=%q, hasEmbedding=%v, includeGlobal=%v, limit=%d, types=%v",
 		agentID, text, embedding != nil, includeGlobal, limit, types)
-	results, err := r.store.SearchMemory(ctx, SearchQuery{
+	results, err := r.store.SearchMemory(ctx, &SearchQuery{
 		AgentID:        &agentID,
 		IncludeGlobal:  includeGlobal,
 		QueryText:      text,
@@ -192,7 +192,7 @@ func (r *MemoryRouter) QueryGlobalMemory(
 	limit int,
 	types []MemoryType,
 ) ([]SearchResult, error) {
-	return r.store.SearchMemory(ctx, SearchQuery{
+	return r.store.SearchMemory(ctx, &SearchQuery{
 		AgentID:        nil,
 		IncludeGlobal:  true,
 		QueryText:      text,
@@ -211,7 +211,7 @@ func (r *MemoryRouter) QueryAllMemory(
 	limit int,
 	types []MemoryType,
 ) ([]SearchResult, error) {
-	return r.store.SearchMemory(ctx, SearchQuery{
+	return r.store.SearchMemory(ctx, &SearchQuery{
 		AgentID:        nil,
 		IncludeGlobal:  false,
 		QueryText:      text,
@@ -244,7 +244,7 @@ func (r *MemoryRouter) QueryPersonalMemory(
 	}
 
 	// Build query with personal memory filters
-	query := SearchQuery{
+	query := &SearchQuery{
 		AgentID:        &agentID,
 		IncludeGlobal:  false, // Personal memories are agent-scoped
 		QueryText:      text,

@@ -68,7 +68,7 @@ func (r *Registry) RegisterNotificationTools(db *sql.DB, setState SetStateFunc) 
 		// Build notification message
 		notificationMessage := payload.Message
 		if payload.RequiresResponse {
-			notificationMessage = notificationMessage + " (Response required)"
+			notificationMessage += " (Response required)"
 		}
 
 		// Send desktop notification using beeep

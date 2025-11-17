@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	fileLogger     *log.Logger
-	logFile        *os.File
+	fileLogger      *log.Logger
+	logFile         *os.File
 	suppressConsole bool // When true, don't write to stdout/stderr (for TUI mode)
 )
 
@@ -19,7 +19,7 @@ func Init() error {
 	logPath := "staff.log"
 
 	var err error
-	logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to open log file %s: %w", logPath, err)
 	}

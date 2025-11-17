@@ -29,7 +29,7 @@ type ChatService interface {
 	ListAgents() []AgentInfo
 
 	// ListInboxItems returns a list of inbox items, optionally filtered by archived status.
-	ListInboxItems(ctx context.Context, includeArchived bool) ([]InboxItem, error)
+	ListInboxItems(ctx context.Context, includeArchived bool) ([]*InboxItem, error)
 
 	// ArchiveInboxItem marks an inbox item as archived.
 	ArchiveInboxItem(ctx context.Context, inboxID int64) error

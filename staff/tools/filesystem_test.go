@@ -80,7 +80,7 @@ func TestReadFile(t *testing.T) {
 	// Create test file
 	testFile := filepath.Join(workspacePath, "test.txt")
 	testContent := "Hello, World!\nThis is a test file."
-	if err := os.WriteFile(testFile, []byte(testContent), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte(testContent), 0o600); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestWriteFile(t *testing.T) {
 
 	// Verify file was created
 	expectedPath := filepath.Join(workspacePath, "output.txt")
-	content, err := os.ReadFile(expectedPath)
+	content, err := os.ReadFile(expectedPath) //nolint:gosec // Test setup - no need to check for security issues
 	if err != nil {
 		t.Fatalf("Failed to read created file: %v", err)
 	}
@@ -147,9 +147,9 @@ func TestListDirectory(t *testing.T) {
 	workspacePath, _ := filepath.Abs(tmpDir)
 
 	// Create test directory structure
-	os.MkdirAll(filepath.Join(workspacePath, "dir1"), 0755)
-	os.WriteFile(filepath.Join(workspacePath, "file1.txt"), []byte("content"), 0644)
-	os.WriteFile(filepath.Join(workspacePath, "file2.txt"), []byte("content"), 0644)
+	_ = os.MkdirAll(filepath.Join(workspacePath, "dir1"), 0o750)                          //nolint:errcheck // Test setup
+	_ = os.WriteFile(filepath.Join(workspacePath, "file1.txt"), []byte("content"), 0o600) //nolint:errcheck // Test setup
+	_ = os.WriteFile(filepath.Join(workspacePath, "file2.txt"), []byte("content"), 0o600) //nolint:errcheck // Test setup
 
 	reg := NewRegistry()
 	reg.RegisterFilesystemTools(workspacePath)
@@ -182,9 +182,9 @@ func TestFileSearch(t *testing.T) {
 	workspacePath, _ := filepath.Abs(tmpDir)
 
 	// Create test files
-	os.WriteFile(filepath.Join(workspacePath, "test1.go"), []byte("content"), 0644)
-	os.WriteFile(filepath.Join(workspacePath, "test2.go"), []byte("content"), 0644)
-	os.WriteFile(filepath.Join(workspacePath, "test.txt"), []byte("content"), 0644)
+	_ = os.WriteFile(filepath.Join(workspacePath, "test1.go"), []byte("content"), 0o600) //nolint:errcheck // Test setup
+	_ = os.WriteFile(filepath.Join(workspacePath, "test2.go"), []byte("content"), 0o600) //nolint:errcheck // Test setup
+	_ = os.WriteFile(filepath.Join(workspacePath, "test.txt"), []byte("content"), 0o600) //nolint:errcheck // Test setup
 
 	reg := NewRegistry()
 	reg.RegisterFilesystemTools(workspacePath)
@@ -217,7 +217,7 @@ func TestFileInfo(t *testing.T) {
 	workspacePath, _ := filepath.Abs(tmpDir)
 
 	testFile := filepath.Join(workspacePath, "info.txt")
-	os.WriteFile(testFile, []byte("test content"), 0644)
+	_ = os.WriteFile(testFile, []byte("test content"), 0o600) //nolint:errcheck // Test setup
 
 	reg := NewRegistry()
 	reg.RegisterFilesystemTools(workspacePath)
@@ -286,7 +286,7 @@ func TestGrepSearch(t *testing.T) {
 
 	testFile := filepath.Join(workspacePath, "search.txt")
 	content := "line1: hello\nline2: world\nline3: hello world\nline4: test"
-	os.WriteFile(testFile, []byte(content), 0644)
+	_ = os.WriteFile(testFile, []byte(content), 0o600) //nolint:errcheck // Test setup
 
 	reg := NewRegistry()
 	reg.RegisterFilesystemTools(workspacePath)
@@ -313,4 +313,3 @@ func TestGrepSearch(t *testing.T) {
 		t.Errorf("Expected at least 2 matches, got %d", len(matches))
 	}
 }
-

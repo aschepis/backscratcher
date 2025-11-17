@@ -21,7 +21,7 @@ type StdioMCPClient struct {
 }
 
 // NewStdioMCPClient creates a new STDIO MCP client.
-func NewStdioMCPClient(command, configFile string, args []string, env []string) (*StdioMCPClient, error) {
+func NewStdioMCPClient(command, configFile string, args, env []string) (*StdioMCPClient, error) {
 	if command == "" {
 		return nil, fmt.Errorf("command is required for STDIO MCP client")
 	}
@@ -31,7 +31,9 @@ func NewStdioMCPClient(command, configFile string, args []string, env []string) 
 	cmd := parts[0]
 	var cmdArgs []string
 	if len(parts) > 1 {
-		cmdArgs = append(parts[1:], args...)
+		cmdArgs = make([]string, 0, len(parts)-1+len(args))
+		cmdArgs = append(cmdArgs, parts[1:]...)
+		cmdArgs = append(cmdArgs, args...)
 	} else {
 		cmdArgs = args
 	}
@@ -100,7 +102,7 @@ func (c *StdioMCPClient) ListTools(ctx context.Context) ([]ToolDefinition, error
 		if len(tool.InputSchema.Required) > 0 {
 			inputSchema["required"] = tool.InputSchema.Required
 		}
-		if tool.InputSchema.Defs != nil && len(tool.InputSchema.Defs) > 0 {
+		if len(tool.InputSchema.Defs) > 0 {
 			inputSchema["$defs"] = tool.InputSchema.Defs
 		}
 
@@ -130,7 +132,7 @@ func (c *StdioMCPClient) InvokeTool(ctx context.Context, name string, input map[
 
 	// Convert result to map[string]interface{}
 	output := make(map[string]interface{})
-	if result.Content != nil && len(result.Content) > 0 {
+	if len(result.Content) > 0 {
 		// Extract text from content
 		var texts []string
 		for _, content := range result.Content {
@@ -187,4 +189,3 @@ func (c *StdioMCPClient) Close() error {
 func (c *StdioMCPClient) GetClient() *client.Client {
 	return c.client
 }
-

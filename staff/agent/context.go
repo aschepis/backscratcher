@@ -17,4 +17,3 @@ func GetDebugCallback(ctx context.Context) (DebugCallback, bool) {
 	cb, ok := ctx.Value(contextkeys.DebugCallbackKey{}).(DebugCallback)
 	return cb, ok
 }
-

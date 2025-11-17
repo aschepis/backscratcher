@@ -125,7 +125,7 @@ func (a *App) showChat(agentID string) {
 			}
 
 			// Check if user wants to exit the chat
-			if strings.ToLower(message) == "exit" {
+			if strings.EqualFold(message, "exit") {
 				inputField.SetText("")
 				a.pages.SwitchToPage("main")
 				a.app.SetFocus(a.sidebar)
@@ -176,7 +176,7 @@ func (a *App) showChat(agentID string) {
 	a.app.SetFocus(inputField)
 }
 
-func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID string, agentName string, threadID string) {
+func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName, _ string /* threadID */) {
 	chatDisplay.Clear()
 
 	a.chatMutex.RLock()
@@ -185,7 +185,7 @@ func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID string, age
 
 	// Display conversation history from database
 	if len(history) == 0 {
-		fmt.Fprintf(chatDisplay, "[gray]Start a conversation with %s...[white]\n\n", agentName)
+		_, _ = fmt.Fprintf(chatDisplay, "[gray]Start a conversation with %s...[white]\n\n", agentName)
 	} else {
 		// Reconstruct and display the conversation history
 		for _, msg := range history {
@@ -205,10 +205,13 @@ func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID string, age
 			}
 
 			// Display based on role
-			if msg.Role == "user" {
-				fmt.Fprintf(chatDisplay, "[cyan]You[white]: %s\n\n", text)
-			} else if msg.Role == "assistant" {
-				fmt.Fprintf(chatDisplay, "[green]%s[white]: %s\n\n", agentName, text)
+			switch msg.Role {
+			case "user":
+				_, _ = fmt.Fprintf(chatDisplay, "[cyan]You[white]: %s\n\n", text)
+			case "assistant":
+				_, _ = fmt.Fprintf(chatDisplay, "[green]%s[white]: %s\n\n", agentName, text)
+			default:
+				_, _ = fmt.Fprintf(chatDisplay, "[gray]%s[white]: %s\n\n", msg.Role, text)
 			}
 		}
 		chatDisplay.ScrollToEnd()
@@ -219,8 +222,8 @@ func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID string, age
 func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay *tview.TextView) {
 	// Update UI to show user message and thinking indicator
 	a.app.QueueUpdateDraw(func() {
-		fmt.Fprintf(chatDisplay, "[cyan]You[white]: %s\n\n", message)
-		fmt.Fprintf(chatDisplay, "[yellow]%s is thinking...[white]\n", agentName)
+		_, _ = fmt.Fprintf(chatDisplay, "[cyan]You[white]: %s\n\n", message)
+		_, _ = fmt.Fprintf(chatDisplay, "[yellow]%s is thinking...[white]\n", agentName)
 		chatDisplay.ScrollToEnd()
 	})
 
@@ -236,10 +239,7 @@ func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay 
 	}
 
 	// Save user message to database
-	if saveErr := a.chatService.SaveMessage(ctx, agentID, threadID, "user", message); saveErr != nil {
-		// Log error but continue - don't block the chat
-		// Error is silently ignored to keep chat functional
-	}
+	_ = a.chatService.SaveMessage(ctx, agentID, threadID, "user", message)
 
 	// Get conversation history
 	a.chatMutex.RLock()
@@ -283,11 +283,11 @@ func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay 
 					}
 				}
 				// Start the agent response line
-				fmt.Fprintf(chatDisplay, "[green]%s[white]: ", agentName)
+				_, _ = fmt.Fprintf(chatDisplay, "[green]%s[white]: ", agentName)
 			}
 
 			// Append text directly to the display - this is efficient
-			fmt.Fprint(chatDisplay, text)
+			_, _ = fmt.Fprint(chatDisplay, text)
 			chatDisplay.ScrollToEnd()
 		})
 		return nil
@@ -297,7 +297,7 @@ func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay 
 	debugCallback := func(debugMsg string) {
 		// Display debug info in dark gray
 		a.app.QueueUpdateDraw(func() {
-			fmt.Fprintf(chatDisplay, "[gray]DEBUG: %s[white]\n", debugMsg)
+			_, _ = fmt.Fprintf(chatDisplay, "[gray]DEBUG: %s[white]\n", debugMsg)
 			chatDisplay.ScrollToEnd()
 		})
 	}
@@ -326,29 +326,24 @@ func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay 
 				if len(newLines) > 0 {
 					chatDisplay.SetText(strings.Join(newLines, "\n"))
 				}
-				fmt.Fprintf(chatDisplay, "[red]Error[white]: %v\n\n", err)
+				_, _ = fmt.Fprintf(chatDisplay, "[red]Error[white]: %v\n\n", err)
 			} else {
-				fmt.Fprintf(chatDisplay, "\n\n[red]Error[white]: %v\n\n", err)
+				_, _ = fmt.Fprintf(chatDisplay, "\n\n[red]Error[white]: %v\n\n", err)
 			}
 			chatDisplay.ScrollToEnd()
 		} else {
 			// Finalize the response with a newline
 			if started {
-				fmt.Fprint(chatDisplay, "\n\n")
+				_, _ = fmt.Fprint(chatDisplay, "\n\n")
 			}
 
 			// Save assistant response to database
-			if saveErr := a.chatService.SaveMessage(ctx, agentID, threadID, "assistant", response); saveErr != nil {
-				// Log error but continue - don't block the chat
-				// Error is silently ignored to keep chat functional
-			}
+			_ = a.chatService.SaveMessage(ctx, agentID, threadID, "assistant", response)
 
 			// Update history in memory
 			a.chatMutex.Lock()
 			a.chatHistory[agentID] = append(a.chatHistory[agentID],
 				anthropic.NewUserMessage(anthropic.NewTextBlock(message)),
-			)
-			a.chatHistory[agentID] = append(a.chatHistory[agentID],
 				anthropic.NewAssistantMessage(anthropic.NewTextBlock(response)),
 			)
 			a.chatMutex.Unlock()

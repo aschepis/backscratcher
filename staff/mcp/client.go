@@ -33,4 +33,3 @@ type MCPClient interface {
 	// Close closes the connection to the MCP server.
 	Close() error
 }
-

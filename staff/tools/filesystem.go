@@ -53,9 +53,9 @@ func (r *Registry) RegisterFilesystemTools(workspacePath string) {
 
 	r.Register("read_file", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
 		var payload struct {
-			Path      string `json:"path"`
-			Encoding  string `json:"encoding"`
-			MaxBytes  int64  `json:"max_bytes"`
+			Path     string `json:"path"`
+			Encoding string `json:"encoding"`
+			MaxBytes int64  `json:"max_bytes"`
 		}
 		if err := json.Unmarshal(args, &payload); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal arguments: %w", err)
@@ -78,11 +78,11 @@ func (r *Registry) RegisterFilesystemTools(workspacePath string) {
 			return nil, fmt.Errorf("path is a directory, not a file: %s", payload.Path)
 		}
 
-		file, err := os.Open(validPath)
+		file, err := os.Open(validPath) //#nosec 304 -- validated above
 		if err != nil {
 			return nil, fmt.Errorf("failed to open file: %w", err)
 		}
-		defer file.Close()
+		defer file.Close() //nolint:errcheck // File close error can be ignored
 
 		var content []byte
 		if payload.MaxBytes > 0 {
@@ -130,12 +130,12 @@ func (r *Registry) RegisterFilesystemTools(workspacePath string) {
 		// Create parent directories if needed
 		if payload.CreateDirs {
 			parentDir := filepath.Dir(validPath)
-			if err := os.MkdirAll(parentDir, 0755); err != nil {
+			if err := os.MkdirAll(parentDir, 0o750); err != nil {
 				return nil, fmt.Errorf("failed to create parent directories: %w", err)
 			}
 		}
 
-		if err := os.WriteFile(validPath, []byte(payload.Content), 0644); err != nil {
+		if err := os.WriteFile(validPath, []byte(payload.Content), 0o600); err != nil {
 			return nil, fmt.Errorf("failed to write file: %w", err)
 		}
 
@@ -145,9 +145,9 @@ func (r *Registry) RegisterFilesystemTools(workspacePath string) {
 		}
 
 		return map[string]any{
-			"path":     payload.Path,
-			"size":     info.Size(),
-			"written":  true,
+			"path":    payload.Path,
+			"size":    info.Size(),
+			"written": true,
 		}, nil
 	})
 
@@ -196,11 +196,11 @@ func (r *Registry) RegisterFilesystemTools(workspacePath string) {
 					return nil
 				}
 				entries = append(entries, map[string]any{
-					"path":    relPath,
-					"name":    name,
-					"is_dir":  info.IsDir(),
-					"size":    info.Size(),
-					"mode":    info.Mode().String(),
+					"path":     relPath,
+					"name":     name,
+					"is_dir":   info.IsDir(),
+					"size":     info.Size(),
+					"mode":     info.Mode().String(),
 					"mod_time": info.ModTime().Unix(),
 				})
 				return nil
@@ -380,7 +380,7 @@ func (r *Registry) RegisterFilesystemTools(workspacePath string) {
 			return nil, err
 		}
 
-		var mode os.FileMode = 0755
+		var mode os.FileMode = 0o750
 		if payload.Parents {
 			err = os.MkdirAll(validPath, mode)
 		} else {
@@ -396,9 +396,9 @@ func (r *Registry) RegisterFilesystemTools(workspacePath string) {
 		}
 
 		return map[string]any{
-			"path":   payload.Path,
+			"path":    payload.Path,
 			"created": true,
-			"mode":   info.Mode().String(),
+			"mode":    info.Mode().String(),
 		}, nil
 	})
 
@@ -433,7 +433,7 @@ func (r *Registry) RegisterFilesystemTools(workspacePath string) {
 		var matches []map[string]any
 
 		searchFile := func(filePath, relFilePath string) error {
-			content, err := os.ReadFile(filePath)
+			content, err := os.ReadFile(filePath) //#nosec 304 -- intentional file read for grepping
 			if err != nil {
 				return err
 			}
@@ -523,4 +523,3 @@ func (r *Registry) RegisterFilesystemTools(workspacePath string) {
 		}, nil
 	})
 }
-

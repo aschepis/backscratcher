@@ -42,15 +42,17 @@ func (e *semanticEmbedder) Embed(ctx context.Context, text string) ([]float32, e
 	// For each word, hash it to distribute across dimensions
 	for _, word := range words {
 		h := fnv.New32a()
-		h.Write([]byte(word))
+		if _, err := h.Write([]byte(word)); err != nil {
+			return nil, err
+		}
 		hash := h.Sum32()
 
 		// Use hash to determine which dimensions this word influences
 		// Each word contributes to multiple dimensions for better similarity detection
 		for i := 0; i < 3; i++ { // Each word influences 3 dimensions
-			dim := int((hash + uint32(i)*2654435761) % uint32(e.dimensions))
+			dim := int((hash + uint32(i)*2654435761) % uint32(e.dimensions)) // nolint:gosec // Test code
 			// Add contribution (using a sin function for varied values)
-			embedding[dim] += float32(math.Sin(float64(hash+uint32(i))*0.1) + 1.0)
+			embedding[dim] += float32(math.Sin(float64(hash+uint32(i))*0.1) + 1.0) // nolint:gosec // Test code
 		}
 	}
 
@@ -75,7 +77,7 @@ func TestStore_RememberGlobalFactAndSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck // Test cleanup
 
 	store, err := NewStore(db, stubEmbedder{})
 	if err != nil {
@@ -93,7 +95,7 @@ func TestStore_RememberGlobalFactAndSearch(t *testing.T) {
 		t.Fatalf("RememberGlobalFact: %v", err)
 	}
 
-	results, err := store.SearchMemory(ctx, SearchQuery{
+	results, err := store.SearchMemory(ctx, &SearchQuery{
 		QueryText:     "Ruby core systems",
 		Limit:         5,
 		IncludeGlobal: true,
@@ -113,7 +115,7 @@ func TestRouter_AddEpisodeAndQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck // Test cleanup
 
 	store, err := NewStore(db, stubEmbedder{})
 	if err != nil {
@@ -147,7 +149,7 @@ func TestSemanticEmbeddingSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck // Test cleanup
 
 	// Use semantic embedder that simulates real embeddings
 	embedder := newSemanticEmbedder(128)
@@ -187,7 +189,7 @@ func TestSemanticEmbeddingSearch(t *testing.T) {
 			t.Fatalf("Embed query: %v", err)
 		}
 
-		results, err := store.SearchMemory(ctx, SearchQuery{
+		results, err := store.SearchMemory(ctx, &SearchQuery{
 			QueryEmbedding: queryEmb,
 			Limit:          3,
 			IncludeGlobal:  true,
@@ -224,7 +226,7 @@ func TestSemanticEmbeddingSearch(t *testing.T) {
 			t.Fatalf("Embed query: %v", err)
 		}
 
-		results, err := store.SearchMemory(ctx, SearchQuery{
+		results, err := store.SearchMemory(ctx, &SearchQuery{
 			QueryEmbedding: queryEmb,
 			Limit:          3,
 			IncludeGlobal:  true,
@@ -281,7 +283,7 @@ func TestSemanticEmbeddingSearch(t *testing.T) {
 			t.Fatalf("Embed query: %v", err)
 		}
 
-		results, err := store.SearchMemory(ctx, SearchQuery{
+		results, err := store.SearchMemory(ctx, &SearchQuery{
 			QueryText:      "Go programming",
 			QueryEmbedding: queryEmb,
 			Limit:          3,
