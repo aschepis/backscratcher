@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/aschepis/backscratcher/staff/logger"
 )
 
@@ -307,21 +308,18 @@ func loadMemoryItemFromRow(rows *sql.Rows) (*MemoryItem, error) {
 func (s *Store) searchByVector(ctx context.Context, q *SearchQuery, limit int) ([]SearchResult, error) {
 	const candidateLimit = 500
 
-	where, args := buildFilterWhere(q)
-	var query strings.Builder
-	query.WriteString(`
-SELECT id, agent_id, thread_id, scope, type, content,
-       embedding, metadata, created_at, updated_at, importance,
-       raw_content, memory_type, tags_json
-FROM memory_items
-WHERE `)
-	query.WriteString(where)
-	query.WriteString(`
-ORDER BY created_at DESC
-LIMIT ?
-`)
-	args = append(args, candidateLimit)
-	queryStr := query.String()
+	query := StatementBuilder().
+		Select(SelectMemoryItemsColumns()...).
+		From("memory_items").
+		Where(buildFilterWhere(q)).
+		OrderBy("created_at DESC").
+		Limit(uint64(candidateLimit))
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		logger.Error("searchByVector: failed to build query: %v", err)
+		return nil, fmt.Errorf("build query: %w", err)
+	}
 	logger.Debug("searchByVector: query=%q, args=%v", queryStr, args)
 
 	rows, err := s.db.QueryContext(ctx, queryStr, args...)
@@ -391,25 +389,21 @@ func (s *Store) searchByTags(ctx context.Context, q *SearchQuery, limit int) ([]
 		return nil, nil
 	}
 
-	where, args := buildFilterWhere(q)
 	// We need to load all candidate memories and filter by tags in Go
 	// since SQLite JSON extraction can be tricky for array intersection
-	var query strings.Builder
-	query.WriteString(`
-SELECT id, agent_id, thread_id, scope, type, content,
-       embedding, metadata, created_at, updated_at, importance,
-       raw_content, memory_type, tags_json
-FROM memory_items
-WHERE `)
-	query.WriteString(where)
-	query.WriteString(`
-ORDER BY created_at DESC
-LIMIT ?
-`)
-	// Use a higher limit to get candidates, then filter by tags
 	const candidateLimit = 500
-	args = append(args, candidateLimit)
-	queryStr := query.String()
+	query := StatementBuilder().
+		Select(SelectMemoryItemsColumns()...).
+		From("memory_items").
+		Where(buildFilterWhere(q)).
+		OrderBy("created_at DESC").
+		Limit(uint64(candidateLimit))
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		logger.Error("searchByTags: failed to build query: %v", err)
+		return nil, fmt.Errorf("build query: %w", err)
+	}
 
 	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
@@ -483,23 +477,23 @@ func (s *Store) loadItemsByIDs(ctx context.Context, ids []int64) ([]*MemoryItem,
 		logger.Debug("loadItemsByIDs: no IDs provided")
 		return nil, nil
 	}
-	placeholders := make([]string, len(ids))
-	args := make([]interface{}, len(ids))
+
+	// Convert []int64 to []interface{} for Squirrel
+	idArgs := make([]interface{}, len(ids))
 	for i, id := range ids {
-		placeholders[i] = "?"
-		args[i] = id
+		idArgs[i] = id
 	}
-	var query strings.Builder
-	query.WriteString(`
-SELECT id, agent_id, thread_id, scope, type, content,
-       embedding, metadata, created_at, updated_at, importance,
-       raw_content, memory_type, tags_json
-FROM memory_items
-WHERE id IN (`)
-	query.WriteString(strings.Join(placeholders, ","))
-	query.WriteString(`)
-`)
-	queryStr := query.String()
+
+	query := StatementBuilder().
+		Select(SelectMemoryItemsColumns()...).
+		From("memory_items").
+		Where(sq.Eq{"id": idArgs})
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		logger.Error("loadItemsByIDs: failed to build query: %v", err)
+		return nil, fmt.Errorf("build query: %w", err)
+	}
 	logger.Debug("loadItemsByIDs: loading %d items with IDs: %v", len(ids), ids)
 	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
@@ -528,51 +522,66 @@ WHERE id IN (`)
 	return items, nil
 }
 
-func buildFilterWhere(q *SearchQuery) (string, []any) {
-	var clauses []string
-	var args []any
+// buildFilterWhere builds Squirrel WHERE conditions based on SearchQuery filters.
+// Returns a sq.Sqlizer that can be used in Where() clauses.
+func buildFilterWhere(q *SearchQuery) sq.Sqlizer {
+	var conditions []sq.Sqlizer
 
+	// Build scope/agent_id filter
 	if q.AgentID != nil {
 		if q.IncludeGlobal {
-			clauses = append(clauses, "((scope = 'agent' AND agent_id = ?) OR scope = 'global')")
-			args = append(args, *q.AgentID)
+			// (scope = 'agent' AND agent_id = ?) OR scope = 'global'
+			conditions = append(conditions, sq.Or{
+				sq.And{
+					sq.Eq{"scope": string(ScopeAgent)},
+					sq.Eq{"agent_id": *q.AgentID},
+				},
+				sq.Eq{"scope": string(ScopeGlobal)},
+			})
 		} else {
-			clauses = append(clauses, "scope = 'agent' AND agent_id = ?")
-			args = append(args, *q.AgentID)
+			// scope = 'agent' AND agent_id = ?
+			conditions = append(conditions, sq.Eq{"scope": string(ScopeAgent)}, sq.Eq{"agent_id": *q.AgentID})
 		}
 	} else {
 		if q.IncludeGlobal {
-			clauses = append(clauses, "scope = 'global'")
+			// scope = 'global'
+			conditions = append(conditions, sq.Eq{"scope": string(ScopeGlobal)})
 		}
 	}
 
+	// Type filter
 	if len(q.Types) > 0 {
-		typePlaceholders := make([]string, len(q.Types))
+		typeStrings := make([]interface{}, len(q.Types))
 		for i, t := range q.Types {
-			typePlaceholders[i] = "?"
-			args = append(args, string(t))
+			typeStrings[i] = string(t)
 		}
-		clauses = append(clauses, "type IN ("+strings.Join(typePlaceholders, ",")+")")
+		conditions = append(conditions, sq.Eq{"type": typeStrings})
 	}
+
+	// Importance filter
 	if q.MinImportance > 0 {
-		clauses = append(clauses, "importance >= ?")
-		args = append(args, q.MinImportance)
+		conditions = append(conditions, sq.GtOrEq{"importance": q.MinImportance})
 	}
+
+	// Time range filters
 	if q.After != nil {
-		clauses = append(clauses, "created_at >= ?")
-		args = append(args, q.After.Unix())
+		conditions = append(conditions, sq.GtOrEq{"created_at": q.After.Unix()})
 	}
 	if q.Before != nil {
-		clauses = append(clauses, "created_at <= ?")
-		args = append(args, q.Before.Unix())
+		conditions = append(conditions, sq.LtOrEq{"created_at": q.Before.Unix()})
 	}
-	if len(clauses) == 0 {
-		logger.Debug("buildFilterWhere: no filters, returning WHERE 1=1")
-		return "1=1", nil
+
+	// If no filters were applied, return a condition that matches all rows
+	if len(conditions) == 0 {
+		logger.Debug("buildFilterWhere: no filters, query will match all rows")
+		return sq.Expr("1=1")
 	}
-	whereClause := strings.Join(clauses, " AND ")
-	logger.Debug("buildFilterWhere: built WHERE clause: %q with args: %v", whereClause, args)
-	return whereClause, args
+
+	// Combine all conditions with AND
+	if len(conditions) == 1 {
+		return conditions[0]
+	}
+	return sq.And(conditions)
 }
 
 func applyFilters(item *MemoryItem, q *SearchQuery) bool {

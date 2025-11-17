@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/aschepis/backscratcher/staff/logger"
 )
 
@@ -38,11 +39,17 @@ func NewStateManager(db *sql.DB) *StateManager {
 
 // StateExists checks if an agent has a persisted state
 func (sm *StateManager) StateExists(agentID string) (bool, error) {
+	query := sq.Select("COUNT(*)").
+		From("agent_states").
+		Where(sq.Eq{"agent_id": agentID})
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return false, fmt.Errorf("build query: %w", err)
+	}
+
 	var count int
-	err := sm.db.QueryRow(
-		`SELECT COUNT(*) FROM agent_states WHERE agent_id = ?`,
-		agentID,
-	).Scan(&count)
+	err = sm.db.QueryRow(queryStr, args...).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("failed to check if agent state exists: %w", err)
 	}
@@ -51,12 +58,18 @@ func (sm *StateManager) StateExists(agentID string) (bool, error) {
 
 // GetState retrieves the current state of an agent
 func (sm *StateManager) GetState(agentID string) (State, error) {
+	query := sq.Select("state", "updated_at").
+		From("agent_states").
+		Where(sq.Eq{"agent_id": agentID})
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return "", fmt.Errorf("build query: %w", err)
+	}
+
 	var stateStr string
 	var updatedAt int64
-	err := sm.db.QueryRow(
-		`SELECT state, updated_at FROM agent_states WHERE agent_id = ?`,
-		agentID,
-	).Scan(&stateStr, &updatedAt)
+	err = sm.db.QueryRow(queryStr, args...).Scan(&stateStr, &updatedAt)
 
 	if err == sql.ErrNoRows {
 		// Agent has no state yet, return idle as default
@@ -98,18 +111,18 @@ func (sm *StateManager) SetStateWithNextWake(agentID string, state State, nextWa
 		nextWakeUnix = nil
 	}
 
-	_, err := sm.db.Exec(
-		`INSERT INTO agent_states (agent_id, state, updated_at, next_wake)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(agent_id) DO UPDATE SET
-		   state = excluded.state,
-		   updated_at = excluded.updated_at,
-		   next_wake = excluded.next_wake`,
-		agentID,
-		string(state),
-		now,
-		nextWakeUnix,
-	)
+	query := sq.Insert("agent_states").
+		Columns("agent_id", "state", "updated_at", "next_wake").
+		Values(agentID, string(state), now, nextWakeUnix).
+		Suffix("ON CONFLICT(agent_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at, next_wake = excluded.next_wake")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		logger.Error("Failed to build query: agentID=%s state=%s error=%v", agentID, state, err)
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	_, err = sm.db.Exec(queryStr, args...)
 	if err != nil {
 		logger.Error("Failed to set agent state: agentID=%s state=%s error=%v", agentID, state, err)
 		return fmt.Errorf("failed to set agent state: %w", err)
@@ -121,7 +134,14 @@ func (sm *StateManager) SetStateWithNextWake(agentID string, state State, nextWa
 
 // GetAllStates retrieves all agent states
 func (sm *StateManager) GetAllStates() (map[string]State, error) {
-	rows, err := sm.db.Query(`SELECT agent_id, state FROM agent_states`)
+	query := sq.Select("agent_id", "state").From("agent_states")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := sm.db.Query(queryStr, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query agent states: %w", err)
 	}
@@ -146,7 +166,16 @@ func (sm *StateManager) GetAllStates() (map[string]State, error) {
 
 // GetAgentsByState retrieves all agent IDs in a specific state
 func (sm *StateManager) GetAgentsByState(state State) ([]string, error) {
-	rows, err := sm.db.Query(`SELECT agent_id FROM agent_states WHERE state = ?`, string(state))
+	query := sq.Select("agent_id").
+		From("agent_states").
+		Where(sq.Eq{"state": string(state)})
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := sm.db.Query(queryStr, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query agents by state: %w", err)
 	}
@@ -172,11 +201,17 @@ func (sm *StateManager) GetAgentsByState(state State) ([]string, error) {
 func (sm *StateManager) SetNextWake(agentID string, nextWake time.Time) error {
 	nextWakeUnix := nextWake.Unix()
 
-	_, err := sm.db.Exec(
-		`UPDATE agent_states SET next_wake = ? WHERE agent_id = ?`,
-		nextWakeUnix,
-		agentID,
-	)
+	query := sq.Update("agent_states").
+		Set("next_wake", nextWakeUnix).
+		Where(sq.Eq{"agent_id": agentID})
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		logger.Error("Failed to build query: agentID=%s nextWake=%d error=%v", agentID, nextWakeUnix, err)
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	_, err = sm.db.Exec(queryStr, args...)
 	if err != nil {
 		logger.Error("Failed to set next wake: agentID=%s nextWake=%d error=%v", agentID, nextWakeUnix, err)
 		return fmt.Errorf("failed to set next wake: %w", err)
@@ -188,11 +223,17 @@ func (sm *StateManager) SetNextWake(agentID string, nextWake time.Time) error {
 
 // GetNextWake retrieves the next wake time for an agent
 func (sm *StateManager) GetNextWake(agentID string) (*time.Time, error) {
+	query := sq.Select("next_wake").
+		From("agent_states").
+		Where(sq.Eq{"agent_id": agentID})
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
 	var nextWakeUnix sql.NullInt64
-	err := sm.db.QueryRow(
-		`SELECT next_wake FROM agent_states WHERE agent_id = ?`,
-		agentID,
-	).Scan(&nextWakeUnix)
+	err = sm.db.QueryRow(queryStr, args...).Scan(&nextWakeUnix)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -213,12 +254,18 @@ func (sm *StateManager) GetNextWake(agentID string) (*time.Time, error) {
 // (state='waiting_external' AND next_wake <= NOW())
 func (sm *StateManager) GetAgentsReadyToWake() ([]string, error) {
 	now := time.Now().Unix()
-	rows, err := sm.db.Query(
-		`SELECT agent_id FROM agent_states 
-		 WHERE state = ? AND next_wake IS NOT NULL AND next_wake <= ?`,
-		string(StateWaitingExternal),
-		now,
-	)
+	query := sq.Select("agent_id").
+		From("agent_states").
+		Where(sq.Eq{"state": string(StateWaitingExternal)}).
+		Where(sq.NotEq{"next_wake": nil}).
+		Where(sq.LtOrEq{"next_wake": now})
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := sm.db.Query(queryStr, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query agents ready to wake: %w", err)
 	}
@@ -253,15 +300,17 @@ func NewStatsManager(db *sql.DB) *StatsManager {
 // IncrementExecutionCount increments the execution count and updates last_execution timestamp
 func (sm *StatsManager) IncrementExecutionCount(agentID string) error {
 	now := time.Now().Unix()
-	_, err := sm.db.Exec(
-		`INSERT INTO agent_stats (agent_id, execution_count, last_execution)
-		 VALUES (?, 1, ?)
-		 ON CONFLICT(agent_id) DO UPDATE SET
-		   execution_count = execution_count + 1,
-		   last_execution = excluded.last_execution`,
-		agentID,
-		now,
-	)
+	query := sq.Insert("agent_stats").
+		Columns("agent_id", "execution_count", "last_execution").
+		Values(agentID, 1, now).
+		Suffix("ON CONFLICT(agent_id) DO UPDATE SET execution_count = execution_count + 1, last_execution = excluded.last_execution")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	_, err = sm.db.Exec(queryStr, args...)
 	if err != nil {
 		return fmt.Errorf("failed to increment execution count: %w", err)
 	}
@@ -271,17 +320,17 @@ func (sm *StatsManager) IncrementExecutionCount(agentID string) error {
 // IncrementFailureCount increments the failure count and updates last_failure timestamp and message
 func (sm *StatsManager) IncrementFailureCount(agentID, errorMessage string) error {
 	now := time.Now().Unix()
-	_, err := sm.db.Exec(
-		`INSERT INTO agent_stats (agent_id, failure_count, last_failure, last_failure_message)
-		 VALUES (?, 1, ?, ?)
-		 ON CONFLICT(agent_id) DO UPDATE SET
-		   failure_count = failure_count + 1,
-		   last_failure = excluded.last_failure,
-		   last_failure_message = excluded.last_failure_message`,
-		agentID,
-		now,
-		errorMessage,
-	)
+	query := sq.Insert("agent_stats").
+		Columns("agent_id", "failure_count", "last_failure", "last_failure_message").
+		Values(agentID, 1, now, errorMessage).
+		Suffix("ON CONFLICT(agent_id) DO UPDATE SET failure_count = failure_count + 1, last_failure = excluded.last_failure, last_failure_message = excluded.last_failure_message")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	_, err = sm.db.Exec(queryStr, args...)
 	if err != nil {
 		return fmt.Errorf("failed to increment failure count: %w", err)
 	}
@@ -290,13 +339,17 @@ func (sm *StatsManager) IncrementFailureCount(agentID, errorMessage string) erro
 
 // IncrementWakeupCount increments the wakeup count
 func (sm *StatsManager) IncrementWakeupCount(agentID string) error {
-	_, err := sm.db.Exec(
-		`INSERT INTO agent_stats (agent_id, wakeup_count)
-		 VALUES (?, 1)
-		 ON CONFLICT(agent_id) DO UPDATE SET
-		   wakeup_count = wakeup_count + 1`,
-		agentID,
-	)
+	query := sq.Insert("agent_stats").
+		Columns("agent_id", "wakeup_count").
+		Values(agentID, 1).
+		Suffix("ON CONFLICT(agent_id) DO UPDATE SET wakeup_count = wakeup_count + 1")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	_, err = sm.db.Exec(queryStr, args...)
 	if err != nil {
 		return fmt.Errorf("failed to increment wakeup count: %w", err)
 	}
@@ -309,11 +362,16 @@ func (sm *StatsManager) GetStats(agentID string) (map[string]interface{}, error)
 	var lastExecution, lastFailure sql.NullInt64
 	var lastFailureMessage sql.NullString
 
-	err := sm.db.QueryRow(
-		`SELECT execution_count, failure_count, wakeup_count, last_execution, last_failure, last_failure_message
-		 FROM agent_stats WHERE agent_id = ?`,
-		agentID,
-	).Scan(&executionCount, &failureCount, &wakeupCount, &lastExecution, &lastFailure, &lastFailureMessage)
+	query := sq.Select("execution_count", "failure_count", "wakeup_count", "last_execution", "last_failure", "last_failure_message").
+		From("agent_stats").
+		Where(sq.Eq{"agent_id": agentID})
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	err = sm.db.QueryRow(queryStr, args...).Scan(&executionCount, &failureCount, &wakeupCount, &lastExecution, &lastFailure, &lastFailureMessage)
 
 	if err == sql.ErrNoRows {
 		// Return zero stats if agent has no stats yet
@@ -361,10 +419,15 @@ func (sm *StatsManager) GetStats(agentID string) (map[string]interface{}, error)
 
 // GetAllStats retrieves stats for all agents
 func (sm *StatsManager) GetAllStats() ([]map[string]interface{}, error) {
-	rows, err := sm.db.Query(
-		`SELECT agent_id, execution_count, failure_count, wakeup_count, last_execution, last_failure, last_failure_message
-		 FROM agent_stats`,
-	)
+	query := sq.Select("agent_id", "execution_count", "failure_count", "wakeup_count", "last_execution", "last_failure", "last_failure_message").
+		From("agent_stats")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := sm.db.Query(queryStr, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query agent stats: %w", err)
 	}

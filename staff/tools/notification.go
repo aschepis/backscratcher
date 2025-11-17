@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/gen2brain/beeep"
 )
@@ -37,16 +38,17 @@ func (r *Registry) RegisterNotificationTools(db *sql.DB, setState SetStateFunc) 
 		now := time.Now().Unix()
 
 		// Insert into inbox table
-		result, err := db.ExecContext(ctx,
-			`INSERT INTO inbox (agent_id, thread_id, message, requires_response, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-			agentID,
-			payload.ThreadID,
-			payload.Message,
-			payload.RequiresResponse,
-			now,
-			now,
-		)
+		query := sq.Insert("inbox").
+			Columns("agent_id", "thread_id", "message", "requires_response", "created_at", "updated_at").
+			Values(agentID, payload.ThreadID, payload.Message, payload.RequiresResponse, now, now)
+
+		queryStr, queryArgs, err := query.ToSql()
+		if err != nil {
+			logger.Error("Failed to build insert query: %v", err)
+			return nil, fmt.Errorf("build insert query: %w", err)
+		}
+
+		result, err := db.ExecContext(ctx, queryStr, queryArgs...)
 		if err != nil {
 			logger.Error("Failed to insert notification into inbox: %v", err)
 			return nil, fmt.Errorf("failed to insert notification into inbox: %w", err)

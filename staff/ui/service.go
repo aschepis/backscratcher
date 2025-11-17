@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/aschepis/backscratcher/staff/agent"
@@ -64,21 +65,22 @@ func (s *chatService) ListAgents() []AgentInfo {
 
 // ListInboxItems returns a list of inbox items, optionally filtered by archived status.
 func (s *chatService) ListInboxItems(ctx context.Context, includeArchived bool) ([]*InboxItem, error) {
-	var query string
-	if includeArchived {
-		query = `SELECT id, agent_id, thread_id, message, requires_response, response, 
-		                response_at, archived_at, created_at, updated_at
-		         FROM inbox
-		         ORDER BY created_at DESC`
-	} else {
-		query = `SELECT id, agent_id, thread_id, message, requires_response, response, 
-		                response_at, archived_at, created_at, updated_at
-		         FROM inbox
-		         WHERE archived_at IS NULL
-		         ORDER BY created_at DESC`
+	query := sq.Select("id", "agent_id", "thread_id", "message", "requires_response", "response",
+		"response_at", "archived_at", "created_at", "updated_at").
+		From("inbox")
+
+	if !includeArchived {
+		query = query.Where(sq.Eq{"archived_at": nil})
 	}
 
-	rows, err := s.db.QueryContext(ctx, query)
+	query = query.OrderBy("created_at DESC")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -144,21 +146,36 @@ func (s *chatService) ListInboxItems(ctx context.Context, includeArchived bool) 
 // ArchiveInboxItem marks an inbox item as archived.
 func (s *chatService) ArchiveInboxItem(ctx context.Context, inboxID int64) error {
 	now := time.Now().Unix()
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE inbox SET archived_at = ?, updated_at = ? WHERE id = ?`,
-		now, now, inboxID,
-	)
+	query := sq.Update("inbox").
+		Set("archived_at", now).
+		Set("updated_at", now).
+		Where(sq.Eq{"id": inboxID})
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, queryStr, args...)
 	return err
 }
 
 // GetOrCreateThreadID gets an existing thread ID for an agent, or creates a new one if none exists.
 func (s *chatService) GetOrCreateThreadID(ctx context.Context, agentID string) (string, error) {
 	// Check if there's an existing thread for this agent
+	query := sq.Select("DISTINCT thread_id").
+		From("conversations").
+		Where(sq.Eq{"agent_id": agentID}).
+		OrderBy("created_at DESC").
+		Limit(1)
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return "", fmt.Errorf("build query: %w", err)
+	}
+
 	var existingThreadID sql.NullString
-	err := s.db.QueryRowContext(ctx,
-		`SELECT DISTINCT thread_id FROM conversations WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1`,
-		agentID,
-	).Scan(&existingThreadID)
+	err = s.db.QueryRowContext(ctx, queryStr, args...).Scan(&existingThreadID)
 
 	if err == nil && existingThreadID.Valid && existingThreadID.String != "" {
 		return existingThreadID.String, nil
@@ -178,12 +195,18 @@ func (s *chatService) LoadConversationHistory(ctx context.Context, agentID, thre
 // LoadThread loads conversation history for a given agent and thread ID.
 // Reconstructs proper Anthropic message structures from database rows.
 func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) ([]anthropic.MessageParam, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT role, content, tool_name, created_at FROM conversations 
-		 WHERE agent_id = ? AND thread_id = ? 
-		 ORDER BY created_at ASC`,
-		agentID, threadID,
-	)
+	query := sq.Select("role", "content", "tool_name", "created_at").
+		From("conversations").
+		Where(sq.Eq{"agent_id": agentID}).
+		Where(sq.Eq{"thread_id": threadID}).
+		OrderBy("created_at ASC")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -392,33 +415,48 @@ func (s *chatService) commitPendingMessages(
 // SaveMessage saves a user or assistant message to the conversation history.
 func (s *chatService) SaveMessage(ctx context.Context, agentID, threadID, role, content string) error {
 	now := time.Now().Unix()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO conversations (agent_id, thread_id, role, content, tool_name, created_at)
-		 VALUES (?, ?, ?, ?, NULL, ?)`,
-		agentID, threadID, role, content, now,
-	)
+	query := sq.Insert("conversations").
+		Columns("agent_id", "thread_id", "role", "content", "tool_name", "created_at").
+		Values(agentID, threadID, role, content, nil, now)
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, queryStr, args...)
 	return err
 }
 
 // AppendUserMessage saves a user text message to the conversation history.
 func (s *chatService) AppendUserMessage(ctx context.Context, agentID, threadID, content string) error {
 	now := time.Now().Unix()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO conversations (agent_id, thread_id, role, content, tool_name, created_at)
-		 VALUES (?, ?, 'user', ?, NULL, ?)`,
-		agentID, threadID, content, now,
-	)
+	query := sq.Insert("conversations").
+		Columns("agent_id", "thread_id", "role", "content", "tool_name", "created_at").
+		Values(agentID, threadID, "user", content, nil, now)
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, queryStr, args...)
 	return err
 }
 
 // AppendAssistantMessage saves an assistant text-only message to the conversation history.
 func (s *chatService) AppendAssistantMessage(ctx context.Context, agentID, threadID, content string) error {
 	now := time.Now().Unix()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO conversations (agent_id, thread_id, role, content, tool_name, created_at)
-		 VALUES (?, ?, 'assistant', ?, NULL, ?)`,
-		agentID, threadID, content, now,
-	)
+	query := sq.Insert("conversations").
+		Columns("agent_id", "thread_id", "role", "content", "tool_name", "created_at").
+		Values(agentID, threadID, "assistant", content, nil, now)
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, queryStr, args...)
 	return err
 }
 
@@ -441,11 +479,17 @@ func (s *chatService) AppendToolCall(ctx context.Context, agentID, threadID, too
 
 	now := time.Now().Unix()
 	// Use INSERT OR IGNORE to prevent duplicates based on unique index on (agent_id, thread_id, tool_id)
-	_, err = s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO conversations (agent_id, thread_id, role, content, tool_name, tool_id, created_at)
-		 VALUES (?, ?, 'assistant', ?, ?, ?, ?)`,
-		agentID, threadID, string(contentJSON), toolName, toolID, now,
-	)
+	query := sq.Insert("conversations").
+		Columns("agent_id", "thread_id", "role", "content", "tool_name", "tool_id", "created_at").
+		Values(agentID, threadID, "assistant", string(contentJSON), toolName, toolID, now).
+		Suffix("OR IGNORE")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, queryStr, args...)
 	return err
 }
 
@@ -478,10 +522,16 @@ func (s *chatService) AppendToolResult(ctx context.Context, agentID, threadID, t
 	now := time.Now().Unix()
 	// Use INSERT OR IGNORE to prevent duplicates based on unique index on (agent_id, thread_id, tool_id, role)
 	// The unique index allows one 'assistant' row and one 'tool' row per tool_id, preventing duplicate results
-	_, err = s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO conversations (agent_id, thread_id, role, content, tool_name, tool_id, created_at)
-		 VALUES (?, ?, 'tool', ?, ?, ?, ?)`,
-		agentID, threadID, string(contentJSON), toolName, toolID, now,
-	)
+	query := sq.Insert("conversations").
+		Columns("agent_id", "thread_id", "role", "content", "tool_name", "tool_id", "created_at").
+		Values(agentID, threadID, "tool", string(contentJSON), toolName, toolID, now).
+		Suffix("OR IGNORE")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, queryStr, args...)
 	return err
 }

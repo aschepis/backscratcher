@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	sq "github.com/Masterminds/squirrel"
 )
 
 // ReflectThread takes recent episode memories for a given agent + thread and
@@ -25,17 +27,23 @@ func (s *Store) ReflectThread(
 
 	cutoff := time.Now().Add(-7 * 24 * time.Hour).Unix()
 
-	rows, err := s.db.QueryContext(ctx, `
-SELECT id, agent_id, thread_id, scope, type, content,
-       embedding, metadata, created_at, updated_at, importance
-FROM memory_items
-WHERE type = 'episode'
-  AND scope = 'agent'
-  AND agent_id = ?
-  AND thread_id = ?
-  AND created_at >= ?
-ORDER BY created_at ASC
-`, agentID, threadID, cutoff)
+	query := StatementBuilder().
+		Select("id", "agent_id", "thread_id", "scope", "type", "content",
+			"embedding", "metadata", "created_at", "updated_at", "importance").
+		From("memory_items").
+		Where(sq.Eq{"type": string(MemoryTypeEpisode)}).
+		Where(sq.Eq{"scope": string(ScopeAgent)}).
+		Where(sq.Eq{"agent_id": agentID}).
+		Where(sq.Eq{"thread_id": threadID}).
+		Where(sq.GtOrEq{"created_at": cutoff}).
+		OrderBy("created_at ASC")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return MemoryItem{}, fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
 		return MemoryItem{}, err
 	}

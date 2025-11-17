@@ -269,13 +269,20 @@ func (s *Store) remember(
 		threadVal = *threadID
 	}
 
-	res, err := tx.ExecContext(ctx, `
-INSERT INTO memory_items (
-    agent_id, thread_id, scope, type, content,
-    embedding, metadata, created_at, updated_at, importance
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, agentVal, threadVal, string(scope), string(typ), content,
-		EncodeEmbedding(embedding), metaJSON, nowUnix, nowUnix, importance)
+	query := StatementBuilder().
+		Insert("memory_items").
+		Columns("agent_id", "thread_id", "scope", "type", "content",
+			"embedding", "metadata", "created_at", "updated_at", "importance").
+		Values(agentVal, threadVal, string(scope), string(typ), content,
+			EncodeEmbedding(embedding), metaJSON, nowUnix, nowUnix, importance)
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		logger.Error("Failed to build insert query: %v", err)
+		return MemoryItem{}, fmt.Errorf("build insert query: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, queryStr, args...)
 	if err != nil {
 		logger.Error("Failed to insert memory_item: %v", err)
 		return MemoryItem{}, fmt.Errorf("insert memory_item: %w", err)
@@ -391,15 +398,22 @@ func (s *Store) StorePersonalMemory(
 		threadVal = *threadID
 	}
 
-	res, err := tx.ExecContext(ctx, `
-INSERT INTO memory_items (
-    agent_id, thread_id, scope, type, content,
-    embedding, metadata, created_at, updated_at, importance,
-    raw_content, memory_type, tags_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, agentVal, threadVal, string(ScopeAgent), string(MemoryTypeProfile), normalized,
-		EncodeEmbedding(embedding), metaJSON, nowUnix, nowUnix, importance,
-		rawText, memoryType, tagsJSON)
+	query := StatementBuilder().
+		Insert("memory_items").
+		Columns("agent_id", "thread_id", "scope", "type", "content",
+			"embedding", "metadata", "created_at", "updated_at", "importance",
+			"raw_content", "memory_type", "tags_json").
+		Values(agentVal, threadVal, string(ScopeAgent), string(MemoryTypeProfile), normalized,
+			EncodeEmbedding(embedding), metaJSON, nowUnix, nowUnix, importance,
+			rawText, memoryType, tagsJSON)
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		logger.Error("StorePersonalMemory: failed to build insert query: %v", err)
+		return MemoryItem{}, fmt.Errorf("build insert query: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, queryStr, args...)
 	if err != nil {
 		logger.Error("StorePersonalMemory: failed to insert memory_item: %v", err)
 		return MemoryItem{}, fmt.Errorf("insert personal memory_item: %w", err)
@@ -484,10 +498,18 @@ func (s *Store) CreateArtifact(
 		threadVal = *threadID
 	}
 
-	res, err := s.db.ExecContext(ctx, `
-INSERT INTO artifacts (agent_id, thread_id, scope, title, body, metadata, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-`, agentVal, threadVal, string(scope), title, body, metaJSON, nowUnix, nowUnix)
+	query := StatementBuilder().
+		Insert("artifacts").
+		Columns("agent_id", "thread_id", "scope", "title", "body", "metadata", "created_at", "updated_at").
+		Values(agentVal, threadVal, string(scope), title, body, metaJSON, nowUnix, nowUnix)
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		logger.Error("Failed to build insert query: %v", err)
+		return Artifact{}, fmt.Errorf("build insert query: %w", err)
+	}
+
+	res, err := s.db.ExecContext(ctx, queryStr, args...)
 	if err != nil {
 		logger.Error("Failed to insert artifact: %v", err)
 		return Artifact{}, err
