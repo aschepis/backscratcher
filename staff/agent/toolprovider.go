@@ -80,3 +80,12 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []anthropic.Tool
 
 	return out
 }
+
+// GetAllSchemas returns all registered tool schemas
+func (p *ToolProviderFromRegistry) GetAllSchemas() map[string]ToolSchema {
+	result := make(map[string]ToolSchema)
+	for name, schema := range p.schemas {
+		result[name] = schema
+	}
+	return result
+}

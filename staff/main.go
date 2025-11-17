@@ -16,10 +16,32 @@ import (
 	"github.com/aschepis/backscratcher/staff/memory"
 	"github.com/aschepis/backscratcher/staff/memory/ollama"
 	"github.com/aschepis/backscratcher/staff/runtime"
+	"github.com/aschepis/backscratcher/staff/tools"
 	"github.com/aschepis/backscratcher/staff/ui"
 	"github.com/aschepis/backscratcher/staff/ui/tui"
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// mcpClientAdapter adapts mcp.MCPClient to tools.MCPClientData
+type mcpClientAdapter struct {
+	client mcp.MCPClient
+}
+
+func (a *mcpClientAdapter) ListTools(ctx context.Context) ([]tools.MCPToolDefinition, error) {
+	mcpTools, err := a.client.ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]tools.MCPToolDefinition, len(mcpTools))
+	for i, tool := range mcpTools {
+		result[i] = tools.MCPToolDefinition{
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: tool.InputSchema,
+		}
+	}
+	return result, nil
+}
 
 // registerAllTools registers all tool handlers and schemas with the crew.
 // This centralizes all tool registration logic.
@@ -35,6 +57,106 @@ func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, works
 	crew.ToolRegistry.RegisterNotificationTools(db, func(agentID string, state string) error {
 		return stateManager.SetState(agentID, agent.State(state))
 	})
+
+	// Register staff tools with data accessors
+	staffData := tools.StaffToolsData{
+		GetAgents: func() map[string]tools.AgentConfigData {
+			result := make(map[string]tools.AgentConfigData)
+			agents := crew.GetAgents()
+			for id, cfg := range agents {
+				result[id] = tools.AgentConfigData{
+					ID:           cfg.ID,
+					Name:         cfg.Name,
+					System:       cfg.System,
+					Model:        cfg.Model,
+					MaxTokens:    cfg.MaxTokens,
+					Tools:        cfg.Tools,
+					Schedule:     cfg.Schedule,
+					Disabled:     cfg.Disabled,
+					StartupDelay: cfg.StartupDelay,
+				}
+			}
+			return result
+		},
+		GetAgentState: func(agentID string) (string, *int64, error) {
+			state, err := crew.StateManager().GetState(agentID)
+			if err != nil {
+				return "", nil, err
+			}
+			nextWake, err := crew.StateManager().GetNextWake(agentID)
+			if err != nil {
+				return "", nil, err
+			}
+			var nextWakeUnix *int64
+			if nextWake != nil {
+				unix := nextWake.Unix()
+				nextWakeUnix = &unix
+			}
+			return string(state), nextWakeUnix, nil
+		},
+		GetAllStates: func() (map[string]string, error) {
+			states, err := crew.StateManager().GetAllStates()
+			if err != nil {
+				return nil, err
+			}
+			result := make(map[string]string)
+			for id, state := range states {
+				result[id] = string(state)
+			}
+			return result, nil
+		},
+		GetNextWake: func(agentID string) (*int64, error) {
+			nextWake, err := crew.StateManager().GetNextWake(agentID)
+			if err != nil {
+				return nil, err
+			}
+			if nextWake != nil {
+				unix := nextWake.Unix()
+				return &unix, nil
+			}
+			return nil, nil
+		},
+		GetStats: func(agentID string) (map[string]interface{}, error) {
+			return crew.StatsManager().GetStats(agentID)
+		},
+		GetAllStats: func() ([]map[string]interface{}, error) {
+			return crew.StatsManager().GetAllStats()
+		},
+		GetAllToolSchemas: func() map[string]tools.ToolSchemaData {
+			schemas := crew.ToolProvider.GetAllSchemas()
+			result := make(map[string]tools.ToolSchemaData)
+			for name, schema := range schemas {
+				result[name] = tools.ToolSchemaData{
+					Description: schema.Description,
+				}
+			}
+			return result
+		},
+		GetMCPServers: func() map[string]tools.MCPServerData {
+			result := make(map[string]tools.MCPServerData)
+			servers := crew.GetMCPServers()
+			for name, cfg := range servers {
+				result[name] = tools.MCPServerData{
+					Name:       name,
+					Command:    cfg.Command,
+					URL:        cfg.URL,
+					ConfigFile: cfg.ConfigFile,
+					Args:       cfg.Args,
+					Env:        cfg.Env,
+				}
+			}
+			return result
+		},
+		GetMCPClients: func() map[string]tools.MCPClientData {
+			result := make(map[string]tools.MCPClientData)
+			clients := crew.GetMCPClients()
+			for name, client := range clients {
+				result[name] = &mcpClientAdapter{client: client}
+			}
+			return result
+		},
+	}
+	crew.ToolRegistry.RegisterStaffTools(staffData, workspacePath, db)
 
 	// Register schemas for memory tools
 	// Note: Tool names must match pattern ^[a-zA-Z0-9_-]{1,128}$ (no dots allowed)
@@ -242,6 +364,67 @@ func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, works
 			"required": []string{"message"},
 		},
 	})
+
+	// Register schemas for staff tools
+	crew.ToolProvider.RegisterSchema("list_agents", agent.ToolSchema{
+		Description: "List all configured agents with their configuration details.",
+		Schema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+			"required":   []string{},
+		},
+	})
+
+	crew.ToolProvider.RegisterSchema("get_agent_state", agent.ToolSchema{
+		Description: "Get the current state and next_wake time for one or all agents.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"agent_id": map[string]any{"type": "string", "description": "Optional agent ID. If omitted, returns states for all agents."},
+			},
+			"required": []string{},
+		},
+	})
+
+	crew.ToolProvider.RegisterSchema("get_agent_stats", agent.ToolSchema{
+		Description: "Get execution statistics (execution_count, failure_count, wakeup_count, last_execution, last_failure) for one or all agents.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"agent_id": map[string]any{"type": "string", "description": "Optional agent ID. If omitted, returns stats for all agents."},
+			},
+			"required": []string{},
+		},
+	})
+
+	crew.ToolProvider.RegisterSchema("list_tools", agent.ToolSchema{
+		Description: "List all registered tools with their descriptions.",
+		Schema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+			"required":   []string{},
+		},
+	})
+
+	crew.ToolProvider.RegisterSchema("list_mcp_servers", agent.ToolSchema{
+		Description: "List all configured MCP servers with their configuration details.",
+		Schema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+			"required":   []string{},
+		},
+	})
+
+	crew.ToolProvider.RegisterSchema("mcp_tools_discover", agent.ToolSchema{
+		Description: "Discover tools available from MCP servers. Returns tool definitions including name, description, and input schema.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"server_name": map[string]any{"type": "string", "description": "Optional MCP server name. If omitted, discovers tools from all configured MCP servers."},
+			},
+			"required": []string{},
+		},
+	})
 }
 
 // registerMCPServers discovers and registers tools from MCP servers.
@@ -332,6 +515,10 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 
 			logger.Info("Registered MCP tool: safeName=%s originalName=%s server=%s", safeName, originalName, serverName)
 		}
+
+		// Store MCP server config and client in Crew
+		crew.MCPServers[serverName] = serverConfig
+		crew.MCPClients[serverName] = mcpClient
 	}
 
 	return nil
@@ -447,7 +634,11 @@ func main() {
 	defer cancelScheduler()
 
 	// Create scheduler with 15 second poll interval
-	scheduler := runtime.NewScheduler(crew, crew.StateManager(), 15*time.Second)
+	scheduler, err := runtime.NewScheduler(crew, crew.StateManager(), crew.StatsManager(), 15*time.Second)
+	if err != nil {
+		logger.Error("Failed to create scheduler: %v", err)
+		log.Fatalf("Failed to create scheduler: %v", err)
+	}
 
 	// Start scheduler in background goroutine
 	go scheduler.Start(schedulerCtx)

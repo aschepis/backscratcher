@@ -10,6 +10,7 @@ import (
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/aschepis/backscratcher/staff/mcp"
 	"github.com/aschepis/backscratcher/staff/tools"
 )
 
@@ -19,15 +20,19 @@ type Crew struct {
 	ToolRegistry     *tools.Registry
 	ToolProvider     *ToolProviderFromRegistry
 	stateManager     *StateManager
+	statsManager     *StatsManager
 	messagePersister MessagePersister // Optional message persister
+
+	MCPServers map[string]*MCPServerConfig
+	MCPClients map[string]mcp.MCPClient
 
 	apiKey string
 	mu     sync.RWMutex
 }
 
 type CrewConfig struct {
-	Agents     map[string]*AgentConfig            `yaml:"agents" json:"agents"`
-	MCPServers map[string]*MCPServerConfig        `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
+	Agents     map[string]*AgentConfig     `yaml:"agents" json:"agents"`
+	MCPServers map[string]*MCPServerConfig `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
 }
 
 func NewCrew(apiKey string, db *sql.DB) *Crew {
@@ -37,6 +42,7 @@ func NewCrew(apiKey string, db *sql.DB) *Crew {
 	reg := tools.NewRegistry()
 	provider := NewToolProvider(reg)
 	stateManager := NewStateManager(db)
+	statsManager := NewStatsManager(db)
 
 	return &Crew{
 		Agents:       make(map[string]*AgentConfig),
@@ -44,13 +50,21 @@ func NewCrew(apiKey string, db *sql.DB) *Crew {
 		ToolRegistry: reg,
 		ToolProvider: provider,
 		stateManager: stateManager,
+		statsManager: statsManager,
 		apiKey:       apiKey,
+		MCPServers:   make(map[string]*MCPServerConfig),
+		MCPClients:   make(map[string]mcp.MCPClient),
 	}
 }
 
 // StateManager returns the state manager for this crew
 func (c *Crew) StateManager() *StateManager {
 	return c.stateManager
+}
+
+// StatsManager returns the stats manager for this crew
+func (c *Crew) StatsManager() *StatsManager {
+	return c.statsManager
 }
 
 // SetMessagePersister sets the message persister for this crew.
@@ -72,6 +86,12 @@ func (c *Crew) LoadCrewConfig(cfg CrewConfig) error {
 		}
 		c.Agents[id] = agentCfg
 	}
+	// Store MCP server configs
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for name, serverCfg := range cfg.MCPServers {
+		c.MCPServers[name] = serverCfg
+	}
 	return nil
 }
 
@@ -86,7 +106,10 @@ func (c *Crew) InitializeAgents() error {
 			continue
 		}
 
-		runner := NewAgentRunnerWithPersister(c.apiKey, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider, c.stateManager, c.messagePersister)
+		runner, err := NewAgentRunnerWithPersister(c.apiKey, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider, c.stateManager, c.statsManager, c.messagePersister)
+		if err != nil {
+			return fmt.Errorf("failed to create runner for agent %s: %w", id, err)
+		}
 		c.Runners[id] = runner
 		// Initialize agent state to idle if not exists
 		exists, err := c.stateManager.StateExists(id)
@@ -261,4 +284,40 @@ func (c *Crew) IsAgentDisabled(agentID string) bool {
 		return true // If agent doesn't exist, consider it disabled
 	}
 	return agent.Disabled
+}
+
+// GetAgents returns a copy of all agent configs
+func (c *Crew) GetAgents() map[string]*AgentConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	result := make(map[string]*AgentConfig)
+	for id, cfg := range c.Agents {
+		result[id] = cfg
+	}
+	return result
+}
+
+// GetMCPServers returns a copy of all MCP server configs
+func (c *Crew) GetMCPServers() map[string]*MCPServerConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	result := make(map[string]*MCPServerConfig)
+	for name, cfg := range c.MCPServers {
+		result[name] = cfg
+	}
+	return result
+}
+
+// GetMCPClients returns a copy of all MCP clients
+func (c *Crew) GetMCPClients() map[string]mcp.MCPClient {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	result := make(map[string]mcp.MCPClient)
+	for name, client := range c.MCPClients {
+		result[name] = client
+	}
+	return result
 }

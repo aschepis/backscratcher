@@ -240,3 +240,179 @@ func (sm *StateManager) GetAgentsReadyToWake() ([]string, error) {
 	return agentIDs, nil
 }
 
+// StatsManager manages agent statistics persistence
+type StatsManager struct {
+	db *sql.DB
+}
+
+// NewStatsManager creates a new StatsManager
+func NewStatsManager(db *sql.DB) *StatsManager {
+	return &StatsManager{db: db}
+}
+
+// IncrementExecutionCount increments the execution count and updates last_execution timestamp
+func (sm *StatsManager) IncrementExecutionCount(agentID string) error {
+	now := time.Now().Unix()
+	_, err := sm.db.Exec(
+		`INSERT INTO agent_stats (agent_id, execution_count, last_execution)
+		 VALUES (?, 1, ?)
+		 ON CONFLICT(agent_id) DO UPDATE SET
+		   execution_count = execution_count + 1,
+		   last_execution = excluded.last_execution`,
+		agentID,
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to increment execution count: %w", err)
+	}
+	return nil
+}
+
+// IncrementFailureCount increments the failure count and updates last_failure timestamp and message
+func (sm *StatsManager) IncrementFailureCount(agentID string, errorMessage string) error {
+	now := time.Now().Unix()
+	_, err := sm.db.Exec(
+		`INSERT INTO agent_stats (agent_id, failure_count, last_failure, last_failure_message)
+		 VALUES (?, 1, ?, ?)
+		 ON CONFLICT(agent_id) DO UPDATE SET
+		   failure_count = failure_count + 1,
+		   last_failure = excluded.last_failure,
+		   last_failure_message = excluded.last_failure_message`,
+		agentID,
+		now,
+		errorMessage,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to increment failure count: %w", err)
+	}
+	return nil
+}
+
+// IncrementWakeupCount increments the wakeup count
+func (sm *StatsManager) IncrementWakeupCount(agentID string) error {
+	_, err := sm.db.Exec(
+		`INSERT INTO agent_stats (agent_id, wakeup_count)
+		 VALUES (?, 1)
+		 ON CONFLICT(agent_id) DO UPDATE SET
+		   wakeup_count = wakeup_count + 1`,
+		agentID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to increment wakeup count: %w", err)
+	}
+	return nil
+}
+
+// GetStats retrieves stats for an agent
+func (sm *StatsManager) GetStats(agentID string) (map[string]interface{}, error) {
+	var executionCount, failureCount, wakeupCount int
+	var lastExecution, lastFailure sql.NullInt64
+	var lastFailureMessage sql.NullString
+
+	err := sm.db.QueryRow(
+		`SELECT execution_count, failure_count, wakeup_count, last_execution, last_failure, last_failure_message
+		 FROM agent_stats WHERE agent_id = ?`,
+		agentID,
+	).Scan(&executionCount, &failureCount, &wakeupCount, &lastExecution, &lastFailure, &lastFailureMessage)
+
+	if err == sql.ErrNoRows {
+		// Return zero stats if agent has no stats yet
+		return map[string]interface{}{
+			"agent_id":           agentID,
+			"execution_count":    0,
+			"failure_count":      0,
+			"wakeup_count":       0,
+			"last_execution":     nil,
+			"last_failure":       nil,
+			"last_failure_message": nil,
+		}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get agent stats: %w", err)
+	}
+
+	result := map[string]interface{}{
+		"agent_id":        agentID,
+		"execution_count": executionCount,
+		"failure_count":   failureCount,
+		"wakeup_count":    wakeupCount,
+	}
+
+	if lastExecution.Valid {
+		result["last_execution"] = lastExecution.Int64
+	} else {
+		result["last_execution"] = nil
+	}
+
+	if lastFailure.Valid {
+		result["last_failure"] = lastFailure.Int64
+	} else {
+		result["last_failure"] = nil
+	}
+
+	if lastFailureMessage.Valid {
+		result["last_failure_message"] = lastFailureMessage.String
+	} else {
+		result["last_failure_message"] = nil
+	}
+
+	return result, nil
+}
+
+// GetAllStats retrieves stats for all agents
+func (sm *StatsManager) GetAllStats() ([]map[string]interface{}, error) {
+	rows, err := sm.db.Query(
+		`SELECT agent_id, execution_count, failure_count, wakeup_count, last_execution, last_failure, last_failure_message
+		 FROM agent_stats`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query agent stats: %w", err)
+	}
+	defer rows.Close()
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		var agentID string
+		var executionCount, failureCount, wakeupCount int
+		var lastExecution, lastFailure sql.NullInt64
+		var lastFailureMessage sql.NullString
+
+		if err := rows.Scan(&agentID, &executionCount, &failureCount, &wakeupCount, &lastExecution, &lastFailure, &lastFailureMessage); err != nil {
+			return nil, fmt.Errorf("failed to scan agent stats: %w", err)
+		}
+
+		result := map[string]interface{}{
+			"agent_id":        agentID,
+			"execution_count": executionCount,
+			"failure_count":   failureCount,
+			"wakeup_count":    wakeupCount,
+		}
+
+		if lastExecution.Valid {
+			result["last_execution"] = lastExecution.Int64
+		} else {
+			result["last_execution"] = nil
+		}
+
+		if lastFailure.Valid {
+			result["last_failure"] = lastFailure.Int64
+		} else {
+			result["last_failure"] = nil
+		}
+
+		if lastFailureMessage.Valid {
+			result["last_failure_message"] = lastFailureMessage.String
+		} else {
+			result["last_failure_message"] = nil
+		}
+
+		results = append(results, result)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating agent stats: %w", err)
+	}
+
+	return results, nil
+}
+

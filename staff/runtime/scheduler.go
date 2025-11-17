@@ -13,16 +13,21 @@ import (
 type Scheduler struct {
 	crew         *agent.Crew
 	stateMgr     *agent.StateManager
+	statsMgr     *agent.StatsManager
 	pollInterval time.Duration
 }
 
-// NewScheduler creates a new scheduler with the given crew, state manager, and poll interval
-func NewScheduler(crew *agent.Crew, stateMgr *agent.StateManager, pollInterval time.Duration) *Scheduler {
+// NewScheduler creates a new scheduler with the given crew, state manager, stats manager, and poll interval
+func NewScheduler(crew *agent.Crew, stateMgr *agent.StateManager, statsMgr *agent.StatsManager, pollInterval time.Duration) (*Scheduler, error) {
+	if statsMgr == nil {
+		return nil, fmt.Errorf("statsMgr cannot be nil")
+	}
 	return &Scheduler{
 		crew:         crew,
 		stateMgr:     stateMgr,
+		statsMgr:     statsMgr,
 		pollInterval: pollInterval,
-	}
+	}, nil
 }
 
 // Start begins the scheduler goroutine that polls for agents ready to wake
@@ -81,6 +86,11 @@ func (s *Scheduler) checkAndWakeAgents(ctx context.Context) {
 // wakeAgent wakes a single agent by calling Crew.Run with "continue" message
 func (s *Scheduler) wakeAgent(ctx context.Context, agentID string) {
 	logger.Info("Waking agent: %s", agentID)
+
+	// Track wakeup
+	if err := s.statsMgr.IncrementWakeupCount(agentID); err != nil {
+		logger.Warn("Failed to update wakeup stats for agent %s: %v", agentID, err)
+	}
 
 	// Create a new context with timeout for the agent run
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)

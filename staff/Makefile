@@ -1,4 +1,4 @@
-.PHONY: build clean run test install help
+.PHONY: build clean run test install lint check help
 
 # Binary name
 BINARY_NAME=staff
@@ -33,6 +33,11 @@ run: build ## Build and run the application
 
 test: ## Run tests (with FTS5 enabled)
 	CGO_ENABLED=1 $(GOTEST) -v $(BUILD_FLAGS) ./...
+
+lint: ## Run golangci-lint
+	golangci-lint run ./...
+
+check: lint test ## Run lint and tests
 
 tidy: ## Tidy go modules
 	$(GOMOD) tidy

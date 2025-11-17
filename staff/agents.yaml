@@ -75,22 +75,17 @@ agents:
       # System introspection
       - list_directory
       - read_file
-      - grep_search           # optional, depending on your tool provider
-      - filesystem_read_file
-      - filesystem_write_file
-
-      # Staffd-specific system tools (you will provide these)
+      - grep_search
+      - write_file
       - list_agents           # returns config for all agents
       - get_agent_state       # returns state machine status for each agent
       - get_agent_stats       # execution counts, failures, wakeups
       - list_tools            # returns all registered tools
       - list_mcp_servers      # returns configured MCP servers
       - mcp_tools_discover    # introspects MCP servers for tools + schemas
-      - propose_agent         # writes a candidate agent spec to a file or inbox
-      - propose_tool          # writes a candidate tool spec to a file or inbox
 
       # User interaction
-      - notification_send
+      - send_user_notification
 
     system_prompt: |
       You are the Chief of Staff for the user's Staff system.
@@ -113,7 +108,7 @@ agents:
         - Avoid storing one-off, highly local statements (e.g., "I'm cold right now") or obvious duplicates of existing memories.
 
       3. **Hire / Fire / Promote**:
-        - Recommend creation of new agents ("hiring") by producing:
+        - Recommend creation of new agents ("hiring") by sending a notification to the user using `send_user_notification` with:
           - an agent name
           - description
           - responsibilities
@@ -121,12 +116,13 @@ agents:
           - required tools
           - suggested prompt
         - Recommend deprecating or consolidating agents that are redundant or obsolete.
+        - When proposing new tools, send a notification using `send_user_notification` with the tool specification.
 
       4. **Tools & MCP Servers**:
         - Evaluate tool usage patterns.
         - Identify missing tools (e.g. filesystem, search, integrations).
         - Discover MCP tools using the mcp_tools_discover capability.
-        - Suggest new MCP servers or new tool wrappers for existing APIs.
+        - Suggest new MCP servers or new tool wrappers for existing APIs using `send_user_notification`.
         - Identify unused or misconfigured MCP servers; suggest fixes.
 
       5. **Configuration & Diagnostics**:
@@ -140,9 +136,9 @@ agents:
 
       ## Output Expectations
       - When making recommendations, output them in clear bullet points.
-      - For agent or tool proposals, output **actionable YAML blocks**.
+      - For agent or tool proposals, send notifications to the user using `send_user_notification` with the proposal details.
       - When investigating system status, call tools as needed to gather evidence.
-      - When findings require review, send a notification via `notification_send`.
+      - When findings require review, send a notification via `send_user_notification`.
 
       ## Safety / Constraints
       - Do not modify files or configurations without explicit tool-based requests.

@@ -35,12 +35,19 @@ type MessagePersister interface {
 }
 
 type AgentRunner struct {
-	client          *anthropic.Client
-	agent           *Agent
-	toolExec        ToolExecutor
-	toolProvider    ToolProvider
-	stateManager    *StateManager
+	client           *anthropic.Client
+	agent            *Agent
+	toolExec         ToolExecutor
+	toolProvider     ToolProvider
+	stateManager     *StateManager
+	statsManager     *StatsManager
 	messagePersister MessagePersister // Optional message persister
+}
+
+// toolResultData holds the result data for a tool call
+type toolResultData struct {
+	result  any
+	isError bool
 }
 
 func NewAgentRunner(
@@ -49,8 +56,9 @@ func NewAgentRunner(
 	toolExec ToolExecutor,
 	toolProvider ToolProvider,
 	stateManager *StateManager,
-) *AgentRunner {
-	return NewAgentRunnerWithPersister(apiKey, agent, toolExec, toolProvider, stateManager, nil)
+	statsManager *StatsManager,
+) (*AgentRunner, error) {
+	return NewAgentRunnerWithPersister(apiKey, agent, toolExec, toolProvider, stateManager, statsManager, nil)
 }
 
 // NewAgentRunnerWithPersister creates a new AgentRunner with an optional message persister.
@@ -60,19 +68,73 @@ func NewAgentRunnerWithPersister(
 	toolExec ToolExecutor,
 	toolProvider ToolProvider,
 	stateManager *StateManager,
+	statsManager *StatsManager,
 	messagePersister MessagePersister,
-) *AgentRunner {
+) (*AgentRunner, error) {
 	if stateManager == nil {
-		panic("stateManager is required for AgentRunner")
+		return nil, fmt.Errorf("stateManager is required for AgentRunner")
+	}
+	if statsManager == nil {
+		return nil, fmt.Errorf("statsManager is required for AgentRunner")
 	}
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	return &AgentRunner{
-		client:          &client,
-		agent:           agent,
-		toolExec:        toolExec,
-		toolProvider:    toolProvider,
-		stateManager:    stateManager,
+		client:           &client,
+		agent:            agent,
+		toolExec:         toolExec,
+		toolProvider:     toolProvider,
+		stateManager:     stateManager,
+		statsManager:     statsManager,
 		messagePersister: messagePersister,
+	}, nil
+}
+
+// trackExecutionStats records execution statistics (success or failure) for the agent
+func (r *AgentRunner) trackExecutionStats(successful bool, errorMsg string) {
+	if !successful {
+		// Track failure if execution was not successful
+		if errorMsg != "" {
+			if updateErr := r.statsManager.IncrementFailureCount(r.agent.ID, errorMsg); updateErr != nil {
+				fmt.Printf("Warning: failed to update failure stats: %v\n", updateErr)
+			}
+		}
+	} else {
+		// Track successful execution
+		if updateErr := r.statsManager.IncrementExecutionCount(r.agent.ID); updateErr != nil {
+			fmt.Printf("Warning: failed to update execution stats: %v\n", updateErr)
+		}
+	}
+}
+
+// updateAgentStateAfterExecution updates the agent state after execution completes,
+// handling scheduled agents by computing next wake time or setting to idle
+func (r *AgentRunner) updateAgentStateAfterExecution(executionSuccessful bool, executionError string) {
+	// Track execution completion or failure
+	r.trackExecutionStats(executionSuccessful, executionError)
+
+	// Check if agent has a schedule - if so, compute next wake and set to waiting_external
+	// Otherwise, set to idle
+	if r.agent.Config.Schedule != "" && !r.agent.Config.Disabled {
+		// Agent is scheduled, compute next wake time
+		now := time.Now()
+		nextWake, err := ComputeNextWake(r.agent.Config.Schedule, now)
+		if err != nil {
+			fmt.Printf("Warning: failed to compute next wake for agent %s: %v\n", r.agent.ID, err)
+			// Fall back to idle on error
+			if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
+				fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+			}
+			return
+		}
+		// Set state to waiting_external with next_wake
+		if err := r.stateManager.SetStateWithNextWake(r.agent.ID, StateWaitingExternal, &nextWake); err != nil {
+			fmt.Printf("Warning: failed to set agent state to waiting_external: %v\n", err)
+		}
+	} else {
+		// Agent is not scheduled, set to idle
+		if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
+			fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+		}
 	}
 }
 
@@ -84,8 +146,8 @@ type AgentConfig struct {
 	Model        string   `yaml:"model" json:"model"`
 	MaxTokens    int64    `yaml:"max_tokens" json:"max_tokens"`
 	Tools        []string `yaml:"tools" json:"tools"`
-	Schedule     string   `yaml:"schedule" json:"schedule"`       // e.g., "15m", "2h", "0 */15 * * * *" (cron)
-	Disabled     bool     `yaml:"disabled" json:"disabled"`       // default: false (agent is enabled by default)
+	Schedule     string   `yaml:"schedule" json:"schedule"`           // e.g., "15m", "2h", "0 */15 * * * *" (cron)
+	Disabled     bool     `yaml:"disabled" json:"disabled"`           // default: false (agent is enabled by default)
 	StartupDelay string   `yaml:"startup_delay" json:"startup_delay"` // e.g., "5m", "30s", "1h" - one-time delay after app launch
 }
 
@@ -110,32 +172,13 @@ func (r *AgentRunner) RunAgent(
 		fmt.Printf("Warning: failed to set agent state to running: %v\n", err)
 	}
 
+	// Track if execution was successful
+	executionSuccessful := false
+	executionError := ""
+
 	// Ensure state is updated when execution completes (normal or error)
 	defer func() {
-		// Check if agent has a schedule - if so, compute next wake and set to waiting_external
-		// Otherwise, set to idle
-		if r.agent.Config.Schedule != "" && !r.agent.Config.Disabled {
-			// Agent is scheduled, compute next wake time
-			now := time.Now()
-			nextWake, err := ComputeNextWake(r.agent.Config.Schedule, now)
-			if err != nil {
-				fmt.Printf("Warning: failed to compute next wake for agent %s: %v\n", r.agent.ID, err)
-				// Fall back to idle on error
-				if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
-					fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
-				}
-				return
-			}
-			// Set state to waiting_external with next_wake
-			if err := r.stateManager.SetStateWithNextWake(r.agent.ID, StateWaitingExternal, &nextWake); err != nil {
-				fmt.Printf("Warning: failed to set agent state to waiting_external: %v\n", err)
-			}
-		} else {
-			// Agent is not scheduled, set to idle
-			if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
-				fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
-			}
-		}
+		r.updateAgentStateAfterExecution(executionSuccessful, executionError)
 	}()
 
 	// Get debug callback from context
@@ -165,18 +208,16 @@ func (r *AgentRunner) RunAgent(
 			Tools: tools,
 		})
 		if err != nil {
+			executionError = err.Error()
 			return "", fmt.Errorf("anthropic Messages.New: %w", err)
 		}
 
 		// Accumulate tool uses + any plain text
 		var (
-			finalText   strings.Builder
-			toolResults []anthropic.ContentBlockParamUnion
-			toolNameMap = make(map[string]string)      // Map tool ID to tool name for persistence
-			toolResultMap = make(map[string]struct {   // Map tool ID to result data for persistence
-				result  any
-				isError bool
-			})
+			finalText     strings.Builder
+			toolResults   []anthropic.ContentBlockParamUnion
+			toolNameMap   = make(map[string]string)         // Map tool ID to tool name for persistence
+			toolResultMap = make(map[string]toolResultData) // Map tool ID to result data for persistence
 		)
 
 		for _, blockUnion := range message.Content {
@@ -201,10 +242,7 @@ func (r *AgentRunner) RunAgent(
 				}
 
 				// Track result for persistence
-				toolResultMap[block.ID] = struct {
-					result  any
-					isError bool
-				}{result: result, isError: callErr != nil}
+				toolResultMap[block.ID] = toolResultData{result: result, isError: callErr != nil}
 
 				b, _ := json.Marshal(result)
 				isError := callErr != nil
@@ -247,6 +285,7 @@ func (r *AgentRunner) RunAgent(
 					fmt.Printf("Warning: failed to persist assistant message: %v\n", err)
 				}
 			}
+			executionSuccessful = true
 			return strings.TrimSpace(finalText.String()), nil
 		}
 
@@ -289,32 +328,13 @@ func (r *AgentRunner) RunAgentStream(
 		fmt.Printf("Warning: failed to set agent state to running: %v\n", err)
 	}
 
+	// Track if execution was successful
+	executionSuccessful := false
+	executionError := ""
+
 	// Ensure state is updated when execution completes (normal or error)
 	defer func() {
-		// Check if agent has a schedule - if so, compute next wake and set to waiting_external
-		// Otherwise, set to idle
-		if r.agent.Config.Schedule != "" && !r.agent.Config.Disabled {
-			// Agent is scheduled, compute next wake time
-			now := time.Now()
-			nextWake, err := ComputeNextWake(r.agent.Config.Schedule, now)
-			if err != nil {
-				fmt.Printf("Warning: failed to compute next wake for agent %s: %v\n", r.agent.ID, err)
-				// Fall back to idle on error
-				if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
-					fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
-				}
-				return
-			}
-			// Set state to waiting_external with next_wake
-			if err := r.stateManager.SetStateWithNextWake(r.agent.ID, StateWaitingExternal, &nextWake); err != nil {
-				fmt.Printf("Warning: failed to set agent state to waiting_external: %v\n", err)
-			}
-		} else {
-			// Agent is not scheduled, set to idle
-			if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
-				fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
-			}
-		}
+		r.updateAgentStateAfterExecution(executionSuccessful, executionError)
 	}()
 
 	// Get debug callback from context
@@ -399,6 +419,7 @@ func (r *AgentRunner) RunAgentStream(
 						// Call callback with text delta (non-blocking)
 						if callback != nil {
 							if err := callback(deltaType.Text); err != nil {
+								executionError = err.Error()
 								return "", fmt.Errorf("callback error: %w", err)
 							}
 						}
@@ -446,11 +467,13 @@ func (r *AgentRunner) RunAgentStream(
 
 		// Check for stream errors
 		if err := stream.Err(); err != nil {
+			executionError = err.Error()
 			return "", fmt.Errorf("stream error: %w", err)
 		}
 
 		// Check if context was cancelled
 		if ctx.Err() != nil {
+			executionError = ctx.Err().Error()
 			return "", fmt.Errorf("context cancelled: %w", ctx.Err())
 		}
 
@@ -463,7 +486,7 @@ func (r *AgentRunner) RunAgentStream(
 			// Build assistant message content with tool uses and execute tools
 			var assistantContent []anthropic.ContentBlockParamUnion
 			var toolResults []anthropic.ContentBlockParamUnion
-			toolNameMap := make(map[string]string) // Map tool ID to tool name for persistence
+			toolNameMap := make(map[string]string)    // Map tool ID to tool name for persistence
 			toolResultMap := make(map[string]struct { // Map tool ID to result data for persistence
 				result  any
 				isError bool
@@ -513,10 +536,7 @@ func (r *AgentRunner) RunAgentStream(
 
 				// Track result for persistence
 				isError := callErr != nil
-				toolResultMap[toolUse.ID] = struct {
-					result  any
-					isError bool
-				}{result: result, isError: isError}
+				toolResultMap[toolUse.ID] = toolResultData{result: result, isError: isError}
 
 				b, _ := json.Marshal(result)
 				toolResults = append(toolResults, anthropic.NewToolResultBlock(toolUse.ID, string(b), isError))
@@ -577,16 +597,19 @@ func (r *AgentRunner) RunAgentStream(
 					fmt.Printf("Warning: failed to persist assistant message: %v\n", err)
 				}
 			}
+			executionSuccessful = true
 			return text, nil
 		}
 
 		// If stream completed without content, it might be an empty response
 		// This is valid - some responses might be empty
 		if streamComplete {
+			executionSuccessful = true
 			return "", nil
 		}
 
 		// If we get here without text or tool use, something went wrong
-		return "", fmt.Errorf("unexpected stream completion: no text or tool use detected")
+		executionError = "unexpected stream completion: no text or tool use detected"
+		return "", fmt.Errorf("%s", executionError)
 	}
 }

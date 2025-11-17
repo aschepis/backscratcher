@@ -109,6 +109,17 @@ CREATE TABLE IF NOT EXISTS agent_states (
 
 CREATE INDEX IF NOT EXISTS idx_agent_states_state ON agent_states(state);
 CREATE INDEX IF NOT EXISTS idx_agent_states_next_wake ON agent_states(next_wake);
+
+CREATE TABLE IF NOT EXISTS agent_stats (
+    agent_id TEXT PRIMARY KEY,
+    execution_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    wakeup_count INTEGER NOT NULL DEFAULT 0,
+    last_execution INTEGER,
+    last_failure INTEGER,
+    last_failure_message TEXT,
+    FOREIGN KEY(agent_id) REFERENCES agent_states(agent_id)
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
     content,
     content_rowid='id'
