@@ -25,6 +25,9 @@ type ChatService interface {
 	// The debugCallback is added to the context for debug information.
 	SendMessageStream(ctx context.Context, agentID, threadID, message string, history []anthropic.MessageParam, streamCallback StreamCallback, debugCallback DebugCallback) (string, error)
 
+	// GetChatTimeout returns the timeout duration for chat operations.
+	GetChatTimeout() time.Duration
+
 	// ListAgents returns a list of available agents.
 	ListAgents() []AgentInfo
 

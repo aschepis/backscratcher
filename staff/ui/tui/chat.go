@@ -227,8 +227,9 @@ func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay 
 		chatDisplay.ScrollToEnd()
 	})
 
-	// Use a shorter timeout for better UX - 60 seconds should be plenty
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Use configurable timeout from chat service
+	timeout := a.chatService.GetChatTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	// Get or create thread ID for this agent

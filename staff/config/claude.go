@@ -223,11 +223,15 @@ func ExtractMCPServersFromProjects(claudeConfig *ClaudeConfig, projectPaths []st
 			}
 			projectToServers[projectPath] = serverNames
 			logger.Info("ExtractMCPServersFromProjects: project %q contributed %d MCP server(s)", projectPath, len(serverNames))
-		} else if shouldLoad {
-			logger.Info("ExtractMCPServersFromProjects: project %q has no MCP servers", projectPath)
-		} else {
-			logger.Info("ExtractMCPServersFromProjects: skipping project %q (not in filter list)", projectPath)
+			continue
 		}
+
+		if shouldLoad {
+			logger.Info("ExtractMCPServersFromProjects: project %q has no MCP servers", projectPath)
+			continue
+		}
+
+		logger.Info("ExtractMCPServersFromProjects: skipping project %q (not in filter list)", projectPath)
 	}
 
 	// Count projects vs global

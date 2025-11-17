@@ -152,6 +152,39 @@ type AgentConfig struct {
 	StartupDelay string   `yaml:"startup_delay" json:"startup_delay"` // e.g., "5m", "30s", "1h" - one-time delay after app launch
 }
 
+// calculateInputTextLength calculates the total length of input text being sent to Anthropic.
+// This includes the system prompt and all message content (text blocks, tool use blocks, and tool result blocks).
+func (r *AgentRunner) calculateInputTextLength(msgs []anthropic.MessageParam) int {
+	totalLength := len(r.agent.Config.System)
+
+	for _, msg := range msgs {
+		for _, blockUnion := range msg.Content {
+			// Check for text blocks
+			if blockUnion.OfText != nil {
+				totalLength += len(blockUnion.OfText.Text)
+			}
+			// Check for tool use blocks
+			if blockUnion.OfToolUse != nil {
+				// Include tool name
+				totalLength += len(blockUnion.OfToolUse.Name)
+				// Include tool input JSON
+				if blockUnion.OfToolUse.Input != nil {
+					if inputBytes, err := json.Marshal(blockUnion.OfToolUse.Input); err == nil {
+						totalLength += len(inputBytes)
+					}
+				}
+			}
+			// Check for tool result blocks
+			if blockUnion.OfToolResult != nil {
+				// Include tool result content
+				totalLength += len(blockUnion.OfToolResult.Content)
+			}
+		}
+	}
+
+	return totalLength
+}
+
 // RunAgent executes a single turn for an agent, with optional history.
 // debugCallback is retrieved from context if available.
 func (r *AgentRunner) RunAgent(
@@ -194,10 +227,16 @@ func (r *AgentRunner) RunAgent(
 	tools := r.toolProvider.SpecsFor(r.agent.Config)
 
 	for {
+		// Calculate input text length
+		inputLength := r.calculateInputTextLength(msgs)
+
 		// Debug: Show API call about to be made
 		if debugCallback != nil {
-			debugCallback(fmt.Sprintf("Calling Anthropic API (model: %s, %d messages in history)", r.agent.Config.Model, len(msgs)))
+			debugCallback(fmt.Sprintf("Calling Anthropic API (model: %s, %d messages in history, input length: %d chars)", r.agent.Config.Model, len(msgs), inputLength))
 		}
+
+		// Log API call with input length
+		logger.Info("Calling Anthropic API for agent %s (model: %s, %d messages in history, input length: %d chars)", r.agent.ID, r.agent.Config.Model, len(msgs), inputLength)
 
 		message, err := r.client.Messages.New(ctx, anthropic.MessageNewParams{
 			Model:     anthropic.Model(r.agent.Config.Model),
@@ -354,10 +393,16 @@ func (r *AgentRunner) RunAgentStream(
 	var fullResponse strings.Builder
 
 	for {
+		// Calculate input text length
+		inputLength := r.calculateInputTextLength(msgs)
+
 		// Debug: Show API call about to be made
 		if debugCallback != nil {
-			debugCallback(fmt.Sprintf("Calling Anthropic API (model: %s, %d messages in history)", r.agent.Config.Model, len(msgs)))
+			debugCallback(fmt.Sprintf("Calling Anthropic API (model: %s, %d messages in history, input length: %d chars)", r.agent.Config.Model, len(msgs), inputLength))
 		}
+
+		// Log API call with input length
+		logger.Info("Calling Anthropic API for agent %s (model: %s, %d messages in history, input length: %d chars)", r.agent.ID, r.agent.Config.Model, len(msgs), inputLength)
 
 		// Create streaming request
 		stream := r.client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{

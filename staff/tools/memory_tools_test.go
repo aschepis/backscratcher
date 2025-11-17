@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/aschepis/backscratcher/staff/memory"
+	"github.com/aschepis/backscratcher/staff/migrations"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -19,6 +22,29 @@ func TestMemoryStorePersonalTool_Smoke(t *testing.T) {
 		t.Fatalf("failed to open in-memory sqlite: %v", err)
 	}
 	defer db.Close() //nolint:errcheck // Test cleanup
+
+	// Run migrations to create the necessary tables
+	// Try to find migrations directory relative to common test run locations
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	var migrationsPath string
+	// Try relative to tools directory first
+	if testPath := filepath.Join(cwd, "..", "migrations"); fileExists(filepath.Join(testPath, "000001_initial_schema.up.sql")) {
+		migrationsPath = testPath
+	} else if testPath := filepath.Join(cwd, "staff", "migrations"); fileExists(filepath.Join(testPath, "000001_initial_schema.up.sql")) {
+		// Try relative to module root
+		migrationsPath = testPath
+	} else {
+		// Fallback to relative path
+		migrationsPath = filepath.Join("..", "migrations")
+	}
+
+	if err := migrations.RunMigrations(db, migrationsPath); err != nil {
+		t.Fatalf("failed to run migrations: %v", err)
+	}
 
 	store, err := memory.NewStore(db, nil)
 	if err != nil {
@@ -47,4 +73,10 @@ func TestMemoryStorePersonalTool_Smoke(t *testing.T) {
 	if result == nil {
 		t.Fatalf("expected non-nil result")
 	}
+}
+
+// fileExists checks if a file exists
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

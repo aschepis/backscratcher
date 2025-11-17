@@ -3,7 +3,11 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/aschepis/backscratcher/staff/migrations"
 )
 
 // TestStorePersonalMemory_Smoke verifies that StorePersonalMemory inserts a row and
@@ -14,6 +18,28 @@ func TestStorePersonalMemory_Smoke(t *testing.T) {
 		t.Fatalf("failed to open in-memory sqlite: %v", err)
 	}
 	defer db.Close() //nolint:errcheck // Test cleanup
+
+	// Run migrations to create the necessary tables
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	var migrationsPath string
+	// Try relative to memory directory first
+	if testPath := filepath.Join(cwd, "..", "migrations"); fileExists(filepath.Join(testPath, "000001_initial_schema.up.sql")) {
+		migrationsPath = testPath
+	} else if testPath := filepath.Join(cwd, "staff", "migrations"); fileExists(filepath.Join(testPath, "000001_initial_schema.up.sql")) {
+		// Try relative to module root
+		migrationsPath = testPath
+	} else {
+		// Fallback to relative path
+		migrationsPath = filepath.Join("..", "migrations")
+	}
+
+	if err := migrations.RunMigrations(db, migrationsPath); err != nil {
+		t.Fatalf("failed to run migrations: %v", err)
+	}
 
 	store, err := NewStore(db, nil)
 	if err != nil {

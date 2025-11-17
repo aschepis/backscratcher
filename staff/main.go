@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -529,10 +530,10 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 				}
 			}
 
-			crew.ToolProvider.RegisterSchema(safeName, agent.ToolSchema{
+			crew.ToolProvider.RegisterSchemaWithServer(safeName, agent.ToolSchema{
 				Description: tool.Description,
 				Schema:      schema,
-			})
+			}, serverName)
 
 			logger.Info("Registered MCP tool: safeName=%s originalName=%s server=%s", safeName, originalName, serverName)
 		}
@@ -813,7 +814,16 @@ func main() {
 	// Suppress console output to avoid interfering with TUI rendering
 	logger.SetSuppressConsole(true)
 
-	chatService := ui.NewChatService(crew, db)
+	// Get chat timeout: env var takes precedence, then config file, then default (60)
+	chatTimeout := 60 // default
+	if envTimeout := os.Getenv("STAFF_CHAT_TIMEOUT"); envTimeout != "" {
+		if parsed, err := strconv.Atoi(envTimeout); err == nil && parsed > 0 {
+			chatTimeout = parsed
+		}
+	} else if appConfig.ChatTimeout > 0 {
+		chatTimeout = appConfig.ChatTimeout
+	}
+	chatService := ui.NewChatService(crew, db, chatTimeout)
 	// Get theme: env var takes precedence, then config file, then default
 	theme := os.Getenv("STAFF_THEME")
 	if theme == "" {

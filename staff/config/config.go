@@ -28,6 +28,7 @@ type Config struct {
 	Theme           string                      `yaml:"theme,omitempty"`
 	MCPServers      map[string]MCPServerSecrets `yaml:"mcp_servers,omitempty"`
 	ClaudeMCP       ClaudeMCPConfig             `yaml:"claude_mcp,omitempty"`
+	ChatTimeout     int                         `yaml:"chat_timeout,omitempty"` // Timeout in seconds for chat operations (default: 60)
 }
 
 // GetConfigPath returns the default config file path, expanding ~ to home directory.
@@ -66,7 +67,8 @@ func LoadConfig(path string) (*Config, error) {
 	if _, err := os.Stat(expandedPath); os.IsNotExist(err) {
 		// File doesn't exist - return empty config (non-fatal)
 		return &Config{
-			MCPServers: make(map[string]MCPServerSecrets),
+			MCPServers:  make(map[string]MCPServerSecrets),
+			ChatTimeout: 60, // Default timeout
 		}, nil
 	}
 
@@ -85,6 +87,11 @@ func LoadConfig(path string) (*Config, error) {
 	// Initialize MCPServers map if nil
 	if cfg.MCPServers == nil {
 		cfg.MCPServers = make(map[string]MCPServerSecrets)
+	}
+
+	// Set default chat timeout if not specified (60 seconds)
+	if cfg.ChatTimeout == 0 {
+		cfg.ChatTimeout = 60
 	}
 
 	// Apply environment variable overrides for Claude MCP settings

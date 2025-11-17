@@ -20,15 +20,21 @@ const (
 
 // chatService implements ChatService by wrapping an agent.Crew
 type chatService struct {
-	crew *agent.Crew
-	db   *sql.DB
+	crew    *agent.Crew
+	db      *sql.DB
+	timeout time.Duration // Timeout for chat operations
 }
 
 // NewChatService creates a new ChatService that wraps the given crew and database.
-func NewChatService(crew *agent.Crew, db *sql.DB) ChatService {
+// timeoutSeconds is the timeout in seconds for chat operations (default: 60 if 0).
+func NewChatService(crew *agent.Crew, db *sql.DB, timeoutSeconds int) ChatService {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 60 // Default timeout
+	}
 	cs := &chatService{
-		crew: crew,
-		db:   db,
+		crew:    crew,
+		db:      db,
+		timeout: time.Duration(timeoutSeconds) * time.Second,
 	}
 	// Register chatService as the message persister for the crew
 	crew.SetMessagePersister(cs)
@@ -498,6 +504,11 @@ func (s *chatService) AppendToolCall(ctx context.Context, agentID, threadID, too
 
 	_, err = s.db.ExecContext(ctx, queryStr, args...)
 	return err
+}
+
+// GetChatTimeout returns the timeout duration for chat operations.
+func (s *chatService) GetChatTimeout() time.Duration {
+	return s.timeout
 }
 
 // AppendToolResult saves a tool result message to the conversation history.

@@ -104,7 +104,6 @@ func (a *App) showSettings() {
 		}
 	}
 
-
 	updateProjectList()
 
 	// Create form for settings
@@ -220,4 +219,3 @@ func (a *App) showSettings() {
 
 	a.app.SetFocus(form)
 }
-

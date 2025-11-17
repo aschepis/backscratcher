@@ -5,8 +5,12 @@ import (
 	"database/sql"
 	"hash/fnv"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aschepis/backscratcher/staff/migrations"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -72,11 +76,48 @@ func (e *semanticEmbedder) Embed(ctx context.Context, text string) ([]float32, e
 	return embedding, nil
 }
 
-func TestStore_RememberGlobalFactAndSearch(t *testing.T) {
+// setupTestDB creates an in-memory database and runs migrations
+func setupTestDB(t *testing.T) *sql.DB {
+	t.Helper()
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
+
+	// Run migrations to create the necessary tables
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	var migrationsPath string
+	// Try relative to memory directory first
+	if testPath := filepath.Join(cwd, "..", "migrations"); fileExists(filepath.Join(testPath, "000001_initial_schema.up.sql")) {
+		migrationsPath = testPath
+	} else if testPath := filepath.Join(cwd, "staff", "migrations"); fileExists(filepath.Join(testPath, "000001_initial_schema.up.sql")) {
+		// Try relative to module root
+		migrationsPath = testPath
+	} else {
+		// Fallback to relative path
+		migrationsPath = filepath.Join("..", "migrations")
+	}
+
+	if err := migrations.RunMigrations(db, migrationsPath); err != nil {
+		_ = db.Close() //nolint:errcheck // Cleanup on error
+		t.Fatalf("failed to run migrations: %v", err)
+	}
+
+	return db
+}
+
+// fileExists checks if a file exists
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func TestStore_RememberGlobalFactAndSearch(t *testing.T) {
+	db := setupTestDB(t)
 	defer db.Close() //nolint:errcheck // Test cleanup
 
 	store, err := NewStore(db, stubEmbedder{})
@@ -111,10 +152,7 @@ func TestStore_RememberGlobalFactAndSearch(t *testing.T) {
 }
 
 func TestRouter_AddEpisodeAndQuery(t *testing.T) {
-	db, err := sql.Open("sqlite3", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
+	db := setupTestDB(t)
 	defer db.Close() //nolint:errcheck // Test cleanup
 
 	store, err := NewStore(db, stubEmbedder{})
@@ -145,10 +183,7 @@ func TestRouter_AddEpisodeAndQuery(t *testing.T) {
 // TestSemanticEmbeddingSearch verifies that vector/embedding-based search
 // correctly finds semantically similar content.
 func TestSemanticEmbeddingSearch(t *testing.T) {
-	db, err := sql.Open("sqlite3", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
+	db := setupTestDB(t)
 	defer db.Close() //nolint:errcheck // Test cleanup
 
 	// Use semantic embedder that simulates real embeddings
