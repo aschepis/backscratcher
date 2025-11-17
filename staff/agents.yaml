@@ -1,21 +1,148 @@
 # MCP server configuration
 mcp_servers:
-  doman_lookup:
-    command: "/Users/adamschepis/src/github.com/dotemacs/domain-lookup-mcp/domain-lookup-mcp"
-    config_file: "~/.staff/mcp/doman_lookup.json"
-# Example additional MCP server configurations:
-#   google:
-#     command: "/usr/local/bin/mcp-google"
-#     config_file: "~/.staff/mcp/google.yaml"
-#   jira:
-#     url: "https://jira.mycompany.com/mcp"
-#     config_file: "~/.staff/mcp/jira.yaml"
+  # domain_lookup:
+  #   name: "Domain Lookup"
+  #   homepage: "https://github.com/dotemacs/domain-lookup-mcp"
+  #   command: "/Users/adamschepis/src/github.com/dotemacs/domain-lookup-mcp/domain-lookup-mcp"
+  #   config_file: "~/.staff/mcp/doman_lookup.json"
+
+  # bluesky_social:
+  #   name: "Bluesky Social MCP"
+  #   homepage: "https://github.com/gwbischof/bluesky-social-mcp"
+  #   command: "python3"
+  #   args:
+  #     - "-m"
+  #     - "bluesky_social_mcp"
+  #     - "--transport"
+  #     - "stdio"
+  #   env:
+  #     - "ATPROTO_HOST=https://bsky.social"
+  #     - "BLUESKY_APP_PASSWORD=your_app_password"
+  #     - "LOG_LEVEL=info"
+  #   config_file: ""
+  #   url: ""
+
+  # local_rag:
+  #   name: "Local RAG MCP"
+  #   homepage: "https://github.com/shinpr/mcp-local-rag"
+  #   command: "node"
+  #   args:
+  #     - "./dist/index.js"
+  #     - "--dir"
+  #     - "/path/to/document/corpus"
+  #     - "--transport"
+  #     - "stdio"
+  #   env:
+  #     - "VECTOR_STORE=lancedb"
+  #     - "EMBEDDING_MODEL=local-embed-model"
+  #     - "LOG_LEVEL=info"
+  #   config_file: ""
+  #   url: ""
+
+  # homebrew_mcp:
+  #   name: "Homebrew MCP"
+  #   homepage: "https://github.com/jeannier/homebrew-mcp"
+  #   command: "uv"
+  #   args:
+  #     - "run"
+  #     - "--directory"
+  #     - "/path/to/homebrew-mcp"
+  #     - "homebrew_mcp.py"
+  #   env: []
+  #   config_file: ""
+  #   url: ""
+
+  # browserbase:
+  #   name: "Browserbase MCP Server"
+  #   homepage: "https://github.com/browserbase/mcp-server-browserbase"
+  #   command: "npx"
+  #   args:
+  #     - "@browserbasehq/mcp-server-browserbase"
+  #   env:
+  #     - "BROWSERBASE_API_KEY=your_api_key"
+  #     - "BROWSERBASE_PROJECT_ID=your_project_id"
+  #     - "MODEL_NAME=google/gemini-2.0-flash"
+  #     - "ADVANCED_STEALTH=true"
+  #   config_file: ""
+  #   url: ""
+
+  # fetch:
+  #   name: "Fetch MCP Server"
+  #   homepage: "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch"
+  #   command: "python"
+  #   args:
+  #     - "-m"
+  #     - "mcp_server_fetch"
+  #   env:
+  #     - "PYTHONIOENCODING=utf-8"
+  #   config_file: ""
+  #   url: ""
+
+  # mcp_get:
+  #   name: "MCP-Get CLI"
+  #   homepage: "https://github.com/michaellatman/mcp-get"
+  #   command: "npx"
+  #   args:
+  #     - "@michaellatman/mcp-get@latest"
+  #   env:
+  #     - "NODE_ENV=production"
+  #   config_file: ""
+  #   url: ""
+
+  # open_library:
+  #   name: "Open Library MCP"
+  #   homepage: "https://github.com/8enSmith/mcp-open-library"
+  #   command: "npx"
+  #   args:
+  #     - "@8enSmith/mcp-open-library@latest"
+  #   env:
+  #     - "LOG_LEVEL=info"
+  #   config_file: ""
+  #   url: ""
+
+  # mcp_mermaid:
+  #   name: "MCP Mermaid"
+  #   homepage: "https://github.com/hustcc/mcp-mermaid"
+  #   command: "npx"
+  #   args:
+  #     - "-y"
+  #     - "mcp-mermaid"
+  #   env:
+  #     - "LOG_LEVEL=info"
+  #   config_file: ""
+  #   url: ""
+
+  # keep_mcp:
+  #   name: "Google Keep MCP"
+  #   homepage: "https://github.com/feuerdev/keep-mcp"
+  #   command: "pipx"
+  #   args:
+  #     - "run"
+  #     - "keep-mcp"
+  #   env:
+  #     - "GOOGLE_EMAIL=your-email@example.com"
+  #     - "GOOGLE_MASTER_TOKEN=your_master_token"
+  #     - "UNSAFE_MODE=true"
+  #   config_file: ""
+  #   url: ""
+
+  # websearch:
+  #   name: "WebSearch MCP"
+  #   homepage: "https://github.com/mnhlt/WebSearch-MCP"
+  #   command: "npx"
+  #   args:
+  #     - "websearch-mcp"
+  #   env:
+  #     - "API_URL=http://localhost:3001"
+  #     - "MAX_SEARCH_RESULT=5"
+  #   config_file: ""
+  #   url: ""
 
 agents:
   interviewer:
     id: interviewer
     name: Interviewer Agent
-    system: |
+    system_prompt: |
       You are an interviewer who asks questions to the user in order to learn more
       about them and records the answers in a structured format. You sometimes ask
       follow-up questions to the user.
@@ -38,8 +165,11 @@ agents:
       - grep_search
       - send_user_notification
       - lookup_domains
+
   chief_of_staff:
     id: chief_of_staff
+    name: Chief of Staff
+    model: claude-sonnet-4-20250514
     description: >
       A strategic oversight agent responsible for monitoring all agents,
       evaluating performance, analyzing tool usage, recommending new agents ("hires"), 
@@ -133,8 +263,11 @@ agents:
     personality: |
       Analytical, strategic, thoughtful. Speaks like a staff chief who oversees multiple
       departments, ensuring coordination and efficiency. Prioritizes clarity and user value.
+
   config_agent:
     id: config_agent
+    name: Config Agent
+    model: claude-haiku-4-5
     description: >
       An advisory-only configuration analysis agent that inspects MCP servers,
       evaluates their configuration, identifies missing required fields,
@@ -144,27 +277,25 @@ agents:
       directly. It only advises, proposes examples, and notifies the user.
 
     schedule: 12h
-    enabled: true
+    startup_delay: 10s
 
     tools:
       # Read-only inspection tools
       - read_file
       - list_directory
+      - grep_search
 
       # MCP discovery and inspection
+      - list_tools
       - list_mcp_servers
       - mcp_tools_discover
 #      - mcp_status_check
-
-      # Optional read-only diagnostics
-      - grep_search
-      - read_file
 
       # Memory
       - memory_search_personal
 
       # User interaction
-      - notification_send
+      - send_user_notification
 
     system_prompt: |
       You are the Config Agent for the Staff system.

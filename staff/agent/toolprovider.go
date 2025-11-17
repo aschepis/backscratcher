@@ -38,9 +38,19 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []anthropic.Tool
 		return nil
 	}
 
+	// Deduplicate tool names to prevent API errors
+	seen := make(map[string]bool)
+	var uniqueTools []string
+	for _, name := range agent.Tools {
+		if !seen[name] {
+			seen[name] = true
+			uniqueTools = append(uniqueTools, name)
+		}
+	}
+
 	var out []anthropic.ToolUnionParam
 
-	for _, name := range agent.Tools {
+	for _, name := range uniqueTools {
 		schema, ok := p.schemas[name]
 		if !ok {
 			panic(fmt.Errorf("schema for tool %q was never registered", name))

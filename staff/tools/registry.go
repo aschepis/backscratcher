@@ -108,11 +108,12 @@ func (r *Registry) Handle(ctx context.Context, toolName, agentID string, argsStr
 
 // RegisterMemoryTools registers memory-related tools backed by a MemoryRouter.
 // Note: Tool names must match pattern ^[a-zA-Z0-9_-]{1,128}$ (no dots allowed)
-func (r *Registry) RegisterMemoryTools(router *memory.MemoryRouter) {
+// apiKey is used for the normalizer; if empty, falls back to ANTHROPIC_API_KEY environment variable.
+func (r *Registry) RegisterMemoryTools(router *memory.MemoryRouter, apiKey string) {
 	logger.Info("Registering memory tools in registry")
 
 	// Normalizer instance shared by memory tools that only transform text.
-	normalizer := memory.NewNormalizer("claude-3.5-haiku-latest", "", 256)
+	normalizer := memory.NewNormalizer("claude-3.5-haiku-latest", apiKey, 256)
 
 	r.Register("memory_remember_episode", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
 		var payload struct {

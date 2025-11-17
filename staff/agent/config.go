@@ -9,6 +9,8 @@ import (
 
 // MCPServerConfig represents configuration for an MCP server.
 type MCPServerConfig struct {
+	Name       string   `yaml:"name,omitempty"`
+	Homepage   string   `yaml:"homepage,omitempty"`
 	Command    string   `yaml:"command,omitempty"`     // For STDIO transport
 	URL        string   `yaml:"url,omitempty"`         // For HTTP transport
 	ConfigFile string   `yaml:"config_file,omitempty"` // Path to server config YAML
@@ -28,10 +30,20 @@ func LoadCrewConfigFromFile(path string) (*CrewConfig, error) {
 		return nil, fmt.Errorf("failed to parse config file %q: %w", path, err)
 	}
 
-	// Ensure IDs are set if missing (use map key)
+	// Ensure IDs are set if missing (use map key) and apply smart defaults
 	for id, agentCfg := range cfg.Agents {
 		if agentCfg.ID == "" {
 			agentCfg.ID = id
+		}
+		// Set smart defaults for agent values
+		if agentCfg.Name == "" {
+			agentCfg.Name = agentCfg.ID
+		}
+		if agentCfg.MaxTokens == 0 {
+			agentCfg.MaxTokens = 2048
+		}
+		if agentCfg.Model == "" {
+			agentCfg.Model = "claude-haiku-4-5"
 		}
 	}
 

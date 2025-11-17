@@ -277,6 +277,11 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 				seenToolUseIDs[toolID] = true
 
 				toolInput := toolUseData["input"]
+				// Ensure toolInput is always a map (dictionary) for the API
+				if _, ok := toolInput.(map[string]any); !ok {
+					// If it's not a map, use empty map to ensure it's always a dictionary
+					toolInput = map[string]any{}
+				}
 				toolNameStr := toolName.String
 
 				// Create tool use block
@@ -481,13 +486,15 @@ func (s *chatService) AppendToolCall(ctx context.Context, agentID, threadID, too
 	// Use INSERT OR IGNORE to prevent duplicates based on unique index on (agent_id, thread_id, tool_id)
 	query := sq.Insert("conversations").
 		Columns("agent_id", "thread_id", "role", "content", "tool_name", "tool_id", "created_at").
-		Values(agentID, threadID, "assistant", string(contentJSON), toolName, toolID, now).
-		Suffix("OR IGNORE")
+		Values(agentID, threadID, "assistant", string(contentJSON), toolName, toolID, now)
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
 		return fmt.Errorf("build query: %w", err)
 	}
+
+	// SQLite requires "OR IGNORE" to come after "INSERT", so we replace "INSERT INTO" with "INSERT OR IGNORE INTO"
+	queryStr = strings.Replace(queryStr, "INSERT INTO", "INSERT OR IGNORE INTO", 1)
 
 	_, err = s.db.ExecContext(ctx, queryStr, args...)
 	return err
@@ -524,13 +531,15 @@ func (s *chatService) AppendToolResult(ctx context.Context, agentID, threadID, t
 	// The unique index allows one 'assistant' row and one 'tool' row per tool_id, preventing duplicate results
 	query := sq.Insert("conversations").
 		Columns("agent_id", "thread_id", "role", "content", "tool_name", "tool_id", "created_at").
-		Values(agentID, threadID, "tool", string(contentJSON), toolName, toolID, now).
-		Suffix("OR IGNORE")
+		Values(agentID, threadID, "tool", string(contentJSON), toolName, toolID, now)
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
 		return fmt.Errorf("build query: %w", err)
 	}
+
+	// SQLite requires "OR IGNORE" to come after "INSERT", so we replace "INSERT INTO" with "INSERT OR IGNORE INTO"
+	queryStr = strings.Replace(queryStr, "INSERT INTO", "INSERT OR IGNORE INTO", 1)
 
 	_, err = s.db.ExecContext(ctx, queryStr, args...)
 	return err

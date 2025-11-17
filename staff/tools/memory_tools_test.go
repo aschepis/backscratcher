@@ -27,7 +27,7 @@ func TestMemoryStorePersonalTool_Smoke(t *testing.T) {
 	router := memory.NewMemoryRouter(store, memory.Config{})
 
 	reg := NewRegistry()
-	reg.RegisterMemoryTools(router)
+	reg.RegisterMemoryTools(router, "") // Empty API key will fall back to env var
 
 	args := map[string]any{
 		"text":       "I go running most mornings before work.",

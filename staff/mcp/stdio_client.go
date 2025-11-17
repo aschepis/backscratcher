@@ -26,6 +26,8 @@ func NewStdioMCPClient(command, configFile string, args, env []string) (*StdioMC
 		return nil, fmt.Errorf("command is required for STDIO MCP client")
 	}
 
+	logger.Info("NewStdioMCPClient: parsing command=%s args=%v env=%v configFile=%s", command, args, env, configFile)
+
 	// Split command into command and args if it contains spaces
 	parts := strings.Fields(command)
 	cmd := parts[0]
@@ -38,12 +40,17 @@ func NewStdioMCPClient(command, configFile string, args, env []string) (*StdioMC
 		cmdArgs = args
 	}
 
+	logger.Info("NewStdioMCPClient: parsed cmd=%s finalArgs=%v", cmd, cmdArgs)
+
 	// Create the stdio client using mcp-go
+	logger.Info("NewStdioMCPClient: creating underlying mcp-go client")
 	mcpClient, err := client.NewStdioMCPClient(cmd, env, cmdArgs...)
 	if err != nil {
+		logger.Error("NewStdioMCPClient: failed to create underlying client: %v", err)
 		return nil, fmt.Errorf("failed to create stdio MCP client: %w", err)
 	}
 
+	logger.Info("NewStdioMCPClient: successfully created underlying client")
 	return &StdioMCPClient{
 		client:     mcpClient,
 		command:    cmd,
@@ -55,6 +62,8 @@ func NewStdioMCPClient(command, configFile string, args, env []string) (*StdioMC
 
 // Start initializes the MCP client connection.
 func (c *StdioMCPClient) Start(ctx context.Context) error {
+	logger.Info("StdioMCPClient.Start: beginning initialization for command=%s", c.command)
+
 	// Initialize the client
 	initReq := mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
@@ -67,28 +76,84 @@ func (c *StdioMCPClient) Start(ctx context.Context) error {
 		},
 	}
 
-	_, err := c.client.Initialize(ctx, initReq)
-	if err != nil {
-		return fmt.Errorf("failed to initialize MCP client: %w", err)
+	logger.Info("StdioMCPClient.Start: calling Initialize with protocolVersion=%s", mcp.LATEST_PROTOCOL_VERSION)
+
+	// Check if context is already cancelled before calling Initialize
+	select {
+	case <-ctx.Done():
+		logger.Error("StdioMCPClient.Start: context cancelled before Initialize: %v", ctx.Err())
+		return fmt.Errorf("context cancelled before initialize: %w", ctx.Err())
+	default:
+	}
+
+	// Call Initialize in a goroutine to detect hangs
+	// This allows us to detect if the call hangs indefinitely
+	logger.Info("StdioMCPClient.Start: about to call c.client.Initialize (this may take a moment if the server is starting)")
+	initDone := make(chan error, 1)
+	go func() {
+		_, initErr := c.client.Initialize(ctx, initReq)
+		initDone <- initErr
+	}()
+
+	// Wait for Initialize to complete or context timeout
+	select {
+	case err := <-initDone:
+		if err != nil {
+			logger.Error("StdioMCPClient.Start: Initialize failed: %v", err)
+			return fmt.Errorf("failed to initialize MCP client: %w", err)
+		}
+		logger.Info("StdioMCPClient.Start: Initialize completed successfully")
+	case <-ctx.Done():
+		logger.Error("StdioMCPClient.Start: context cancelled/timeout during Initialize: %v", ctx.Err())
+		return fmt.Errorf("context cancelled during initialize: %w", ctx.Err())
 	}
 
 	// Start the client
-	if err := c.client.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start MCP client: %w", err)
+	logger.Info("StdioMCPClient.Start: calling client.Start")
+
+	// Check if context is already cancelled before calling Start
+	select {
+	case <-ctx.Done():
+		logger.Error("StdioMCPClient.Start: context cancelled before Start: %v", ctx.Err())
+		return fmt.Errorf("context cancelled before start: %w", ctx.Err())
+	default:
 	}
 
-	logger.Info("STDIO MCP client started: command=%s", c.command)
+	// Call Start in a goroutine to detect hangs
+	logger.Info("StdioMCPClient.Start: about to call c.client.Start")
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- c.client.Start(ctx)
+	}()
+
+	// Wait for Start to complete or context timeout
+	select {
+	case err := <-startDone:
+		if err != nil {
+			logger.Error("StdioMCPClient.Start: client.Start failed: %v", err)
+			return fmt.Errorf("failed to start MCP client: %w", err)
+		}
+		logger.Info("StdioMCPClient.Start: client.Start completed successfully")
+	case <-ctx.Done():
+		logger.Error("StdioMCPClient.Start: context cancelled/timeout during Start: %v", ctx.Err())
+		return fmt.Errorf("context cancelled during start: %w", ctx.Err())
+	}
+
+	logger.Info("StdioMCPClient.Start: client started successfully: command=%s", c.command)
 	return nil
 }
 
 // ListTools returns all tools available from the MCP server.
 func (c *StdioMCPClient) ListTools(ctx context.Context) ([]ToolDefinition, error) {
+	logger.Info("StdioMCPClient.ListTools: requesting tools from command=%s", c.command)
 	req := mcp.ListToolsRequest{}
 
 	result, err := c.client.ListTools(ctx, req)
 	if err != nil {
+		logger.Error("StdioMCPClient.ListTools: failed to list tools: %v", err)
 		return nil, fmt.Errorf("failed to list tools: %w", err)
 	}
+	logger.Info("StdioMCPClient.ListTools: received %d tools from command=%s", len(result.Tools), c.command)
 
 	tools := make([]ToolDefinition, 0, len(result.Tools))
 	for _, tool := range result.Tools {

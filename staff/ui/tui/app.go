@@ -8,6 +8,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/ui"
 	"github.com/aschepis/backscratcher/staff/ui/themes"
 )
@@ -26,17 +27,26 @@ type App struct {
 	// Chat-related fields
 	chatHistory map[string][]anthropic.MessageParam // agentID -> conversation history
 	chatMutex   sync.RWMutex                        // protects chatHistory
+
+	// Config-related fields
+	configPath string
 }
 
 // NewApp creates a new App instance with the given chat service
+// Uses STAFF_THEME environment variable or defaults to "solarized"
 func NewApp(chatService ui.ChatService) *App {
 	// Get theme from environment variable, default to "solarized"
 	themeName := os.Getenv("STAFF_THEME")
 	if themeName == "" {
 		themeName = "solarized"
 	}
+	return NewAppWithTheme(chatService, themeName)
+}
 
-	// Apply theme based on environment variable
+// NewAppWithTheme creates a new App instance with the given chat service and theme
+func NewAppWithTheme(chatService ui.ChatService, themeName string) *App {
+	// Apply theme based on provided theme name
+	logger.Info("NewAppWithTheme: themeName=%s", themeName)
 	theme := getThemeByName(themeName)
 	theme.Apply(nil)
 
@@ -46,6 +56,11 @@ func NewApp(chatService ui.ChatService) *App {
 		chatService: chatService,
 		chatHistory: make(map[string][]anthropic.MessageParam),
 	}
+}
+
+// SetConfigPath sets the config file path for the app
+func (a *App) SetConfigPath(configPath string) {
+	a.configPath = configPath
 }
 
 // getThemeByName returns a theme by name, defaulting to Solarized if invalid
@@ -86,7 +101,7 @@ func (a *App) setupUI() {
 			a.showCrewMembers()
 		}).
 		AddItem("Settings", "Configure settings", '3', func() {
-			a.showContent("Settings", "Settings\n\nTheme can be changed by setting the STAFF_THEME environment variable.\n\nAvailable themes: solarized, gruvbox, zenburn, apprentice, cyberpunk, cherryblossom\n\nRestart the application for theme changes to take effect.")
+			a.showSettings()
 		}).
 		AddItem("About", "About this application", '4', func() {
 			a.showContent("About", "Staff v1.0.0\n\nAn idiomatic Go terminal UI application using tview.\n\nPowered by the Agent Crew framework.")

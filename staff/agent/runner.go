@@ -10,6 +10,7 @@ import (
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/aschepis/backscratcher/staff/logger"
 )
 
 // ToolExecutor is whatever you already had for running tools.
@@ -95,13 +96,13 @@ func (r *AgentRunner) trackExecutionStats(successful bool, errorMsg string) {
 		// Track failure if execution was not successful
 		if errorMsg != "" {
 			if updateErr := r.statsManager.IncrementFailureCount(r.agent.ID, errorMsg); updateErr != nil {
-				fmt.Printf("Warning: failed to update failure stats: %v\n", updateErr)
+				logger.Warn("failed to update failure stats: %v", updateErr)
 			}
 		}
 	} else {
 		// Track successful execution
 		if updateErr := r.statsManager.IncrementExecutionCount(r.agent.ID); updateErr != nil {
-			fmt.Printf("Warning: failed to update execution stats: %v\n", updateErr)
+			logger.Warn("failed to update execution stats: %v", updateErr)
 		}
 	}
 }
@@ -119,21 +120,21 @@ func (r *AgentRunner) updateAgentStateAfterExecution(executionSuccessful bool, e
 		now := time.Now()
 		nextWake, err := ComputeNextWake(r.agent.Config.Schedule, now)
 		if err != nil {
-			fmt.Printf("Warning: failed to compute next wake for agent %s: %v\n", r.agent.ID, err)
+			logger.Warn("failed to compute next wake for agent %s: %v", r.agent.ID, err)
 			// Fall back to idle on error
 			if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
-				fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+				logger.Warn("failed to set agent state to idle: %v", err)
 			}
 			return
 		}
 		// Set state to waiting_external with next_wake
 		if err := r.stateManager.SetStateWithNextWake(r.agent.ID, StateWaitingExternal, &nextWake); err != nil {
-			fmt.Printf("Warning: failed to set agent state to waiting_external: %v\n", err)
+			logger.Warn("failed to set agent state to waiting_external: %v", err)
 		}
 	} else {
 		// Agent is not scheduled, set to idle
 		if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
-			fmt.Printf("Warning: failed to set agent state to idle: %v\n", err)
+			logger.Warn("failed to set agent state to idle: %v", err)
 		}
 	}
 }
@@ -142,7 +143,7 @@ func (r *AgentRunner) updateAgentStateAfterExecution(executionSuccessful bool, e
 type AgentConfig struct {
 	ID           string   `yaml:"id" json:"id"`
 	Name         string   `yaml:"name" json:"name"`
-	System       string   `yaml:"system" json:"system"`
+	System       string   `yaml:"system_prompt" json:"system"`
 	Model        string   `yaml:"model" json:"model"`
 	MaxTokens    int64    `yaml:"max_tokens" json:"max_tokens"`
 	Tools        []string `yaml:"tools" json:"tools"`
@@ -169,7 +170,7 @@ func (r *AgentRunner) RunAgent(
 	// Set state to running at start of execution
 	if err := r.stateManager.SetState(r.agent.ID, StateRunning); err != nil {
 		// Log error but don't fail execution
-		fmt.Printf("Warning: failed to set agent state to running: %v\n", err)
+		logger.Warn("failed to set agent state to running: %v", err)
 	}
 
 	// Track if execution was successful
@@ -265,12 +266,14 @@ func (r *AgentRunner) RunAgent(
 					var toolInput any
 					raw := []byte(toolUse.JSON.Input.Raw())
 					if err := json.Unmarshal(raw, &toolInput); err != nil {
-						// Fallback to raw string if unmarshal fails
-						toolInput = string(raw)
+						// JSON parsing failed - this is an error condition
+						logger.Warn("failed to parse tool input JSON for persistence (tool %s, id: %s): %v, raw JSON: %s", toolUse.Name, toolUse.ID, err, string(raw))
+						// Use empty object as last resort
+						toolInput = map[string]any{}
 					}
 					if err := r.messagePersister.AppendToolCall(ctx, r.agent.ID, threadID, toolUse.ID, toolUse.Name, toolInput); err != nil {
 						// Log error but don't fail execution
-						fmt.Printf("Warning: failed to persist tool call: %v\n", err)
+						logger.Warn("failed to persist tool call: %v", err)
 					}
 				}
 			}
@@ -282,7 +285,7 @@ func (r *AgentRunner) RunAgent(
 			if r.messagePersister != nil && finalText.Len() > 0 {
 				if err := r.messagePersister.AppendAssistantMessage(ctx, r.agent.ID, threadID, strings.TrimSpace(finalText.String())); err != nil {
 					// Log error but don't fail execution
-					fmt.Printf("Warning: failed to persist assistant message: %v\n", err)
+					logger.Warn("failed to persist assistant message: %v", err)
 				}
 			}
 			executionSuccessful = true
@@ -295,7 +298,7 @@ func (r *AgentRunner) RunAgent(
 				toolName := toolNameMap[toolID]
 				if err := r.messagePersister.AppendToolResult(ctx, r.agent.ID, threadID, toolID, toolName, resultData.result, resultData.isError); err != nil {
 					// Log error but don't fail execution
-					fmt.Printf("Warning: failed to persist tool result: %v\n", err)
+					logger.Warn("failed to persist tool result: %v", err)
 				}
 			}
 		}
@@ -325,7 +328,7 @@ func (r *AgentRunner) RunAgentStream(
 	// Set state to running at start of execution
 	if err := r.stateManager.SetState(r.agent.ID, StateRunning); err != nil {
 		// Log error but don't fail execution
-		fmt.Printf("Warning: failed to set agent state to running: %v\n", err)
+		logger.Warn("failed to set agent state to running: %v", err)
 	}
 
 	// Track if execution was successful
@@ -496,26 +499,21 @@ func (r *AgentRunner) RunAgentStream(
 				// Track tool name for persistence
 				toolNameMap[toolUse.ID] = toolUse.Name
 				// Get the input JSON for this tool
+				// Prefer the tool use block's raw JSON as it should be complete and valid
 				var inputJSON any
-				if builder, ok := toolInputs[toolUse.ID]; ok {
-					inputStr := builder.String()
-					// Parse the JSON input so we can pass it as any
-					var parsedInput any
-					if err := json.Unmarshal([]byte(inputStr), &parsedInput); err == nil {
-						inputJSON = parsedInput
-					} else {
-						// Fallback to raw string if parsing fails
-						inputJSON = inputStr
-					}
-				} else {
-					// Fallback: use the raw JSON from the tool use block if available
-					var parsedInput any
-					rawJSON := toolUse.JSON.Input.Raw()
-					if err := json.Unmarshal([]byte(rawJSON), &parsedInput); err == nil {
-						inputJSON = parsedInput
-					} else {
-						inputJSON = rawJSON
-					}
+				rawJSON := toolUse.JSON.Input.Raw()
+				if err := json.Unmarshal([]byte(rawJSON), &inputJSON); err != nil {
+					// JSON parsing failed - this is an error condition
+					logger.Warn("failed to parse tool input JSON for tool %s (id: %s): %v, raw JSON: %s", toolUse.Name, toolUse.ID, err, rawJSON)
+					// Use empty object as last resort to ensure it's always a dictionary
+					inputJSON = map[string]any{}
+				}
+
+				// Ensure inputJSON is always a map (dictionary) for the API
+				if _, ok := inputJSON.(map[string]any); !ok {
+					// If it's not a map, this is unexpected - log and use empty map
+					logger.Warn("tool input JSON for tool %s (id: %s) is not a map, got type %T, using empty map", toolUse.Name, toolUse.ID, inputJSON)
+					inputJSON = map[string]any{}
 				}
 
 				// Create tool use block for assistant message
@@ -546,23 +544,17 @@ func (r *AgentRunner) RunAgentStream(
 			if r.messagePersister != nil {
 				for _, toolUse := range toolUseBlocks {
 					var toolInput any
-					if builder, ok := toolInputs[toolUse.ID]; ok {
-						inputStr := builder.String()
-						if err := json.Unmarshal([]byte(inputStr), &toolInput); err != nil {
-							toolInput = inputStr
-						}
-					} else {
-						var parsedInput any
-						rawJSON := toolUse.JSON.Input.Raw()
-						if err := json.Unmarshal([]byte(rawJSON), &parsedInput); err == nil {
-							toolInput = parsedInput
-						} else {
-							toolInput = rawJSON
-						}
+					// Prefer the tool use block's raw JSON as it should be complete and valid
+					rawJSON := toolUse.JSON.Input.Raw()
+					if err := json.Unmarshal([]byte(rawJSON), &toolInput); err != nil {
+						// JSON parsing failed - this is an error condition
+						logger.Warn("failed to parse tool input JSON for persistence (tool %s, id: %s): %v, raw JSON: %s", toolUse.Name, toolUse.ID, err, rawJSON)
+						// Use empty object as last resort
+						toolInput = map[string]any{}
 					}
 					if err := r.messagePersister.AppendToolCall(ctx, r.agent.ID, threadID, toolUse.ID, toolUse.Name, toolInput); err != nil {
 						// Log error but don't fail execution
-						fmt.Printf("Warning: failed to persist tool call: %v\n", err)
+						logger.Warn("failed to persist tool call: %v", err)
 					}
 				}
 			}
@@ -577,7 +569,7 @@ func (r *AgentRunner) RunAgentStream(
 					toolName := toolNameMap[toolID]
 					if err := r.messagePersister.AppendToolResult(ctx, r.agent.ID, threadID, toolID, toolName, resultData.result, resultData.isError); err != nil {
 						// Log error but don't fail execution
-						fmt.Printf("Warning: failed to persist tool result: %v\n", err)
+						logger.Warn("failed to persist tool result: %v", err)
 					}
 				}
 			}
@@ -594,7 +586,7 @@ func (r *AgentRunner) RunAgentStream(
 			if r.messagePersister != nil {
 				if err := r.messagePersister.AppendAssistantMessage(ctx, r.agent.ID, threadID, text); err != nil {
 					// Log error but don't fail execution
-					fmt.Printf("Warning: failed to persist assistant message: %v\n", err)
+					logger.Warn("failed to persist assistant message: %v", err)
 				}
 			}
 			executionSuccessful = true

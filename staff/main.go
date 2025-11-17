@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
+	"gopkg.in/yaml.v3"
 
 	"github.com/aschepis/backscratcher/staff/agent"
+	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/mcp"
 	"github.com/aschepis/backscratcher/staff/memory"
@@ -46,9 +50,9 @@ func (a *mcpClientAdapter) ListTools(ctx context.Context) ([]tools.MCPToolDefini
 
 // registerAllTools registers all tool handlers and schemas with the crew.
 // This centralizes all tool registration logic.
-func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, workspacePath string, db *sql.DB, stateManager *agent.StateManager) {
+func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, workspacePath string, db *sql.DB, stateManager *agent.StateManager, apiKey string) {
 	// Register tool handlers
-	crew.ToolRegistry.RegisterMemoryTools(memoryRouter)
+	crew.ToolRegistry.RegisterMemoryTools(memoryRouter, apiKey)
 	crew.ToolRegistry.RegisterFilesystemTools(workspacePath)
 	crew.ToolRegistry.RegisterSystemTools(workspacePath)
 	// TODO: it is a bit weird that we pass a state change func that uses statemanager to
@@ -430,13 +434,18 @@ func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, works
 
 // registerMCPServers discovers and registers tools from MCP servers.
 func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerConfig) {
+	logger.Info("registerMCPServers: starting registration for %d MCP server(s)", len(servers))
 	if len(servers) == 0 {
 		logger.Info("No MCP servers configured")
 		return
 	}
 
-	ctx := context.Background()
+	// Create a context with timeout for MCP server registration
+	// Use a longer timeout (60 seconds) to allow slow-starting servers
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 	adapter := mcp.NewNameAdapter()
+	logger.Info("registerMCPServers: created context with 60s timeout and name adapter, beginning server registration loop")
 
 	for serverName, serverConfig := range servers {
 		if serverConfig == nil {
@@ -444,7 +453,12 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 			continue
 		}
 
-		logger.Info("Registering MCP server: %s", serverName)
+		// Determine if this is a Claude MCP server
+		source := "agents.yaml"
+		if strings.HasPrefix(serverName, "claude_") {
+			source = "Claude config"
+		}
+		logger.Info("Registering MCP server: %s (source: %s, command=%s url=%s)", serverName, source, serverConfig.Command, serverConfig.URL)
 
 		var mcpClient mcp.MCPClient
 		var err error
@@ -453,33 +467,38 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 		switch {
 		case serverConfig.Command != "":
 			// STDIO transport
-			logger.Info("Creating STDIO MCP client: command=%s", serverConfig.Command)
+			logger.Info("Creating STDIO MCP client for %s: command=%s args=%v env=%v", serverName, serverConfig.Command, serverConfig.Args, serverConfig.Env)
 			mcpClient, err = mcp.NewStdioMCPClient(serverConfig.Command, serverConfig.ConfigFile, serverConfig.Args, serverConfig.Env)
 			if err != nil {
 				logger.Error("Failed to create STDIO MCP client for %s: %v", serverName, err)
 				continue
 			}
+			logger.Info("Successfully created STDIO MCP client for %s", serverName)
 		case serverConfig.URL != "":
 			// HTTP transport
-			logger.Info("Creating HTTP MCP client: url=%s", serverConfig.URL)
+			logger.Info("Creating HTTP MCP client for %s: url=%s", serverName, serverConfig.URL)
 			mcpClient, err = mcp.NewHttpMCPClient(serverConfig.URL, serverConfig.ConfigFile)
 			if err != nil {
 				logger.Error("Failed to create HTTP MCP client for %s: %v", serverName, err)
 				continue
 			}
+			logger.Info("Successfully created HTTP MCP client for %s", serverName)
 		default:
 			logger.Warn("MCP server %s has neither command nor url, skipping", serverName)
 			continue
 		}
 
 		// Start the client
+		logger.Info("Starting MCP client for %s", serverName)
 		if err := mcpClient.Start(ctx); err != nil {
 			logger.Error("Failed to start MCP client for %s: %v", serverName, err)
 			_ = mcpClient.Close() //nolint:errcheck // Cleanup on error
 			continue
 		}
+		logger.Info("MCP client started successfully for %s", serverName)
 
 		// Discover tools
+		logger.Info("Discovering tools from MCP server %s", serverName)
 		tools, err := mcpClient.ListTools(ctx)
 		if err != nil {
 			logger.Error("Failed to list tools from MCP server %s: %v", serverName, err)
@@ -521,7 +540,9 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 		// Store MCP server config and client in Crew
 		crew.MCPServers[serverName] = serverConfig
 		crew.MCPClients[serverName] = mcpClient
+		logger.Info("Completed registration for MCP server: %s", serverName)
 	}
+	logger.Info("registerMCPServers: completed registration for all MCP servers")
 }
 
 func main() {
@@ -537,9 +558,23 @@ func main() {
 	_ = godotenv.Load("../.env")
 	_ = godotenv.Load()
 
+	// Load configuration file
+	configPath := config.GetConfigPath()
+	appConfig, err := config.LoadConfig(configPath)
+	if err != nil {
+		logger.Warn("Failed to load config file %q: %v (using environment variables)", configPath, err)
+		appConfig = &config.Config{MCPServers: make(map[string]config.MCPServerSecrets)}
+	} else {
+		logger.Info("Loaded configuration from %q", configPath)
+	}
+
+	// Get Anthropic API key: env var takes precedence, then config file
 	anthropicAPIKey := os.Getenv("ANTHROPIC_API_KEY")
 	if anthropicAPIKey == "" {
-		logger.Error("Missing ANTHROPIC_API_KEY")
+		anthropicAPIKey = appConfig.AnthropicAPIKey
+	}
+	if anthropicAPIKey == "" {
+		logger.Error("Missing ANTHROPIC_API_KEY (not found in environment or config file)")
 		_ = logger.Close()                      //nolint:errcheck // Closing before fatal exit
 		log.Fatalf("Missing ANTHROPIC_API_KEY") //nolint:gocritic // Fatal exit
 	}
@@ -575,7 +610,7 @@ func main() {
 	}
 
 	memoryRouter := memory.NewMemoryRouter(store, memory.Config{
-		Summarizer: memory.NewAnthropicSummarizer("claude-3.5-haiku-latest", os.Getenv("ANTHROPIC_API_KEY"), 256),
+		Summarizer: memory.NewAnthropicSummarizer("claude-3.5-haiku-latest", anthropicAPIKey, 256),
 	})
 
 	// ---------------------------
@@ -593,30 +628,153 @@ func main() {
 	}
 
 	// Register all tools (handlers and schemas)
-	registerAllTools(crew, memoryRouter, workspacePath, db, crew.StateManager())
+	registerAllTools(crew, memoryRouter, workspacePath, db, crew.StateManager(), anthropicAPIKey)
 
 	// ---------------------------
 	// 3. Load Agents from YAML
 	// ---------------------------
 
 	logger.Info("Loading agent configuration")
-	configPath := "agents.yaml"
+	agentsConfigPath := "agents.yaml"
 	if envPath := os.Getenv("AGENTS_CONFIG"); envPath != "" {
-		configPath = envPath
+		agentsConfigPath = envPath
 	}
 
-	cfg, err := agent.LoadCrewConfigFromFile(configPath)
+	// Read agents.yaml as bytes for merging
+	agentsYAML, err := os.ReadFile(agentsConfigPath)
 	if err != nil {
-		logger.Error("Failed to load agent config from %q: %v", configPath, err)
-		log.Fatalf("Failed to load agent config from %q: %v", configPath, err)
+		logger.Error("Failed to read agent config from %q: %v", agentsConfigPath, err)
+		log.Fatalf("Failed to read agent config from %q: %v", agentsConfigPath, err)
 	}
 
-	if err := crew.LoadCrewConfig(*cfg); err != nil {
+	// Merge MCP server configs from config file with agents.yaml
+	mergedYAML, err := config.MergeMCPServerConfigs(agentsYAML, appConfig.MCPServers)
+	if err != nil {
+		logger.Warn("Failed to merge MCP server configs: %v (using agents.yaml as-is)", err)
+		mergedYAML = agentsYAML
+	} else {
+		logger.Info("Merged MCP server configurations from config file with agents.yaml")
+	}
+
+	// Parse the merged YAML
+	var cfg agent.CrewConfig
+	if err := yaml.Unmarshal(mergedYAML, &cfg); err != nil {
+		logger.Error("Failed to parse merged agent config: %v", err)
+		log.Fatalf("Failed to parse merged agent config: %v", err)
+	}
+
+	// Ensure IDs are set if missing (use map key) and apply smart defaults
+	for id, agentCfg := range cfg.Agents {
+		if agentCfg.ID == "" {
+			agentCfg.ID = id
+		}
+		// Set smart defaults for agent values
+		if agentCfg.Name == "" {
+			agentCfg.Name = agentCfg.ID
+		}
+		if agentCfg.MaxTokens == 0 {
+			agentCfg.MaxTokens = 2048
+		}
+		if agentCfg.Model == "" {
+			agentCfg.Model = "claude-haiku-4-5"
+		}
+	}
+
+	if err := crew.LoadCrewConfig(cfg); err != nil {
 		logger.Error("Failed to load crew config: %v", err)
 		log.Fatalf("Failed to load crew config: %v", err)
 	}
 
+	// Load and merge Claude MCP servers if enabled
+	if appConfig.ClaudeMCP.Enabled {
+		logger.Info("Claude MCP integration is enabled, loading Claude MCP servers")
+
+		// Determine Claude config path
+		claudeConfigPath := appConfig.ClaudeMCP.ConfigPath
+		if claudeConfigPath == "" {
+			// Default to ~/.claude.json
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				logger.Warn("Failed to get home directory for Claude config, skipping: %v", err)
+			} else {
+				claudeConfigPath = filepath.Join(homeDir, ".claude.json")
+			}
+		}
+
+		if claudeConfigPath != "" {
+			// Check if config file exists and get modification time for change detection
+			var configModified time.Time
+			if stat, err := os.Stat(claudeConfigPath); err == nil {
+				configModified = stat.ModTime()
+			}
+
+			// Load Claude config
+			logger.Info("Loading Claude MCP config from: %q", claudeConfigPath)
+			claudeConfig, err := config.LoadClaudeConfig(claudeConfigPath)
+			if err != nil {
+				logger.Warn("Failed to load Claude config from %q: %v (skipping Claude MCP servers)", claudeConfigPath, err)
+			} else {
+				logger.Info("Claude config loaded successfully, extracting MCP servers from projects (filter: %v)", appConfig.ClaudeMCP.Projects)
+				// Extract MCP servers from projects
+				claudeServers, projectToServers := config.ExtractMCPServersFromProjects(claudeConfig, appConfig.ClaudeMCP.Projects)
+
+				if len(claudeServers) > 0 {
+					logger.Info("Found %d Claude MCP server(s) to process", len(claudeServers))
+					// Map to our format
+					mappedServers := config.MapClaudeToMCPServerConfig(claudeServers)
+
+					// Merge with existing servers (agents.yaml takes precedence)
+					addedCount := 0
+					skippedCount := 0
+					for name, serverCfg := range mappedServers {
+						if _, exists := cfg.MCPServers[name]; !exists {
+							cfg.MCPServers[name] = serverCfg
+							logger.Info("Added Claude MCP server: %s (from project config)", name)
+							addedCount++
+						} else {
+							logger.Info("Skipping Claude MCP server %s (already exists in agents.yaml, agents.yaml takes precedence)", name)
+							skippedCount++
+						}
+					}
+					logger.Info("Claude MCP server merge complete: %d added, %d skipped (already in agents.yaml)", addedCount, skippedCount)
+
+					// Log summary
+					projectList := make([]string, 0, len(projectToServers))
+					hasGlobal := false
+					projectCount := 0
+					for projectPath := range projectToServers {
+						if projectPath == "Global" {
+							hasGlobal = true
+						} else {
+							projectCount++
+						}
+						projectList = append(projectList, projectPath)
+					}
+					if hasGlobal {
+						logger.Info("Loaded %d Claude MCP server(s) from Global and %d project(s): %v", addedCount, projectCount, projectList)
+					} else {
+						logger.Info("Loaded %d Claude MCP server(s) from %d project(s): %v", addedCount, projectCount, projectList)
+					}
+
+					// Log restart notification if config was recently modified (within last minute)
+					if !configModified.IsZero() && time.Since(configModified) < time.Minute {
+						logger.Info("Claude MCP configuration file was recently modified. Please restart the application for changes to take effect.")
+					}
+				} else {
+					if len(appConfig.ClaudeMCP.Projects) > 0 {
+						logger.Info("No Claude MCP servers found in specified projects")
+					} else {
+						logger.Info("No Claude MCP servers found in any projects")
+					}
+				}
+			}
+		}
+	} else {
+		logger.Info("Claude MCP integration is disabled")
+	}
+
 	// Register MCP servers and their tools
+	logger.Info("Starting MCP server registration for %d total server(s) (from agents.yaml and Claude config)", len(cfg.MCPServers))
 	registerMCPServers(crew, cfg.MCPServers)
 
 	// Initialize AgentRunners
@@ -656,7 +814,16 @@ func main() {
 	logger.SetSuppressConsole(true)
 
 	chatService := ui.NewChatService(crew, db)
-	app := tui.NewApp(chatService)
+	// Get theme: env var takes precedence, then config file, then default
+	theme := os.Getenv("STAFF_THEME")
+	if theme == "" {
+		theme = appConfig.Theme
+	}
+	if theme == "" {
+		theme = "solarized"
+	}
+	app := tui.NewAppWithTheme(chatService, theme)
+	app.SetConfigPath(configPath)
 
 	logger.Info("Starting terminal UI")
 	if err := app.Run(); err != nil {
