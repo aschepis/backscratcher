@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -71,6 +72,25 @@ func (a *App) showSettings() {
 	// Claude MCP Enable/Disable
 	claudeEnabled := cfg.ClaudeMCP.Enabled
 
+	// Message Summarization settings
+	summarizationEnabled := cfg.MessageSummarization.Enabled
+	summarizationModel := cfg.MessageSummarization.Model
+	if summarizationModel == "" {
+		summarizationModel = "llama3.2:3b"
+	}
+	summarizationMaxChars := fmt.Sprintf("%d", cfg.MessageSummarization.MaxChars)
+	if summarizationMaxChars == "0" {
+		summarizationMaxChars = "2000"
+	}
+	summarizationMaxLines := fmt.Sprintf("%d", cfg.MessageSummarization.MaxLines)
+	if summarizationMaxLines == "0" {
+		summarizationMaxLines = "50"
+	}
+	summarizationMaxLineBreaks := fmt.Sprintf("%d", cfg.MessageSummarization.MaxLineBreaks)
+	if summarizationMaxLineBreaks == "0" {
+		summarizationMaxLineBreaks = "10"
+	}
+
 	var updateProjectList func()
 	updateProjectList = func() {
 		projectList.Clear()
@@ -116,6 +136,27 @@ func (a *App) showSettings() {
 		updateProjectList()
 	})
 
+	// Message Summarization settings
+	form.AddCheckbox("Enable Message Summarization", summarizationEnabled, func(checked bool) {
+		summarizationEnabled = checked
+	})
+
+	form.AddInputField("Ollama Model", summarizationModel, 30, nil, func(text string) {
+		summarizationModel = text
+	})
+
+	form.AddInputField("Max Characters", summarizationMaxChars, 10, nil, func(text string) {
+		summarizationMaxChars = text
+	})
+
+	form.AddInputField("Max Lines", summarizationMaxLines, 10, nil, func(text string) {
+		summarizationMaxLines = text
+	})
+
+	form.AddInputField("Max Line Breaks", summarizationMaxLineBreaks, 10, nil, func(text string) {
+		summarizationMaxLineBreaks = text
+	})
+
 	// Save button
 	form.AddButton("Save", func() {
 		// Update config
@@ -136,6 +177,32 @@ func (a *App) showSettings() {
 		}
 		cfg.ClaudeMCP.Projects = selectedProjects
 
+		// Update message summarization settings
+		cfg.MessageSummarization.Enabled = summarizationEnabled
+		cfg.MessageSummarization.Model = summarizationModel
+		if summarizationModel == "" {
+			cfg.MessageSummarization.Model = "llama3.2:3b"
+		}
+
+		// Parse threshold values
+		if maxChars, err := strconv.Atoi(summarizationMaxChars); err == nil && maxChars > 0 {
+			cfg.MessageSummarization.MaxChars = maxChars
+		} else {
+			cfg.MessageSummarization.MaxChars = 2000
+		}
+
+		if maxLines, err := strconv.Atoi(summarizationMaxLines); err == nil && maxLines > 0 {
+			cfg.MessageSummarization.MaxLines = maxLines
+		} else {
+			cfg.MessageSummarization.MaxLines = 50
+		}
+
+		if maxLineBreaks, err := strconv.Atoi(summarizationMaxLineBreaks); err == nil && maxLineBreaks > 0 {
+			cfg.MessageSummarization.MaxLineBreaks = maxLineBreaks
+		} else {
+			cfg.MessageSummarization.MaxLineBreaks = 10
+		}
+
 		// Save config
 		if err := config.SaveConfig(cfg, configPath); err != nil {
 			logger.Error("Failed to save config: %v", err)
@@ -151,7 +218,7 @@ func (a *App) showSettings() {
 
 		// Show success message
 		modal := tview.NewModal().
-			SetText("Settings saved successfully!\n\nPlease restart the application for Claude MCP changes to take effect.").
+			SetText("Settings saved successfully!\n\nPlease restart the application for changes to take effect.").
 			AddButtons([]string{"OK"}).
 			SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 				a.pages.RemovePage("settings_modal")

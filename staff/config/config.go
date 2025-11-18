@@ -22,13 +22,23 @@ type ClaudeMCPConfig struct {
 	ConfigPath string   `yaml:"config_path,omitempty"` // Override default ~/.claude.json path
 }
 
+// MessageSummarization represents configuration for message summarization using Ollama.
+type MessageSummarization struct {
+	Enabled       bool   `yaml:"enabled,omitempty"`         // Enable/disable message summarization
+	Model         string `yaml:"model,omitempty"`           // Ollama model name (default: "llama3.2:3b")
+	MaxChars      int    `yaml:"max_chars,omitempty"`       // Maximum characters before summarization (default: 2000)
+	MaxLines      int    `yaml:"max_lines,omitempty"`       // Maximum lines before summarization (default: 50)
+	MaxLineBreaks int    `yaml:"max_line_breaks,omitempty"` // Maximum line breaks before summarization (default: 10)
+}
+
 // Config represents the application configuration.
 type Config struct {
-	AnthropicAPIKey string                      `yaml:"anthropic_api_key,omitempty"`
-	Theme           string                      `yaml:"theme,omitempty"`
-	MCPServers      map[string]MCPServerSecrets `yaml:"mcp_servers,omitempty"`
-	ClaudeMCP       ClaudeMCPConfig             `yaml:"claude_mcp,omitempty"`
-	ChatTimeout     int                         `yaml:"chat_timeout,omitempty"` // Timeout in seconds for chat operations (default: 60)
+	AnthropicAPIKey      string                      `yaml:"anthropic_api_key,omitempty"`
+	Theme                string                      `yaml:"theme,omitempty"`
+	MCPServers           map[string]MCPServerSecrets `yaml:"mcp_servers,omitempty"`
+	ClaudeMCP            ClaudeMCPConfig             `yaml:"claude_mcp,omitempty"`
+	ChatTimeout          int                         `yaml:"chat_timeout,omitempty"`          // Timeout in seconds for chat operations (default: 60)
+	MessageSummarization MessageSummarization        `yaml:"message_summarization,omitempty"` // Message summarization configuration
 }
 
 // GetConfigPath returns the default config file path, expanding ~ to home directory.
@@ -69,6 +79,12 @@ func LoadConfig(path string) (*Config, error) {
 		return &Config{
 			MCPServers:  make(map[string]MCPServerSecrets),
 			ChatTimeout: 60, // Default timeout
+			MessageSummarization: MessageSummarization{
+				Model:         "llama3.2:3b",
+				MaxChars:      2000,
+				MaxLines:      50,
+				MaxLineBreaks: 10,
+			},
 		}, nil
 	}
 
@@ -92,6 +108,20 @@ func LoadConfig(path string) (*Config, error) {
 	// Set default chat timeout if not specified (60 seconds)
 	if cfg.ChatTimeout == 0 {
 		cfg.ChatTimeout = 60
+	}
+
+	// Set default message summarization values if not specified
+	if cfg.MessageSummarization.Model == "" {
+		cfg.MessageSummarization.Model = "llama3.2:3b"
+	}
+	if cfg.MessageSummarization.MaxChars == 0 {
+		cfg.MessageSummarization.MaxChars = 2000
+	}
+	if cfg.MessageSummarization.MaxLines == 0 {
+		cfg.MessageSummarization.MaxLines = 50
+	}
+	if cfg.MessageSummarization.MaxLineBreaks == 0 {
+		cfg.MessageSummarization.MaxLineBreaks = 10
 	}
 
 	// Apply environment variable overrides for Claude MCP settings

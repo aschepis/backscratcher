@@ -172,8 +172,8 @@ agents:
     model: claude-sonnet-4-20250514
     description: >
       A strategic oversight agent responsible for monitoring all agents,
-      evaluating performance, analyzing tool usage, recommending new agents ("hires"), 
-      suggesting improvements to prompts or tools, identifying missing capabilities, 
+      evaluating performance, analyzing tool usage, recommending new agents ("hires"),
+      suggesting improvements to prompts or tools, identifying missing capabilities,
       auditing configuration and MCP servers, and driving continuous improvement of the
       user's staffd deployment.
 
@@ -392,7 +392,7 @@ agents:
     description: >
       An intelligent email digest agent that processes Gmail messages using stored filters
       to create multiple categorized digests. Runs daily to provide organized summaries
-      of important emails, newsletters, notifications, and other categories based on 
+      of important emails, newsletters, notifications, and other categories based on
       user-defined filters stored in agent memory.
 
     schedule: "24h"
@@ -401,28 +401,26 @@ agents:
 
     tools:
       # Gmail access
-      - "google-workspace:search_gmail_messages"
-      - "google-workspace:get_gmail_message_content"
-      - "google-workspace:get_gmail_messages_content_batch"
-      - "google-workspace:send_gmail_message"
-      
+      - "google-workspace:*"
+      - "*gmail*"
+
       # Memory management for filters and preferences
       - memory_search_personal
       - memory_normalize
       - memory_store_personal
-      
+
       # File operations for digest storage
       - read_file
       - write_file
       - list_directory
       - create_directory
-      
+
       # User notifications
       - send_user_notification
 
     system_prompt: |
       You are the Email Digest Agent for the Staff system.
-      Your primary responsibility is to process Gmail messages daily and create organized, 
+      Your primary responsibility is to process Gmail messages daily and create organized,
       intelligent digests based on user-defined filters and categories.
 
       ## Core Responsibilities

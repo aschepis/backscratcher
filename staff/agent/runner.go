@@ -36,13 +36,14 @@ type MessagePersister interface {
 }
 
 type AgentRunner struct {
-	client           *anthropic.Client
-	agent            *Agent
-	toolExec         ToolExecutor
-	toolProvider     ToolProvider
-	stateManager     *StateManager
-	statsManager     *StatsManager
-	messagePersister MessagePersister // Optional message persister
+	client            *anthropic.Client
+	agent             *Agent
+	toolExec          ToolExecutor
+	toolProvider      ToolProvider
+	stateManager      *StateManager
+	statsManager      *StatsManager
+	messagePersister  MessagePersister   // Optional message persister
+	messageSummarizer *MessageSummarizer // Optional message summarizer
 }
 
 // toolResultData holds the result data for a tool call
@@ -51,6 +52,101 @@ type toolResultData struct {
 	isError bool
 }
 
+// summarizeToolResult summarizes the content of a tool result if it exceeds thresholds.
+// It extracts text from the result (handling strings, maps, slices) and summarizes if needed.
+func (r *AgentRunner) summarizeToolResult(ctx context.Context, result any) (any, error) {
+	if r.messageSummarizer == nil {
+		return result, nil
+	}
+
+	// Extract text content from result
+	var textContent string
+	switch v := result.(type) {
+	case string:
+		textContent = v
+	case []byte:
+		textContent = string(v)
+	case map[string]any:
+		// Try to find common text fields
+		if content, ok := v["content"].(string); ok {
+			textContent = content
+		} else if text, ok := v["text"].(string); ok {
+			textContent = text
+		} else if message, ok := v["message"].(string); ok {
+			textContent = message
+		} else {
+			// Marshal to JSON and use that as text
+			if b, err := json.Marshal(v); err == nil {
+				textContent = string(b)
+			} else {
+				return result, nil // Can't extract, return as-is
+			}
+		}
+	case []any:
+		// For slices, try to extract text from each element
+		var parts []string
+		for _, item := range v {
+			if str, ok := item.(string); ok {
+				parts = append(parts, str)
+			} else if b, err := json.Marshal(item); err == nil {
+				parts = append(parts, string(b))
+			}
+		}
+		textContent = strings.Join(parts, "\n")
+	default:
+		// For other types, marshal to JSON
+		if b, err := json.Marshal(result); err == nil {
+			textContent = string(b)
+		} else {
+			return result, nil // Can't extract, return as-is
+		}
+	}
+
+	// Check if summarization is needed
+	if !r.messageSummarizer.ShouldSummarize(textContent) {
+		return result, nil
+	}
+
+	// Summarize the text
+	summary, err := r.messageSummarizer.Summarize(ctx, textContent)
+	if err != nil {
+		// If summarization fails, return original
+		return result, err
+	}
+
+	// Replace the text content with summary
+	switch v := result.(type) {
+	case string:
+		return summary, nil
+	case []byte:
+		return []byte(summary), nil
+	case map[string]any:
+		// Replace content/text/message fields with summary
+		resultCopy := make(map[string]any)
+		for k, val := range v {
+			resultCopy[k] = val
+		}
+		if _, ok := resultCopy["content"]; ok {
+			resultCopy["content"] = summary
+		} else if _, ok := resultCopy["text"]; ok {
+			resultCopy["text"] = summary
+		} else if _, ok := resultCopy["message"]; ok {
+			resultCopy["message"] = summary
+		} else {
+			// Add as "summary" field
+			resultCopy["summary"] = summary
+		}
+		return resultCopy, nil
+	case []any:
+		// Replace slice with single summary string
+		return []any{summary}, nil
+	default:
+		// For other types, return as string
+		return summary, nil
+	}
+}
+
+// NewAgentRunner creates a new AgentRunner with all required dependencies.
 func NewAgentRunner(
 	apiKey string,
 	agent *Agent,
@@ -58,19 +154,8 @@ func NewAgentRunner(
 	toolProvider ToolProvider,
 	stateManager *StateManager,
 	statsManager *StatsManager,
-) (*AgentRunner, error) {
-	return NewAgentRunnerWithPersister(apiKey, agent, toolExec, toolProvider, stateManager, statsManager, nil)
-}
-
-// NewAgentRunnerWithPersister creates a new AgentRunner with an optional message persister.
-func NewAgentRunnerWithPersister(
-	apiKey string,
-	agent *Agent,
-	toolExec ToolExecutor,
-	toolProvider ToolProvider,
-	stateManager *StateManager,
-	statsManager *StatsManager,
 	messagePersister MessagePersister,
+	messageSummarizer *MessageSummarizer,
 ) (*AgentRunner, error) {
 	if stateManager == nil {
 		return nil, fmt.Errorf("stateManager is required for AgentRunner")
@@ -78,15 +163,22 @@ func NewAgentRunnerWithPersister(
 	if statsManager == nil {
 		return nil, fmt.Errorf("statsManager is required for AgentRunner")
 	}
+	if messagePersister == nil {
+		return nil, fmt.Errorf("messagePersister is required for AgentRunner")
+	}
+	if messageSummarizer == nil {
+		return nil, fmt.Errorf("messageSummarizer is required for AgentRunner")
+	}
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	return &AgentRunner{
-		client:           &client,
-		agent:            agent,
-		toolExec:         toolExec,
-		toolProvider:     toolProvider,
-		stateManager:     stateManager,
-		statsManager:     statsManager,
-		messagePersister: messagePersister,
+		client:            &client,
+		agent:             agent,
+		toolExec:          toolExec,
+		toolProvider:      toolProvider,
+		stateManager:      stateManager,
+		statsManager:      statsManager,
+		messagePersister:  messagePersister,
+		messageSummarizer: messageSummarizer,
 	}, nil
 }
 
@@ -230,6 +322,26 @@ func (r *AgentRunner) RunAgent(
 		// Calculate input text length
 		inputLength := r.calculateInputTextLength(msgs)
 
+		// Check if automatic compression is needed (before API call)
+		if ShouldAutoCompress(r.agent.Config.System, msgs) {
+			if debugCallback != nil {
+				debugCallback("AUTOMATIC COMPRESSION: Context size exceeds 1,000,000 characters, compressing...")
+			}
+			logger.Info("Automatic compression triggered for agent %s: context size exceeds 1,000,000 characters", r.agent.ID)
+
+			compressedMsgs, compressErr := r.compressContext(ctx, threadID, msgs, debugCallback)
+			if compressErr != nil {
+				logger.Warn("Failed to compress context automatically: %v", compressErr)
+				// Continue with original messages if compression fails
+			} else {
+				msgs = compressedMsgs
+				inputLength = r.calculateInputTextLength(msgs)
+				if debugCallback != nil {
+					debugCallback(fmt.Sprintf("Context compressed: %d chars -> %d chars", inputLength, r.calculateInputTextLength(msgs)))
+				}
+			}
+		}
+
 		// Debug: Show API call about to be made
 		if debugCallback != nil {
 			debugCallback(fmt.Sprintf("Calling Anthropic API (model: %s, %d messages in history, input length: %d chars)", r.agent.Config.Model, len(msgs), inputLength))
@@ -248,8 +360,44 @@ func (r *AgentRunner) RunAgent(
 			Tools: tools,
 		})
 		if err != nil {
-			executionError = err.Error()
-			return "", fmt.Errorf("anthropic Messages.New: %w", err)
+			// Check for 413 error (request too large)
+			if r.is413Error(err) {
+				if debugCallback != nil {
+					debugCallback("AUTOMATIC COMPRESSION: Anthropic API returned 413 request_too_large error, compressing context...")
+				}
+				logger.Info("Automatic compression triggered for agent %s: Anthropic API returned 413 request_too_large", r.agent.ID)
+
+				compressedMsgs, compressErr := r.compressContext(ctx, threadID, msgs, debugCallback)
+				if compressErr != nil {
+					executionError = fmt.Sprintf("failed to compress context after 413 error: %v", compressErr)
+					return "", fmt.Errorf("anthropic Messages.New (413 error) and compression failed: %w", compressErr)
+				}
+
+				// Retry with compressed messages
+				msgs = compressedMsgs
+				inputLength = r.calculateInputTextLength(msgs)
+				if debugCallback != nil {
+					debugCallback(fmt.Sprintf("Retrying API call with compressed context (%d chars)", inputLength))
+				}
+
+				// Retry the API call
+				message, err = r.client.Messages.New(ctx, anthropic.MessageNewParams{
+					Model:     anthropic.Model(r.agent.Config.Model),
+					MaxTokens: r.agent.Config.MaxTokens,
+					Messages:  msgs,
+					System: []anthropic.TextBlockParam{
+						{Text: r.agent.Config.System},
+					},
+					Tools: tools,
+				})
+				if err != nil {
+					executionError = err.Error()
+					return "", fmt.Errorf("anthropic Messages.New (after compression retry): %w", err)
+				}
+			} else {
+				executionError = err.Error()
+				return "", fmt.Errorf("anthropic Messages.New: %w", err)
+			}
 		}
 
 		// Accumulate tool uses + any plain text
@@ -281,10 +429,17 @@ func (r *AgentRunner) RunAgent(
 					result = map[string]any{"error": callErr.Error()}
 				}
 
-				// Track result for persistence
+				// Summarize result if needed (before marshaling to JSON)
+				summarizedResult, summarizeErr := r.summarizeToolResult(ctx, result)
+				if summarizeErr != nil {
+					logger.Warn("Failed to summarize tool result, using original: %v", summarizeErr)
+					summarizedResult = result
+				}
+
+				// Track original result for persistence (before summarization)
 				toolResultMap[block.ID] = toolResultData{result: result, isError: callErr != nil}
 
-				b, _ := json.Marshal(result)
+				b, _ := json.Marshal(summarizedResult)
 				isError := callErr != nil
 				toolResults = append(
 					toolResults,
@@ -320,15 +475,26 @@ func (r *AgentRunner) RunAgent(
 
 		// If no tool calls, we're done.
 		if len(toolResults) == 0 {
+			// Summarize final text if needed
+			finalTextStr := strings.TrimSpace(finalText.String())
+			if r.messageSummarizer != nil && r.messageSummarizer.ShouldSummarize(finalTextStr) {
+				summarized, err := r.messageSummarizer.Summarize(ctx, finalTextStr)
+				if err != nil {
+					logger.Warn("Failed to summarize assistant message, using original: %v", err)
+				} else {
+					finalTextStr = summarized
+				}
+			}
+
 			// Persist assistant text message if we have a persister
-			if r.messagePersister != nil && finalText.Len() > 0 {
-				if err := r.messagePersister.AppendAssistantMessage(ctx, r.agent.ID, threadID, strings.TrimSpace(finalText.String())); err != nil {
+			if r.messagePersister != nil && finalTextStr != "" {
+				if err := r.messagePersister.AppendAssistantMessage(ctx, r.agent.ID, threadID, finalTextStr); err != nil {
 					// Log error but don't fail execution
 					logger.Warn("failed to persist assistant message: %v", err)
 				}
 			}
 			executionSuccessful = true
-			return strings.TrimSpace(finalText.String()), nil
+			return finalTextStr, nil
 		}
 
 		// Persist tool results
@@ -395,6 +561,26 @@ func (r *AgentRunner) RunAgentStream(
 	for {
 		// Calculate input text length
 		inputLength := r.calculateInputTextLength(msgs)
+
+		// Check if automatic compression is needed (before API call)
+		if ShouldAutoCompress(r.agent.Config.System, msgs) {
+			if debugCallback != nil {
+				debugCallback("AUTOMATIC COMPRESSION: Context size exceeds 1,000,000 characters, compressing...")
+			}
+			logger.Info("Automatic compression triggered for agent %s: context size exceeds 1,000,000 characters", r.agent.ID)
+
+			compressedMsgs, compressErr := r.compressContext(ctx, threadID, msgs, debugCallback)
+			if compressErr != nil {
+				logger.Warn("Failed to compress context automatically: %v", compressErr)
+				// Continue with original messages if compression fails
+			} else {
+				msgs = compressedMsgs
+				inputLength = r.calculateInputTextLength(msgs)
+				if debugCallback != nil {
+					debugCallback(fmt.Sprintf("Context compressed: %d chars", inputLength))
+				}
+			}
+		}
 
 		// Debug: Show API call about to be made
 		if debugCallback != nil {
@@ -515,6 +701,27 @@ func (r *AgentRunner) RunAgentStream(
 
 		// Check for stream errors
 		if err := stream.Err(); err != nil {
+			// Check for 413 error (request too large)
+			if r.is413Error(err) {
+				if debugCallback != nil {
+					debugCallback("AUTOMATIC COMPRESSION: Anthropic API returned 413 request_too_large error, compressing context...")
+				}
+				logger.Info("Automatic compression triggered for agent %s: Anthropic API returned 413 request_too_large", r.agent.ID)
+
+				compressedMsgs, compressErr := r.compressContext(ctx, threadID, msgs, debugCallback)
+				if compressErr != nil {
+					executionError = fmt.Sprintf("failed to compress context after 413 error: %v", compressErr)
+					return "", fmt.Errorf("stream error (413) and compression failed: %w", compressErr)
+				}
+
+				// Retry with compressed messages
+				msgs = compressedMsgs
+				inputLength = r.calculateInputTextLength(msgs)
+				if debugCallback != nil {
+					debugCallback(fmt.Sprintf("Retrying API call with compressed context (%d chars)", inputLength))
+				}
+				continue // Loop back to retry with compressed context
+			}
 			executionError = err.Error()
 			return "", fmt.Errorf("stream error: %w", err)
 		}
@@ -577,11 +784,18 @@ func (r *AgentRunner) RunAgentStream(
 					result = map[string]any{"error": callErr.Error()}
 				}
 
-				// Track result for persistence
+				// Summarize result if needed (before marshaling to JSON)
+				summarizedResult, summarizeErr := r.summarizeToolResult(ctx, result)
+				if summarizeErr != nil {
+					logger.Warn("Failed to summarize tool result, using original: %v", summarizeErr)
+					summarizedResult = result
+				}
+
+				// Track original result for persistence (before summarization)
 				isError := callErr != nil
 				toolResultMap[toolUse.ID] = toolResultData{result: result, isError: isError}
 
-				b, _ := json.Marshal(result)
+				b, _ := json.Marshal(summarizedResult)
 				toolResults = append(toolResults, anthropic.NewToolResultBlock(toolUse.ID, string(b), isError))
 			}
 
@@ -627,6 +841,15 @@ func (r *AgentRunner) RunAgentStream(
 		// If we have text, return it
 		if hasText && textBuilder.Len() > 0 {
 			text := strings.TrimSpace(textBuilder.String())
+			// Summarize text if needed
+			if r.messageSummarizer != nil && r.messageSummarizer.ShouldSummarize(text) {
+				summarized, err := r.messageSummarizer.Summarize(ctx, text)
+				if err != nil {
+					logger.Warn("Failed to summarize assistant message, using original: %v", err)
+				} else {
+					text = summarized
+				}
+			}
 			// Persist assistant text message if we have a persister
 			if r.messagePersister != nil {
 				if err := r.messagePersister.AppendAssistantMessage(ctx, r.agent.ID, threadID, text); err != nil {
@@ -649,4 +872,89 @@ func (r *AgentRunner) RunAgentStream(
 		executionError = "unexpected stream completion: no text or tool use detected"
 		return "", fmt.Errorf("%s", executionError)
 	}
+}
+
+// compressContext compresses the context by summarizing it and replacing messages with a summary.
+// Returns the new compressed message list and any error.
+func (r *AgentRunner) compressContext(
+	ctx context.Context,
+	threadID string,
+	msgs []anthropic.MessageParam,
+	debugCallback DebugCallback,
+) ([]anthropic.MessageParam, error) {
+	if r.messageSummarizer == nil {
+		return nil, fmt.Errorf("summarizer not available")
+	}
+
+	if r.messagePersister == nil {
+		return nil, fmt.Errorf("message persister not available")
+	}
+
+	// Calculate original size
+	originalSize := GetContextSize(r.agent.Config.System, msgs)
+
+	// Summarize the context
+	summary, err := r.messageSummarizer.SummarizeContext(ctx, r.agent.Config.System, msgs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to summarize context: %w", err)
+	}
+
+	// Calculate compressed size
+	compressedSize := len(summary)
+
+	// Create system message content
+	systemMsg := map[string]interface{}{
+		"type":            "compress",
+		"message":         fmt.Sprintf("Context compressed: %s", summary),
+		"timestamp":       time.Now().Unix(),
+		"original_size":   originalSize,
+		"compressed_size": compressedSize,
+	}
+
+	contentJSON, err := json.Marshal(systemMsg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal system message: %w", err)
+	}
+
+	// Save the system message
+	if systemPersister, ok := r.messagePersister.(interface {
+		AppendSystemMessage(ctx context.Context, agentID, threadID, content string, breakType string) error
+	}); ok {
+		if err := systemPersister.AppendSystemMessage(ctx, r.agent.ID, threadID, string(contentJSON), "compress"); err != nil {
+			return nil, fmt.Errorf("failed to save system message: %w", err)
+		}
+	} else {
+		return nil, fmt.Errorf("message persister does not support system messages")
+	}
+
+	// Log compression
+	logger.Info("Context compressed for agent %s, thread %s: %d chars -> %d chars", r.agent.ID, threadID, originalSize, compressedSize)
+	if debugCallback != nil {
+		debugCallback(fmt.Sprintf("Context compressed: %d chars -> %d chars. Summary: %s", originalSize, compressedSize, summary))
+	}
+
+	// Return a new message list with just the summary as a user message
+	// This effectively replaces all previous messages with the summary
+	return []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock(fmt.Sprintf("Previous conversation summary: %s", summary))),
+	}, nil
+}
+
+// is413Error checks if an error is a 413 request_too_large error from Anthropic.
+func (r *AgentRunner) is413Error(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+	// Check for common 413 error indicators
+	return strings.Contains(errStr, "413") ||
+		strings.Contains(errStr, "request_too_large") ||
+		strings.Contains(errStr, "Request Entity Too Large") ||
+		strings.Contains(errStr, "payload too large")
+}
+
+// GetMessageSummarizer returns the message summarizer for this runner.
+func (r *AgentRunner) GetMessageSummarizer() *MessageSummarizer {
+	return r.messageSummarizer
 }

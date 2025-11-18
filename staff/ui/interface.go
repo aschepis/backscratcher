@@ -68,6 +68,24 @@ type ChatService interface {
 	// result is the tool result (will be JSON-marshaled).
 	// isError indicates if the result represents an error.
 	AppendToolResult(ctx context.Context, agentID, threadID, toolID, toolName string, result any, isError bool) error
+
+	// ResetContext clears the context by inserting a system message marking the reset.
+	ResetContext(ctx context.Context, agentID, threadID string) error
+
+	// CompressContext summarizes the context and inserts a system message marking the compression.
+	CompressContext(ctx context.Context, agentID, threadID string) error
+
+	// LoadSystemMessages loads system messages (context breaks) for a given agent and thread ID.
+	LoadSystemMessages(ctx context.Context, agentID, threadID string) ([]map[string]interface{}, error)
+
+	// LoadMessagesWithTimestamps loads regular (non-system) messages with their timestamps.
+	LoadMessagesWithTimestamps(ctx context.Context, agentID, threadID string) ([]MessageWithTimestamp, error)
+}
+
+// MessageWithTimestamp represents a message with its database timestamp.
+type MessageWithTimestamp struct {
+	Message   anthropic.MessageParam
+	Timestamp int64
 }
 
 // AgentInfo provides basic information about an agent for UI display.

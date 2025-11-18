@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY,
     agent_id TEXT NOT NULL,
     thread_id TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'tool')),
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'tool', 'system')),
     content TEXT NOT NULL,
     tool_name TEXT NULL,
     tool_id TEXT NULL,

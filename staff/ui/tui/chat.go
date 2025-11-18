@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -176,44 +177,151 @@ func (a *App) showChat(agentID string) {
 	a.app.SetFocus(inputField)
 }
 
-func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName, _ string /* threadID */) {
+func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName, threadID string) {
 	chatDisplay.Clear()
 
-	a.chatMutex.RLock()
-	history := a.chatHistory[agentID]
-	a.chatMutex.RUnlock()
+	// Get thread ID if not provided
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if threadID == "" {
+		var err error
+		threadID, err = a.chatService.GetOrCreateThreadID(ctx, agentID)
+		if err != nil {
+			threadID = fmt.Sprintf("chat-%s-%d", agentID, time.Now().Unix())
+		}
+	}
+
+	// Load conversation history
+	history, err := a.chatService.LoadConversationHistory(ctx, agentID, threadID)
+	if err != nil {
+		history = []anthropic.MessageParam{}
+	}
+
+	// Load system messages (context breaks)
+	systemMessages, err := a.chatService.LoadSystemMessages(ctx, agentID, threadID)
+	if err != nil {
+		systemMessages = []map[string]interface{}{}
+	}
 
 	// Display conversation history from database
-	if len(history) == 0 {
+	if len(history) == 0 && len(systemMessages) == 0 {
 		_, _ = fmt.Fprintf(chatDisplay, "[gray]Start a conversation with %s...[white]\n\n", agentName)
 	} else {
-		// Reconstruct and display the conversation history
-		for _, msg := range history {
-			var textBuilder strings.Builder
+		// Create a combined list of all messages with timestamps for sorting
+		type messageItem struct {
+			timestamp int64
+			isSystem  bool
+			msg       anthropic.MessageParam
+			sysMsg    map[string]interface{}
+		}
 
-			// Extract text from message content blocks
-			for _, blockUnion := range msg.Content {
-				// Check if this is a text block
-				if blockUnion.OfText != nil {
-					textBuilder.WriteString(blockUnion.OfText.Text)
-				}
+		var allMessages []messageItem
+
+		// Load regular messages with their actual timestamps
+		regularMsgsWithTimestamps, err := a.chatService.LoadMessagesWithTimestamps(ctx, agentID, threadID)
+		if err != nil {
+			// Fallback: use history without timestamps (will sort by order)
+			for i, msg := range history {
+				allMessages = append(allMessages, messageItem{
+					timestamp: int64(i) * 1000,
+					isSystem:  false,
+					msg:       msg,
+				})
 			}
-
-			text := strings.TrimSpace(textBuilder.String())
-			if text == "" {
-				continue // Skip empty messages
-			}
-
-			// Display based on role
-			switch msg.Role {
-			case "user":
-				_, _ = fmt.Fprintf(chatDisplay, "[cyan]You[white]: %s\n\n", text)
-			case "assistant":
-				_, _ = fmt.Fprintf(chatDisplay, "[green]%s[white]: %s\n\n", agentName, text)
-			default:
-				_, _ = fmt.Fprintf(chatDisplay, "[gray]%s[white]: %s\n\n", msg.Role, text)
+		} else {
+			// Add regular messages with their actual timestamps
+			for _, msgWithTs := range regularMsgsWithTimestamps {
+				allMessages = append(allMessages, messageItem{
+					timestamp: msgWithTs.Timestamp,
+					isSystem:  false,
+					msg:       msgWithTs.Message,
+				})
 			}
 		}
+
+		// Add system messages with their actual timestamps
+		for _, sysMsg := range systemMessages {
+			var ts int64
+			switch tsVal := sysMsg["timestamp"].(type) {
+			case int64:
+				ts = tsVal
+			case float64:
+				ts = int64(tsVal)
+			}
+			allMessages = append(allMessages, messageItem{
+				timestamp: ts,
+				isSystem:  true,
+				sysMsg:    sysMsg,
+			})
+		}
+
+		// Sort by timestamp
+		sort.Slice(allMessages, func(i, j int) bool {
+			return allMessages[i].timestamp < allMessages[j].timestamp
+		})
+
+		// Render all messages in chronological order
+		for _, item := range allMessages {
+			if item.isSystem {
+				// Render system message
+				msgType, _ := item.sysMsg["type"].(string)
+				message, _ := item.sysMsg["message"].(string)
+
+				// Display with visual separator based on type
+				switch msgType {
+				case "reset":
+					_, _ = fmt.Fprintf(chatDisplay, "[yellow]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[white]\n")
+					_, _ = fmt.Fprintf(chatDisplay, "[yellow]  ⚠ Context Reset[white]\n")
+					_, _ = fmt.Fprintf(chatDisplay, "[yellow]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[white]\n\n")
+				case "compress":
+					originalSize, _ := item.sysMsg["original_size"].(float64)
+					compressedSize, _ := item.sysMsg["compressed_size"].(float64)
+					_, _ = fmt.Fprintf(chatDisplay, "[magenta]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[white]\n")
+					_, _ = fmt.Fprintf(chatDisplay, "[magenta]  📦 Context Compressed[white]\n")
+					if originalSize > 0 && compressedSize > 0 {
+						_, _ = fmt.Fprintf(chatDisplay, "[magenta]  Size: %.0f → %.0f chars[white]\n", originalSize, compressedSize)
+					}
+					// Extract summary from message if it contains "Context compressed: "
+					if strings.HasPrefix(message, "Context compressed: ") {
+						summary := strings.TrimPrefix(message, "Context compressed: ")
+						_, _ = fmt.Fprintf(chatDisplay, "[magenta]  Summary: %s[white]\n", summary)
+					}
+					_, _ = fmt.Fprintf(chatDisplay, "[magenta]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[white]\n\n")
+				default:
+					_, _ = fmt.Fprintf(chatDisplay, "[gray]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[white]\n")
+					_, _ = fmt.Fprintf(chatDisplay, "[gray]  System: %s[white]\n", message)
+					_, _ = fmt.Fprintf(chatDisplay, "[gray]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[white]\n\n")
+				}
+			} else {
+				// Render regular message
+				var textBuilder strings.Builder
+
+				// Extract text from message content blocks
+				for _, blockUnion := range item.msg.Content {
+					// Check if this is a text block
+					if blockUnion.OfText != nil {
+						textBuilder.WriteString(blockUnion.OfText.Text)
+					}
+				}
+
+				text := strings.TrimSpace(textBuilder.String())
+				if text == "" {
+					continue // Skip empty messages
+				}
+
+				// Display based on role
+				switch item.msg.Role {
+				case "user":
+					_, _ = fmt.Fprintf(chatDisplay, "[cyan]You[white]: %s\n\n", text)
+				case "assistant":
+					_, _ = fmt.Fprintf(chatDisplay, "[green]%s[white]: %s\n\n", agentName, text)
+				default:
+					_, _ = fmt.Fprintf(chatDisplay, "[gray]%s[white]: %s\n\n", item.msg.Role, text)
+				}
+			}
+		}
+
 		chatDisplay.ScrollToEnd()
 	}
 }

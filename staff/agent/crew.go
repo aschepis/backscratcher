@@ -15,13 +15,14 @@ import (
 )
 
 type Crew struct {
-	Agents           map[string]*AgentConfig
-	Runners          map[string]*AgentRunner
-	ToolRegistry     *tools.Registry
-	ToolProvider     *ToolProviderFromRegistry
-	stateManager     *StateManager
-	statsManager     *StatsManager
-	messagePersister MessagePersister // Optional message persister
+	Agents            map[string]*AgentConfig
+	Runners           map[string]*AgentRunner
+	ToolRegistry      *tools.Registry
+	ToolProvider      *ToolProviderFromRegistry
+	stateManager      *StateManager
+	statsManager      *StatsManager
+	messagePersister  MessagePersister   // Optional message persister
+	messageSummarizer *MessageSummarizer // Optional message summarizer
 
 	MCPServers map[string]*MCPServerConfig
 	MCPClients map[string]mcp.MCPClient
@@ -79,6 +80,18 @@ func (c *Crew) SetMessagePersister(persister MessagePersister) {
 	}
 }
 
+// SetMessageSummarizer sets the message summarizer for this crew.
+// All runners will use this summarizer to summarize long messages.
+func (c *Crew) SetMessageSummarizer(summarizer *MessageSummarizer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.messageSummarizer = summarizer
+	// Update existing runners
+	for _, runner := range c.Runners {
+		runner.messageSummarizer = summarizer
+	}
+}
+
 func (c *Crew) LoadCrewConfig(cfg CrewConfig) error {
 	for id, agentCfg := range cfg.Agents {
 		if agentCfg.ID == "" {
@@ -106,7 +119,7 @@ func (c *Crew) InitializeAgents() error {
 			continue
 		}
 
-		runner, err := NewAgentRunnerWithPersister(c.apiKey, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider, c.stateManager, c.statsManager, c.messagePersister)
+		runner, err := NewAgentRunner(c.apiKey, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider, c.stateManager, c.statsManager, c.messagePersister, c.messageSummarizer)
 		if err != nil {
 			return fmt.Errorf("failed to create runner for agent %s: %w", id, err)
 		}
@@ -319,4 +332,11 @@ func (c *Crew) GetMCPClients() map[string]mcp.MCPClient {
 		result[name] = client
 	}
 	return result
+}
+
+// GetRunner returns the runner for a specific agent ID.
+func (c *Crew) GetRunner(agentID string) *AgentRunner {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Runners[agentID]
 }

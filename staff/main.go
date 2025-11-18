@@ -778,7 +778,46 @@ func main() {
 	logger.Info("Starting MCP server registration for %d total server(s) (from agents.yaml and Claude config)", len(cfg.MCPServers))
 	registerMCPServers(crew, cfg.MCPServers)
 
-	// Initialize AgentRunners
+	// Initialize message summarizer if enabled
+	if appConfig.MessageSummarization.Enabled {
+		logger.Info("Message summarization is enabled, initializing Ollama summarizer (model: %s)", appConfig.MessageSummarization.Model)
+		// Convert config.MessageSummarization to agent.MessageSummarizationConfig to avoid import cycle
+		summarizerConfig := agent.MessageSummarizationConfig{
+			Enabled:       appConfig.MessageSummarization.Enabled,
+			Model:         appConfig.MessageSummarization.Model,
+			MaxChars:      appConfig.MessageSummarization.MaxChars,
+			MaxLines:      appConfig.MessageSummarization.MaxLines,
+			MaxLineBreaks: appConfig.MessageSummarization.MaxLineBreaks,
+		}
+		messageSummarizer, err := agent.NewMessageSummarizer(summarizerConfig)
+		if err != nil {
+			logger.Error("Failed to create message summarizer: %v", err)
+			log.Fatalf("Failed to create message summarizer: %v", err)
+		}
+		if messageSummarizer != nil {
+			crew.SetMessageSummarizer(messageSummarizer)
+			logger.Info("Message summarizer initialized successfully")
+		}
+	} else {
+		logger.Info("Message summarization is disabled")
+	}
+
+	// ---------------------------
+	// 4. Create Chat Service (must be before InitializeAgents)
+	// ---------------------------
+
+	// Get chat timeout: env var takes precedence, then config file, then default (60)
+	chatTimeout := 60 // default
+	if envTimeout := os.Getenv("STAFF_CHAT_TIMEOUT"); envTimeout != "" {
+		if parsed, err := strconv.Atoi(envTimeout); err == nil && parsed > 0 {
+			chatTimeout = parsed
+		}
+	} else if appConfig.ChatTimeout > 0 {
+		chatTimeout = appConfig.ChatTimeout
+	}
+	chatService := ui.NewChatService(crew, db, chatTimeout)
+
+	// Initialize AgentRunners (after message persister is set)
 	if err := crew.InitializeAgents(); err != nil {
 		logger.Error("Failed to initialize agents: %v", err)
 		log.Fatalf("Failed to initialize agents: %v", err)
@@ -787,7 +826,7 @@ func main() {
 	logger.Info("Agents initialized successfully")
 
 	// ---------------------------
-	// 4. Start Background Scheduler
+	// 5. Start Background Scheduler
 	// ---------------------------
 
 	logger.Info("Starting background scheduler")
@@ -807,23 +846,12 @@ func main() {
 	logger.Info("Background scheduler goroutine started")
 
 	// ---------------------------
-	// 5. Create UI Service and TUI
+	// 6. Create UI Service and TUI
 	// ---------------------------
 
 	logger.Info("Initializing UI")
 	// Suppress console output to avoid interfering with TUI rendering
 	logger.SetSuppressConsole(true)
-
-	// Get chat timeout: env var takes precedence, then config file, then default (60)
-	chatTimeout := 60 // default
-	if envTimeout := os.Getenv("STAFF_CHAT_TIMEOUT"); envTimeout != "" {
-		if parsed, err := strconv.Atoi(envTimeout); err == nil && parsed > 0 {
-			chatTimeout = parsed
-		}
-	} else if appConfig.ChatTimeout > 0 {
-		chatTimeout = appConfig.ChatTimeout
-	}
-	chatService := ui.NewChatService(crew, db, chatTimeout)
 	// Get theme: env var takes precedence, then config file, then default
 	theme := os.Getenv("STAFF_THEME")
 	if theme == "" {
