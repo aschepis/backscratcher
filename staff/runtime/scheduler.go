@@ -50,7 +50,6 @@ func (s *Scheduler) Start(ctx context.Context) {
 			logger.Info("Scheduler stopped: context cancelled")
 			return
 		case <-ticker.C:
-			logger.Debug("Scheduler: polling for agents ready to wake")
 			s.checkAndWakeAgents(ctx)
 		}
 	}
@@ -66,7 +65,6 @@ func (s *Scheduler) checkAndWakeAgents(ctx context.Context) {
 	}
 
 	if len(agentIDs) == 0 {
-		logger.Debug("Scheduler check: no agents ready to wake")
 		return
 	}
 

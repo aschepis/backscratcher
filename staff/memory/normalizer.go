@@ -10,6 +10,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/cenkalti/backoff/v4"
 )
 
 // Normalizer converts raw user/agent statements into structured personal memories.
@@ -131,15 +134,33 @@ You must output ONLY the JSON object. Do not include explanations, comments, or 
 	return normalized, memType, tags, nil
 }
 
-// callAnthropic handles the HTTP call and response parsing, including a simple retry on JSON parse errors.
+// callAnthropic handles the HTTP call and response parsing, including retry logic with exponential backoff for rate limits.
 func (n *Normalizer) callAnthropic(ctx context.Context, body []byte) (string, string, []string, error) {
 	const endpoint = "https://api.anthropic.com/v1/messages"
 
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
+	var result struct {
+		normalized string
+		memType    string
+		tags       []string
+	}
+	var retryAfter time.Duration
+
+	// Create backoff configuration
+	eb := backoff.NewExponentialBackOff()
+	eb.InitialInterval = 1 * time.Second
+	eb.Multiplier = 2.0
+	eb.MaxInterval = 60 * time.Second
+	eb.MaxElapsedTime = 5 * time.Minute
+	eb.RandomizationFactor = 0.2 // 20% jitter
+	eb.Reset()
+
+	// Limit max retries
+	b := backoff.WithMaxRetries(eb, 5)
+
+	operation := func() error {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
-			return "", "", nil, fmt.Errorf("normalizer: create request: %w", err)
+			return backoff.Permanent(fmt.Errorf("normalizer: create request: %w", err))
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", n.APIKey)
@@ -147,16 +168,37 @@ func (n *Normalizer) callAnthropic(ctx context.Context, body []byte) (string, st
 
 		resp, err := n.HTTPClient.Do(req)
 		if err != nil {
-			lastErr = fmt.Errorf("normalizer: request failed: %w", err)
-			continue
+			return fmt.Errorf("normalizer: request failed: %w", err)
 		}
+		defer resp.Body.Close() //nolint:errcheck // Body close error can be ignored
 
 		if resp.StatusCode >= 400 {
 			var apiErr map[string]interface{}
 			_ = json.NewDecoder(resp.Body).Decode(&apiErr)
-			_ = resp.Body.Close() //nolint:errcheck // Body close error can be ignored
-			lastErr = fmt.Errorf("normalizer: API error %s: %v", resp.Status, apiErr)
-			continue
+
+			// Check for rate limit (429)
+			if resp.StatusCode == 429 {
+				retryAfter = extractRetryAfterFromResponseSummarizer(resp)
+				if retryAfter > 0 {
+					// Use retry-after as initial delay for next attempt
+					eb.Reset()
+					eb.InitialInterval = retryAfter
+					eb.Multiplier = 1.5
+					eb.RandomizationFactor = 0.1
+					eb.Reset()
+				}
+				logger.Warn("Normalizer: Rate limit encountered, retrying after %v", retryAfter)
+				return fmt.Errorf("normalizer: rate limit: %s: %v", resp.Status, apiErr)
+			}
+
+			// Don't retry on 4xx errors (except 429)
+			if resp.StatusCode < 500 {
+				return backoff.Permanent(fmt.Errorf("normalizer: API error %s: %v", resp.Status, apiErr))
+			}
+
+			// Retry on 5xx errors
+			logger.Warn("Normalizer: Server error %s, retrying", resp.Status)
+			return fmt.Errorf("normalizer: server error %s: %v", resp.Status, apiErr)
 		}
 
 		var msgResp struct {
@@ -166,15 +208,11 @@ func (n *Normalizer) callAnthropic(ctx context.Context, body []byte) (string, st
 			} `json:"content"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&msgResp); err != nil {
-			_ = resp.Body.Close() //nolint:errcheck // Body close error can be ignored
-			lastErr = fmt.Errorf("normalizer: decode response: %w", err)
-			continue
+			return fmt.Errorf("normalizer: decode response: %w", err)
 		}
-		_ = resp.Body.Close() //nolint:errcheck // Body close error can be ignored
 
 		if len(msgResp.Content) == 0 {
-			lastErr = fmt.Errorf("normalizer: empty content in response")
-			continue
+			return fmt.Errorf("normalizer: empty content in response")
 		}
 
 		rawJSON := strings.TrimSpace(msgResp.Content[0].Text)
@@ -184,17 +222,21 @@ func (n *Normalizer) callAnthropic(ctx context.Context, body []byte) (string, st
 			Tags       []string `json:"tags"`
 		}
 		if err := json.Unmarshal([]byte(rawJSON), &out); err != nil {
-			lastErr = fmt.Errorf("normalizer: parse model JSON: %w", err)
-			continue
+			return fmt.Errorf("normalizer: parse model JSON: %w", err)
 		}
 
-		return out.Normalized, out.Type, out.Tags, nil
+		result.normalized = out.Normalized
+		result.memType = out.Type
+		result.tags = out.Tags
+		return nil
 	}
 
-	if lastErr != nil {
-		return "", "", nil, lastErr
+	err := backoff.Retry(operation, backoff.WithContext(b, ctx))
+	if err != nil {
+		return "", "", nil, err
 	}
-	return "", "", nil, fmt.Errorf("normalizer: unknown error")
+
+	return result.normalized, result.memType, result.tags, nil
 }
 
 var (

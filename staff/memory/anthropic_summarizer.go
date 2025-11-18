@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/cenkalti/backoff/v4"
 )
 
 // AnthropicSummarizer implements Summarizer using Claude via the Messages API.
@@ -95,47 +99,115 @@ Episodes:
 		return "", fmt.Errorf("AnthropicSummarizer: marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(
-		context.Background(),
-		http.MethodPost,
-		"https://api.anthropic.com/v1/messages",
-		bytes.NewReader(bodyBytes),
-	)
-	if err != nil {
-		return "", fmt.Errorf("AnthropicSummarizer: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", s.APIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
+	// Create backoff configuration
+	eb := backoff.NewExponentialBackOff()
+	eb.InitialInterval = 1 * time.Second
+	eb.Multiplier = 2.0
+	eb.MaxInterval = 60 * time.Second
+	eb.MaxElapsedTime = 5 * time.Minute
+	eb.RandomizationFactor = 0.2 // 20% jitter
+	eb.Reset()
 
-	resp, err := s.HTTPClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("AnthropicSummarizer: request failed: %w", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // Body close error can be ignored
+	// Limit max retries
+	backoffConfig := backoff.WithMaxRetries(eb, 5)
 
-	if resp.StatusCode >= 400 {
-		var apiErr map[string]interface{}
-		_ = json.NewDecoder(resp.Body).Decode(&apiErr)
-		return "", fmt.Errorf("AnthropicSummarizer: API error %s: %v", resp.Status, apiErr)
+	var result string
+	var retryAfter time.Duration
+
+	operation := func() error {
+		req, err := http.NewRequestWithContext(
+			context.Background(),
+			http.MethodPost,
+			"https://api.anthropic.com/v1/messages",
+			bytes.NewReader(bodyBytes),
+		)
+		if err != nil {
+			return backoff.Permanent(fmt.Errorf("AnthropicSummarizer: create request: %w", err))
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", s.APIKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+
+		resp, err := s.HTTPClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("AnthropicSummarizer: request failed: %w", err)
+		}
+		defer resp.Body.Close() //nolint:errcheck // Body close error can be ignored
+
+		if resp.StatusCode >= 400 {
+			var apiErr map[string]interface{}
+			_ = json.NewDecoder(resp.Body).Decode(&apiErr)
+
+			// Check for rate limit (429)
+			if resp.StatusCode == 429 {
+				retryAfter = extractRetryAfterFromResponseSummarizer(resp)
+				if retryAfter > 0 {
+					// Use retry-after as initial delay for next attempt
+					eb.Reset()
+					eb.InitialInterval = retryAfter
+					eb.Multiplier = 1.5
+					eb.RandomizationFactor = 0.1
+					eb.Reset()
+				}
+				logger.Warn("AnthropicSummarizer: Rate limit encountered, retrying after %v", retryAfter)
+				return fmt.Errorf("AnthropicSummarizer: rate limit: %s: %v", resp.Status, apiErr)
+			}
+
+			// Don't retry on 4xx errors (except 429)
+			if resp.StatusCode < 500 {
+				return backoff.Permanent(fmt.Errorf("AnthropicSummarizer: API error %s: %v", resp.Status, apiErr))
+			}
+
+			// Retry on 5xx errors
+			logger.Warn("AnthropicSummarizer: Server error %s, retrying", resp.Status)
+			return fmt.Errorf("AnthropicSummarizer: server error %s: %v", resp.Status, apiErr)
+		}
+
+		var msgResp struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&msgResp); err != nil {
+			return fmt.Errorf("AnthropicSummarizer: decode response: %w", err)
+		}
+
+		if len(msgResp.Content) == 0 {
+			return fmt.Errorf("AnthropicSummarizer: empty content in response")
+		}
+
+		summary := strings.TrimSpace(msgResp.Content[0].Text)
+		if summary == "" {
+			return fmt.Errorf("AnthropicSummarizer: empty summary text")
+		}
+
+		result = summary
+		return nil
 	}
 
-	var msgResp struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
+	if err := backoff.Retry(operation, backoff.WithContext(backoffConfig, context.Background())); err != nil {
+		return "", err
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&msgResp); err != nil {
-		return "", fmt.Errorf("AnthropicSummarizer: decode response: %w", err)
+	return result, nil
+}
+
+// extractRetryAfterFromResponseSummarizer extracts the Retry-After header from an HTTP response
+func extractRetryAfterFromResponseSummarizer(resp *http.Response) time.Duration {
+	if retryAfterStr := resp.Header.Get("Retry-After"); retryAfterStr != "" {
+		if seconds, err := strconv.Atoi(retryAfterStr); err == nil {
+			return time.Duration(seconds) * time.Second
+		}
+		// Try parsing as HTTP date
+		if retryTime, err := time.Parse(time.RFC1123, retryAfterStr); err == nil {
+			now := time.Now()
+			if retryTime.After(now) {
+				return retryTime.Sub(now)
+			}
+		}
 	}
-	if len(msgResp.Content) == 0 {
-		return "", fmt.Errorf("AnthropicSummarizer: empty content in response")
-	}
-	summary := strings.TrimSpace(msgResp.Content[0].Text)
-	if summary == "" {
-		return "", fmt.Errorf("AnthropicSummarizer: empty summary text")
-	}
-	return summary, nil
+	// Default retry after duration
+	return 60 * time.Second
 }

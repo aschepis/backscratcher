@@ -144,7 +144,7 @@ func (c *Crew) InitializeAgents() error {
 				wakeTime := now.Add(delay)
 				nextWake = &wakeTime
 				hasWakeTime = true
-				logger.Info("Agent %s: configured with startup_delay of %v, will wake at %v", id, delay, wakeTime.Format(time.RFC3339))
+				logger.Info("Agent %s: configured with startup_delay of %v, will wake at %d (%s)", id, delay, wakeTime.Unix(), wakeTime.Format("2006-01-02 15:04:05"))
 			}
 
 			// Check if agent has a schedule and is not disabled
@@ -173,7 +173,7 @@ func (c *Crew) InitializeAgents() error {
 
 			if hasWakeTime {
 				// Agent has a wake time (from startup delay or schedule), set state to waiting_external
-				logger.Info("Agent %s: setting state to waiting_external with next_wake=%v", id, nextWake.Format(time.RFC3339))
+				logger.Info("Agent %s: setting state to waiting_external with next_wake=%d (%s)", id, nextWake.Unix(), nextWake.Format("2006-01-02 15:04:05"))
 				if err := c.stateManager.SetStateWithNextWake(id, StateWaitingExternal, nextWake); err != nil {
 					return fmt.Errorf("failed to initialize agent state with wake time for %s: %w", id, err)
 				}
@@ -208,12 +208,18 @@ func (c *Crew) InitializeAgents() error {
 				}
 				now := time.Now()
 				wakeTime := now.Add(delay)
-				logger.Info("Agent %s: applying startup_delay of %v (existing state=%s), will wake at %v", id, delay, currentState, wakeTime.Format(time.RFC3339))
+				logger.Info("Agent %s: applying startup_delay of %v (existing state=%s), will wake at %d (%s)", id, delay, currentState, wakeTime.Unix(), wakeTime.Format("2006-01-02 15:04:05"))
 				if err := c.stateManager.SetStateWithNextWake(id, StateWaitingExternal, &wakeTime); err != nil {
 					return fmt.Errorf("failed to apply startup_delay for agent %s: %w", id, err)
 				}
 			} else {
-				logger.Info("Agent %s: state exists, skipping startup_delay (state=%s, next_wake=%v)", id, currentState, currentNextWake)
+				var nextWakeStr string
+				if currentNextWake != nil {
+					nextWakeStr = fmt.Sprintf("%d (%s)", currentNextWake.Unix(), currentNextWake.Format("2006-01-02 15:04:05"))
+				} else {
+					nextWakeStr = "nil"
+				}
+				logger.Info("Agent %s: state exists, skipping startup_delay (state=%s, next_wake=%s)", id, currentState, nextWakeStr)
 			}
 		}
 	}

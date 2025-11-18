@@ -65,7 +65,10 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []anthropic.Tool
 			// Expand the pattern
 			matched := p.expandToolPattern(pattern)
 			if len(matched) == 0 {
-				logger.Warn("Tool pattern %q matched no tools", pattern)
+				// Only warn if this is not a server prefix pattern (those warn inside expandToolPattern)
+				if !hasServerPrefix {
+					logger.Warn("Tool pattern %q matched no tools", pattern)
+				}
 			} else {
 				logger.Debug("Tool pattern %q matched %d tools: %v", pattern, len(matched), matched)
 			}
@@ -177,6 +180,17 @@ func (p *ToolProviderFromRegistry) expandToolPattern(pattern string) []string {
 
 			// Special case: server:* matches all tools from that server
 			if toolPattern == "*" {
+				// Debug: log available servers and tools for diagnosis
+				serverTools := make(map[string][]string)
+				for _, toolName := range allTools {
+					if schema, ok := p.schemas[toolName]; ok {
+						if schema.ServerName != "" {
+							serverTools[schema.ServerName] = append(serverTools[schema.ServerName], toolName)
+						}
+					}
+				}
+				logger.Debug("Matching pattern %q: looking for server %q. Available servers: %v", pattern, serverName, getMapKeys(serverTools))
+
 				for _, toolName := range allTools {
 					if schema, ok := p.schemas[toolName]; ok && schema.ServerName == serverName {
 						matched = append(matched, toolName)
@@ -184,7 +198,7 @@ func (p *ToolProviderFromRegistry) expandToolPattern(pattern string) []string {
 				}
 				// Warn if server prefix was used but no tools matched (server might not exist)
 				if len(matched) == 0 {
-					logger.Warn("Tool pattern %q with server prefix %q matched no tools (server may not exist or have no tools)", pattern, serverName)
+					logger.Warn("Tool pattern %q with server prefix %q matched no tools (server may not exist or have no tools). Available servers: %v", pattern, serverName, getMapKeys(serverTools))
 				}
 				return matched
 			}
@@ -230,4 +244,13 @@ func (p *ToolProviderFromRegistry) expandToolPattern(pattern string) []string {
 	}
 
 	return matched
+}
+
+// getMapKeys returns the keys of a map as a slice of strings
+func getMapKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }

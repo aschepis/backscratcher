@@ -11,6 +11,7 @@ import (
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/cenkalti/backoff/v4"
 )
 
 // ToolExecutor is whatever you already had for running tools.
@@ -44,6 +45,7 @@ type AgentRunner struct {
 	statsManager      *StatsManager
 	messagePersister  MessagePersister   // Optional message persister
 	messageSummarizer *MessageSummarizer // Optional message summarizer
+	rateLimitHandler  *RateLimitHandler  // Rate limit handler
 }
 
 // toolResultData holds the result data for a tool call
@@ -170,6 +172,14 @@ func NewAgentRunner(
 		return nil, fmt.Errorf("messageSummarizer is required for AgentRunner")
 	}
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	rateLimitHandler := NewRateLimitHandler(stateManager)
+
+	// Set callback to notify users about rate limits
+	rateLimitHandler.SetOnRateLimitCallback(func(agentID string, retryAfter time.Duration, attempt int) error {
+		logger.Info("Rate limit callback: agent %s will retry after %v (attempt %d)", agentID, retryAfter, attempt)
+		return nil
+	})
+
 	return &AgentRunner{
 		client:            &client,
 		agent:             agent,
@@ -179,7 +189,77 @@ func NewAgentRunner(
 		statsManager:      statsManager,
 		messagePersister:  messagePersister,
 		messageSummarizer: messageSummarizer,
+		rateLimitHandler:  rateLimitHandler,
 	}, nil
+}
+
+// buildSystemBlocks creates system text blocks with prompt caching enabled if appropriate.
+// According to Anthropic's prompt caching documentation, placing cache_control on the system block
+// caches the full prefix: tools, system, and messages (in that order) up to and including the
+// block designated with cache_control. This means tools are automatically cached along with the system prompt.
+//
+// Prompt caching is enabled when the combined size of tools + system is at least 4000 characters
+// (roughly equivalent to ~1000 tokens, meeting Anthropic's 1024 token minimum requirement).
+// This helps reduce costs and latency for repeated requests with the same tools and system prompt.
+func buildSystemBlocks(systemPrompt string, tools []anthropic.ToolUnionParam) []anthropic.TextBlockParam {
+	// Anthropic requires minimum 1,024 tokens for caching, which is roughly 4,000 characters
+	// (using a rough estimate of 1 token ≈ 4 characters). We use 4000 characters as a safe
+	// threshold to ensure we meet the minimum token requirement across different tokenization methods.
+	const minCacheableLength = 4000
+
+	blocks := []anthropic.TextBlockParam{
+		{Text: systemPrompt},
+	}
+
+	// Calculate approximate size of tools by marshaling to JSON
+	toolsSize := 0
+	if len(tools) > 0 {
+		if toolsJSON, err := json.Marshal(tools); err == nil {
+			toolsSize = len(toolsJSON)
+		}
+	}
+
+	// Combined size of tools + system prompt
+	combinedSize := toolsSize + len(systemPrompt)
+
+	// Enable ephemeral caching if the combined static content (tools + system) is large enough
+	// When cache_control is placed on the system block, it caches both tools and system together
+	if combinedSize >= minCacheableLength {
+		// Create cache control with default 5-minute TTL
+		cacheControl := anthropic.NewCacheControlEphemeralParam()
+		blocks[0].CacheControl = cacheControl
+	}
+
+	return blocks
+}
+
+// logDetailedError logs detailed error information from Anthropic API errors
+func logDetailedError(agentID string, err error, debugCallback DebugCallback, context string) {
+	if err == nil {
+		return
+	}
+
+	// Get the full error string
+	errStr := err.Error()
+
+	// Try to extract structured error information if available
+	// The Anthropic SDK may wrap errors with additional context
+	errDetails := fmt.Sprintf("Anthropic API error for agent %s (%s): %s", agentID, context, errStr)
+
+	// Log the detailed error
+	logger.Error("%s", errDetails)
+
+	// Also send to debug callback if available
+	if debugCallback != nil {
+		debugCallback(fmt.Sprintf("ERROR: %s", errDetails))
+	}
+
+	// Try to extract additional error context using type assertions
+	// Check if error has additional fields we can log
+	if errStr != "" {
+		// Log the full error message which may contain API response details
+		logger.Debug("Full error details for agent %s: %+v", agentID, err)
+	}
 }
 
 // trackExecutionStats records execution statistics (success or failure) for the agent
@@ -319,86 +399,20 @@ func (r *AgentRunner) RunAgent(
 	tools := r.toolProvider.SpecsFor(r.agent.Config)
 
 	for {
-		// Calculate input text length
-		inputLength := r.calculateInputTextLength(msgs)
-
-		// Check if automatic compression is needed (before API call)
-		if ShouldAutoCompress(r.agent.Config.System, msgs) {
-			if debugCallback != nil {
-				debugCallback("AUTOMATIC COMPRESSION: Context size exceeds 1,000,000 characters, compressing...")
-			}
-			logger.Info("Automatic compression triggered for agent %s: context size exceeds 1,000,000 characters", r.agent.ID)
-
-			compressedMsgs, compressErr := r.compressContext(ctx, threadID, msgs, debugCallback)
-			if compressErr != nil {
-				logger.Warn("Failed to compress context automatically: %v", compressErr)
-				// Continue with original messages if compression fails
-			} else {
-				msgs = compressedMsgs
-				inputLength = r.calculateInputTextLength(msgs)
-				if debugCallback != nil {
-					debugCallback(fmt.Sprintf("Context compressed: %d chars -> %d chars", inputLength, r.calculateInputTextLength(msgs)))
-				}
-			}
-		}
-
-		// Debug: Show API call about to be made
-		if debugCallback != nil {
-			debugCallback(fmt.Sprintf("Calling Anthropic API (model: %s, %d messages in history, input length: %d chars)", r.agent.Config.Model, len(msgs), inputLength))
-		}
-
-		// Log API call with input length
-		logger.Info("Calling Anthropic API for agent %s (model: %s, %d messages in history, input length: %d chars)", r.agent.ID, r.agent.Config.Model, len(msgs), inputLength)
-
-		message, err := r.client.Messages.New(ctx, anthropic.MessageNewParams{
-			Model:     anthropic.Model(r.agent.Config.Model),
-			MaxTokens: r.agent.Config.MaxTokens,
-			Messages:  msgs,
-			System: []anthropic.TextBlockParam{
-				{Text: r.agent.Config.System},
-			},
-			Tools: tools,
-		})
+		// Call API with retry logic and rate limit handling
+		// Compression is handled inside callAnthropicAPIWithRetry
+		messagePtr, err := r.callAnthropicAPIWithRetry(ctx, threadID, msgs, tools, debugCallback, 5)
 		if err != nil {
-			// Check for 413 error (request too large)
-			if r.is413Error(err) {
-				if debugCallback != nil {
-					debugCallback("AUTOMATIC COMPRESSION: Anthropic API returned 413 request_too_large error, compressing context...")
-				}
-				logger.Info("Automatic compression triggered for agent %s: Anthropic API returned 413 request_too_large", r.agent.ID)
-
-				compressedMsgs, compressErr := r.compressContext(ctx, threadID, msgs, debugCallback)
-				if compressErr != nil {
-					executionError = fmt.Sprintf("failed to compress context after 413 error: %v", compressErr)
-					return "", fmt.Errorf("anthropic Messages.New (413 error) and compression failed: %w", compressErr)
-				}
-
-				// Retry with compressed messages
-				msgs = compressedMsgs
-				inputLength = r.calculateInputTextLength(msgs)
-				if debugCallback != nil {
-					debugCallback(fmt.Sprintf("Retrying API call with compressed context (%d chars)", inputLength))
-				}
-
-				// Retry the API call
-				message, err = r.client.Messages.New(ctx, anthropic.MessageNewParams{
-					Model:     anthropic.Model(r.agent.Config.Model),
-					MaxTokens: r.agent.Config.MaxTokens,
-					Messages:  msgs,
-					System: []anthropic.TextBlockParam{
-						{Text: r.agent.Config.System},
-					},
-					Tools: tools,
-				})
-				if err != nil {
-					executionError = err.Error()
-					return "", fmt.Errorf("anthropic Messages.New (after compression retry): %w", err)
-				}
-			} else {
+			// Check if this is a rate limit error that was scheduled for retry
+			if IsRateLimitError(err) && strings.Contains(err.Error(), "will retry at scheduled time") {
+				// This is expected - agent will retry later via scheduler
 				executionError = err.Error()
-				return "", fmt.Errorf("anthropic Messages.New: %w", err)
+				return "", err
 			}
+			executionError = err.Error()
+			return "", err
 		}
+		message := *messagePtr
 
 		// Accumulate tool uses + any plain text
 		var (
@@ -595,10 +609,8 @@ func (r *AgentRunner) RunAgentStream(
 			Model:     anthropic.Model(r.agent.Config.Model),
 			MaxTokens: r.agent.Config.MaxTokens,
 			Messages:  msgs,
-			System: []anthropic.TextBlockParam{
-				{Text: r.agent.Config.System},
-			},
-			Tools: tools,
+			System:    buildSystemBlocks(r.agent.Config.System, tools),
+			Tools:     tools,
 		})
 
 		// Process stream
@@ -692,6 +704,8 @@ func (r *AgentRunner) RunAgentStream(
 			case anthropic.MessageDeltaEvent:
 				// Message delta - can contain stop reason, but we don't need to handle it here
 				_ = evt.Delta.StopReason
+				// Note: Usage information is not available in MessageDeltaEvent in the current SDK version
+				// Cache stats will be logged for non-streaming API calls
 
 			case anthropic.MessageStopEvent:
 				// Message finished - stream is complete
@@ -699,8 +713,14 @@ func (r *AgentRunner) RunAgentStream(
 			}
 		}
 
+		// Note: Cache performance metrics are not available from streaming responses in the current SDK version
+		// Cache stats are logged for non-streaming API calls (see callAnthropicAPIWithRetry)
+
 		// Check for stream errors
 		if err := stream.Err(); err != nil {
+			// Log detailed error information
+			logDetailedError(r.agent.ID, err, debugCallback, "streaming API call")
+
 			// Check for 413 error (request too large)
 			if r.is413Error(err) {
 				if debugCallback != nil {
@@ -710,6 +730,7 @@ func (r *AgentRunner) RunAgentStream(
 
 				compressedMsgs, compressErr := r.compressContext(ctx, threadID, msgs, debugCallback)
 				if compressErr != nil {
+					logDetailedError(r.agent.ID, compressErr, debugCallback, "compression after 413 error in streaming")
 					executionError = fmt.Sprintf("failed to compress context after 413 error: %v", compressErr)
 					return "", fmt.Errorf("stream error (413) and compression failed: %w", compressErr)
 				}
@@ -722,6 +743,51 @@ func (r *AgentRunner) RunAgentStream(
 				}
 				continue // Loop back to retry with compressed context
 			}
+
+			// Check for rate limit error
+			if IsRateLimitError(err) {
+				if r.rateLimitHandler != nil {
+					delay, shouldRetry, handlerErr := r.rateLimitHandler.HandleRateLimit(ctx, r.agent.ID, err, 0, nil)
+					if handlerErr != nil {
+						logDetailedError(r.agent.ID, handlerErr, debugCallback, "rate limit handler")
+						executionError = fmt.Sprintf("rate limit handler error: %v", handlerErr)
+						return "", fmt.Errorf("rate limit handler error: %w", handlerErr)
+					}
+
+					if !shouldRetry {
+						// Max retries exceeded - schedule retry using next_wake for scheduled agents
+						if r.agent.Config.Schedule != "" {
+							if scheduleErr := r.rateLimitHandler.ScheduleRetryWithNextWake(r.agent.ID, delay); scheduleErr != nil {
+								logDetailedError(r.agent.ID, scheduleErr, debugCallback, "scheduling retry via next_wake")
+								logger.Warn("Failed to schedule retry via next_wake: %v", scheduleErr)
+							} else {
+								if debugCallback != nil {
+									debugCallback(fmt.Sprintf("Rate limit exceeded. Agent will retry at scheduled time (in %v)", delay))
+								}
+								logger.Info("Rate limit exceeded for agent %s (streaming). Scheduled retry via next_wake in %v", r.agent.ID, delay)
+								executionError = "rate limit exceeded: agent will retry at scheduled time"
+								return "", fmt.Errorf("rate limit exceeded: agent will retry at scheduled time: %w", err)
+							}
+						}
+						executionError = "rate limit: max retries exceeded"
+						return "", fmt.Errorf("rate limit: max retries exceeded: %w", err)
+					}
+
+					// Wait for retry delay
+					if debugCallback != nil {
+						debugCallback(fmt.Sprintf("Rate limit encountered. Waiting %v before retry...", delay))
+					}
+					logger.Info("Rate limit encountered for agent %s (streaming). Waiting %v before retry", r.agent.ID, delay)
+
+					if waitErr := r.rateLimitHandler.WaitForRetry(ctx, delay); waitErr != nil {
+						logDetailedError(r.agent.ID, waitErr, debugCallback, "waiting for rate limit retry")
+						executionError = fmt.Sprintf("context cancelled while waiting for rate limit retry: %v", waitErr)
+						return "", fmt.Errorf("context cancelled while waiting for rate limit retry: %w", waitErr)
+					}
+					continue // Loop back to retry after delay
+				}
+			}
+
 			executionError = err.Error()
 			return "", fmt.Errorf("stream error: %w", err)
 		}
@@ -952,6 +1018,179 @@ func (r *AgentRunner) is413Error(err error) bool {
 		strings.Contains(errStr, "request_too_large") ||
 		strings.Contains(errStr, "Request Entity Too Large") ||
 		strings.Contains(errStr, "payload too large")
+}
+
+// callAnthropicAPIWithRetry calls the Anthropic API with rate limit handling and retry logic using the backoff library
+func (r *AgentRunner) callAnthropicAPIWithRetry(
+	ctx context.Context,
+	threadID string,
+	msgs []anthropic.MessageParam,
+	tools []anthropic.ToolUnionParam,
+	debugCallback DebugCallback,
+	maxRetries int64,
+) (*anthropic.Message, error) {
+	// Create backoff configuration
+	eb := backoff.NewExponentialBackOff()
+	eb.InitialInterval = 1 * time.Second
+	eb.Multiplier = 2.0
+	eb.MaxInterval = 5 * time.Minute
+	eb.MaxElapsedTime = 5 * time.Minute
+	eb.RandomizationFactor = 0.2 // 20% jitter
+	eb.Reset()
+
+	// Limit max retries - handle potential overflow
+	var maxRetriesUint uint64
+	if maxRetries < 0 {
+		maxRetriesUint = 0
+	} else {
+		maxRetriesUint = uint64(maxRetries)
+	}
+	backoffConfig := backoff.WithMaxRetries(eb, maxRetriesUint)
+
+	var result *anthropic.Message
+	var retryAfter time.Duration
+	attemptCount := 0
+
+	// Use a pointer to msgs so modifications persist across retries (for 413 compression)
+	currentMsgs := msgs
+
+	operation := func() error {
+		attemptCount++
+
+		// Calculate input text length
+		inputLength := r.calculateInputTextLength(currentMsgs)
+
+		// Check if automatic compression is needed (before API call)
+		if ShouldAutoCompress(r.agent.Config.System, currentMsgs) {
+			if debugCallback != nil {
+				debugCallback("AUTOMATIC COMPRESSION: Context size exceeds 1,000,000 characters, compressing...")
+			}
+			logger.Info("Automatic compression triggered for agent %s: context size exceeds 1,000,000 characters", r.agent.ID)
+
+			compressedMsgs, compressErr := r.compressContext(ctx, threadID, currentMsgs, debugCallback)
+			if compressErr != nil {
+				logger.Warn("Failed to compress context automatically: %v", compressErr)
+				// Continue with original messages if compression fails
+			} else {
+				currentMsgs = compressedMsgs
+				inputLength = r.calculateInputTextLength(currentMsgs)
+				if debugCallback != nil {
+					debugCallback(fmt.Sprintf("Context compressed: %d chars -> %d chars", inputLength, r.calculateInputTextLength(currentMsgs)))
+				}
+			}
+		}
+
+		// Debug: Show API call about to be made
+		if debugCallback != nil {
+			debugCallback(fmt.Sprintf("Calling Anthropic API (model: %s, %d messages in history, input length: %d chars, attempt %d)", r.agent.Config.Model, len(currentMsgs), inputLength, attemptCount))
+		}
+
+		// Log API call with input length
+		logger.Info("Calling Anthropic API for agent %s (model: %s, %d messages in history, input length: %d chars, attempt %d)", r.agent.ID, r.agent.Config.Model, len(currentMsgs), inputLength, attemptCount)
+
+		// Build API params with prompt caching support
+		params := anthropic.MessageNewParams{
+			Model:     anthropic.Model(r.agent.Config.Model),
+			MaxTokens: r.agent.Config.MaxTokens,
+			Messages:  currentMsgs,
+			System:    buildSystemBlocks(r.agent.Config.System, tools),
+			Tools:     tools,
+		}
+
+		message, err := r.client.Messages.New(ctx, params)
+		if err != nil {
+			// Log detailed error information
+			logDetailedError(r.agent.ID, err, debugCallback, fmt.Sprintf("non-streaming API call, attempt %d", attemptCount))
+
+			// Check for 413 error (request too large) - retry immediately with compression
+			if r.is413Error(err) {
+				if debugCallback != nil {
+					debugCallback("AUTOMATIC COMPRESSION: Anthropic API returned 413 request_too_large error, compressing context...")
+				}
+				logger.Info("Automatic compression triggered for agent %s: Anthropic API returned 413 request_too_large", r.agent.ID)
+
+				compressedMsgs, compressErr := r.compressContext(ctx, threadID, currentMsgs, debugCallback)
+				if compressErr != nil {
+					logDetailedError(r.agent.ID, compressErr, debugCallback, "compression after 413 error")
+					return backoff.Permanent(fmt.Errorf("anthropic Messages.New (413 error) and compression failed: %w", compressErr))
+				}
+
+				// Update currentMsgs for next attempt and reset backoff for immediate retry
+				currentMsgs = compressedMsgs
+				eb.Reset() // Reset backoff for immediate retry
+				return fmt.Errorf("anthropic Messages.New (413 error), retrying with compressed context: %w", err)
+			}
+
+			// Check for rate limit error
+			if IsRateLimitError(err) {
+				if r.rateLimitHandler != nil {
+					// Extract retry-after if available
+					retryAfter = ExtractRetryAfter(err, nil)
+
+					// Adjust backoff based on retry-after
+					if retryAfter > 0 {
+						eb.Reset()
+						eb.InitialInterval = retryAfter
+						eb.Multiplier = 1.5
+						eb.RandomizationFactor = 0.1
+						eb.Reset()
+					}
+
+					if debugCallback != nil {
+						debugCallback(fmt.Sprintf("Rate limit encountered. Retrying with backoff (attempt %d)...", attemptCount))
+					}
+					logger.Info("Rate limit encountered for agent %s (attempt %d), retrying with backoff", r.agent.ID, attemptCount)
+
+					// Return error to trigger backoff retry
+					return fmt.Errorf("rate limit: %w", err)
+				}
+			}
+
+			// For other errors, don't retry
+			return backoff.Permanent(fmt.Errorf("anthropic Messages.New: %w", err))
+		}
+
+		// Success
+		result = message
+		// Log cache performance metrics if available
+		usage := message.Usage
+		cacheMsg := fmt.Sprintf("Cache stats - Creation: %d tokens, Read: %d tokens, Input: %d tokens, Output: %d tokens",
+			usage.CacheCreationInputTokens,
+			usage.CacheReadInputTokens,
+			usage.InputTokens,
+			usage.OutputTokens)
+		logger.Info("API call completed for agent %s - %s", r.agent.ID, cacheMsg)
+		if debugCallback != nil {
+			debugCallback(cacheMsg)
+		}
+		return nil
+	}
+
+	err := backoff.Retry(operation, backoff.WithContext(backoffConfig, ctx))
+	if err != nil {
+		// Check if this is a rate limit error that exceeded max retries
+		if IsRateLimitError(err) && r.rateLimitHandler != nil {
+			// Max retries exceeded - schedule retry using next_wake for scheduled agents
+			if r.agent.Config.Schedule != "" {
+				delay := retryAfter
+				if delay == 0 {
+					delay = 60 * time.Second // Default delay
+				}
+				if scheduleErr := r.rateLimitHandler.ScheduleRetryWithNextWake(r.agent.ID, delay); scheduleErr != nil {
+					logger.Warn("Failed to schedule retry via next_wake: %v", scheduleErr)
+				} else {
+					if debugCallback != nil {
+						debugCallback(fmt.Sprintf("Rate limit exceeded. Agent will retry at scheduled time (in %v)", delay))
+					}
+					logger.Info("Rate limit exceeded for agent %s. Scheduled retry via next_wake in %v", r.agent.ID, delay)
+					return nil, fmt.Errorf("rate limit exceeded: agent will retry at scheduled time: %w", err)
+				}
+			}
+		}
+		return nil, err
+	}
+
+	return result, nil
 }
 
 // GetMessageSummarizer returns the message summarizer for this runner.

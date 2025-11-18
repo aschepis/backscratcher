@@ -128,7 +128,14 @@ func (sm *StateManager) SetStateWithNextWake(agentID string, state State, nextWa
 		return fmt.Errorf("failed to set agent state: %w", err)
 	}
 
-	logger.Info("Agent state updated: agentID=%s state=%s next_wake=%v", agentID, state, nextWakeUnix)
+	// Format next_wake for logging: show both Unix timestamp and human-readable time in local timezone
+	var nextWakeStr string
+	if nextWake != nil {
+		nextWakeStr = fmt.Sprintf("%d (%s)", nextWakeUnix, nextWake.Format("2006-01-02 15:04:05"))
+	} else {
+		nextWakeStr = "nil"
+	}
+	logger.Info("Agent state updated: agentID=%s state=%s next_wake=%s", agentID, state, nextWakeStr)
 	return nil
 }
 
@@ -217,7 +224,7 @@ func (sm *StateManager) SetNextWake(agentID string, nextWake time.Time) error {
 		return fmt.Errorf("failed to set next wake: %w", err)
 	}
 
-	logger.Info("Agent next wake updated: agentID=%s nextWake=%d", agentID, nextWakeUnix)
+	logger.Info("Agent next wake updated: agentID=%s nextWake=%d (%s)", agentID, nextWakeUnix, nextWake.Format("2006-01-02 15:04:05"))
 	return nil
 }
 

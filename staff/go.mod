@@ -6,6 +6,7 @@ require (
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/TwiN/deepmerge v0.2.2
 	github.com/anthropics/anthropic-sdk-go v1.18.0
+	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/gdamore/tcell/v2 v2.8.1
 	github.com/gen2brain/beeep v0.11.1
 	github.com/golang-migrate/migrate/v4 v4.19.0

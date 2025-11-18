@@ -68,6 +68,13 @@ func Error(format string, v ...interface{}) {
 	}
 }
 
+// Trace logs a trace message with timestamp.
+func Trace(format string, v ...interface{}) {
+	if fileLogger != nil {
+		fileLogger.Printf("[Trace] "+format, v...)
+	}
+}
+
 // Debug logs a debug message with timestamp.
 func Debug(format string, v ...interface{}) {
 	if fileLogger != nil {
