@@ -50,7 +50,7 @@ func (a *App) showChat(agentID string) {
 	chatDisplay.SetDynamicColors(true).
 		SetWordWrap(true).
 		SetBorder(true).
-		SetTitle(fmt.Sprintf("Chat with %s (Esc to go back, Tab to focus input, type 'exit' to leave)", agentName))
+		SetTitle(fmt.Sprintf("Chat with %s (Esc: back, Tab: focus input, /reset: reset context, /compress: compress context, exit: leave)", agentName))
 	chatDisplay.SetScrollable(true)
 
 	// Display existing chat history
@@ -61,7 +61,7 @@ func (a *App) showChat(agentID string) {
 	inputField.SetLabel("You: ").
 		SetFieldWidth(0).
 		SetBorder(true).
-		SetTitle("Message (Enter to send, Tab to scroll chat, type 'exit' to leave, Esc to go back)")
+		SetTitle("Message (Enter: send, Tab: scroll chat, /reset: reset context, /compress: compress context, exit: leave, Esc: back)")
 
 	// Add input capture to chat display for arrow key scrolling
 	// Must be after inputField is declared so we can reference it
@@ -131,6 +131,29 @@ func (a *App) showChat(agentID string) {
 				a.pages.SwitchToPage("main")
 				a.app.SetFocus(a.sidebar)
 				return
+			}
+
+			// Check for special commands
+			if strings.HasPrefix(message, "/") {
+				command := strings.ToLower(strings.TrimSpace(message))
+				inputField.SetText("")
+
+				switch command {
+				case "/reset":
+					go a.handleResetContext(agentID, agentName, threadID, chatDisplay)
+					return
+				case "/compress":
+					go a.handleCompressContext(agentID, agentName, threadID, chatDisplay)
+					return
+				default:
+					// Unknown command - show error and don't send
+					a.app.QueueUpdateDraw(func() {
+						_, _ = fmt.Fprintf(chatDisplay, "[red]Unknown command: %s[white]\n", message)
+						_, _ = fmt.Fprintf(chatDisplay, "[gray]Available commands: /reset, /compress, exit[white]\n\n")
+						chatDisplay.ScrollToEnd()
+					})
+					return
+				}
 			}
 
 			// Clear input immediately - this must be fast and non-blocking
@@ -460,5 +483,88 @@ func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay 
 			// Ensure we're scrolled to the end
 			chatDisplay.ScrollToEnd()
 		}
+	})
+}
+
+// handleResetContext handles the /reset command
+func (a *App) handleResetContext(agentID, agentName, threadID string, chatDisplay *tview.TextView) {
+	// Show status message
+	a.app.QueueUpdateDraw(func() {
+		_, _ = fmt.Fprintf(chatDisplay, "[yellow]Resetting context...[white]\n\n")
+		chatDisplay.ScrollToEnd()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := a.chatService.ResetContext(ctx, agentID, threadID)
+	if err != nil {
+		a.app.QueueUpdateDraw(func() {
+			_, _ = fmt.Fprintf(chatDisplay, "[red]Error resetting context: %v[white]\n\n", err)
+			chatDisplay.ScrollToEnd()
+		})
+		return
+	}
+
+	// Refresh chat display to show the reset indicator
+	a.app.QueueUpdateDraw(func() {
+		// Reload the chat display with updated history
+		// We need to get the threadID again to ensure we have the latest
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel2()
+
+		// Update the chat history in memory
+		history, err := a.chatService.LoadConversationHistory(ctx2, agentID, threadID)
+		if err == nil {
+			a.chatMutex.Lock()
+			a.chatHistory[agentID] = history
+			a.chatMutex.Unlock()
+		}
+
+		// Clear and refresh the display
+		chatDisplay.Clear()
+		a.updateChatDisplay(chatDisplay, agentID, agentName, threadID)
+		chatDisplay.ScrollToEnd()
+	})
+}
+
+// handleCompressContext handles the /compress command
+func (a *App) handleCompressContext(agentID, agentName, threadID string, chatDisplay *tview.TextView) {
+	// Show status message
+	a.app.QueueUpdateDraw(func() {
+		_, _ = fmt.Fprintf(chatDisplay, "[magenta]Compressing context (this may take a moment)...[white]\n\n")
+		chatDisplay.ScrollToEnd()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := a.chatService.CompressContext(ctx, agentID, threadID)
+	if err != nil {
+		a.app.QueueUpdateDraw(func() {
+			_, _ = fmt.Fprintf(chatDisplay, "[red]Error compressing context: %v[white]\n\n", err)
+			chatDisplay.ScrollToEnd()
+		})
+		return
+	}
+
+	// Refresh chat display to show the compression indicator
+	a.app.QueueUpdateDraw(func() {
+		// Reload the chat display with updated history
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel2()
+
+		// Update the chat history in memory
+		history, err := a.chatService.LoadConversationHistory(ctx2, agentID, threadID)
+		if err == nil {
+			a.chatMutex.Lock()
+			a.chatHistory[agentID] = history
+			a.chatMutex.Unlock()
+		}
+
+		// Clear and refresh the display
+		chatDisplay.Clear()
+		a.updateChatDisplay(chatDisplay, agentID, agentName, threadID)
+		chatDisplay.ScrollToEnd()
 	})
 }
