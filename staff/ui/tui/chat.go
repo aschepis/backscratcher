@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,19 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
+
+// urlRegex matches URLs in text for hyperlink formatting
+var urlRegex = regexp.MustCompile(`https?://[^\s\[\]<>]+`)
+
+// formatURLsAsHyperlinks converts URLs in text to OSC 8 terminal hyperlinks
+// This makes URLs clickable in supported terminals (iTerm2, GNOME Terminal, Windows Terminal, etc.)
+func formatURLsAsHyperlinks(text string) string {
+	return urlRegex.ReplaceAllStringFunc(text, func(url string) string {
+		// OSC 8 hyperlink format: ESC ] 8 ; ; URL BEL text ESC ] 8 ; ; BEL
+		// Using \033 for ESC and \007 for BEL
+		return fmt.Sprintf("\033]8;;%s\007%s\033]8;;\007", url, url)
+	})
+}
 
 func (a *App) showChat(agentID string) {
 	agents := a.chatService.ListAgents()
@@ -204,14 +218,15 @@ func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName,
 				continue // Skip empty messages
 			}
 
-			// Display based on role
+			// Display based on role - format URLs as clickable hyperlinks
+			formattedText := formatURLsAsHyperlinks(text)
 			switch msg.Role {
 			case "user":
-				_, _ = fmt.Fprintf(chatDisplay, "[cyan]You[white]: %s\n\n", text)
+				_, _ = fmt.Fprintf(chatDisplay, "[cyan]You[white]: %s\n\n", formattedText)
 			case "assistant":
-				_, _ = fmt.Fprintf(chatDisplay, "[green]%s[white]: %s\n\n", agentName, text)
+				_, _ = fmt.Fprintf(chatDisplay, "[green]%s[white]: %s\n\n", agentName, formattedText)
 			default:
-				_, _ = fmt.Fprintf(chatDisplay, "[gray]%s[white]: %s\n\n", msg.Role, text)
+				_, _ = fmt.Fprintf(chatDisplay, "[gray]%s[white]: %s\n\n", msg.Role, formattedText)
 			}
 		}
 		chatDisplay.ScrollToEnd()
@@ -222,7 +237,8 @@ func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName,
 func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay *tview.TextView) {
 	// Update UI to show user message and thinking indicator
 	a.app.QueueUpdateDraw(func() {
-		_, _ = fmt.Fprintf(chatDisplay, "[cyan]You[white]: %s\n\n", message)
+		formattedMessage := formatURLsAsHyperlinks(message)
+		_, _ = fmt.Fprintf(chatDisplay, "[cyan]You[white]: %s\n\n", formattedMessage)
 		_, _ = fmt.Fprintf(chatDisplay, "[yellow]%s is thinking...[white]\n", agentName)
 		chatDisplay.ScrollToEnd()
 	})
@@ -287,8 +303,9 @@ func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay 
 				_, _ = fmt.Fprintf(chatDisplay, "[green]%s[white]: ", agentName)
 			}
 
-			// Append text directly to the display - this is efficient
-			_, _ = fmt.Fprint(chatDisplay, text)
+			// Append text directly to the display - format URLs as clickable hyperlinks
+			formattedText := formatURLsAsHyperlinks(text)
+			_, _ = fmt.Fprint(chatDisplay, formattedText)
 			chatDisplay.ScrollToEnd()
 		})
 		return nil
