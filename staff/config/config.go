@@ -31,6 +31,13 @@ type MessageSummarization struct {
 	MaxLineBreaks int    `yaml:"max_line_breaks,omitempty"` // Maximum line breaks before summarization (default: 10)
 }
 
+// OllamaConfig represents configuration for Ollama LLM provider.
+type OllamaConfig struct {
+	Host    string `yaml:"host,omitempty"`     // Ollama host (default: "http://localhost:11434")
+	Model   string `yaml:"model,omitempty"`     // Default model name
+	Timeout int    `yaml:"timeout,omitempty"`   // Request timeout in seconds
+}
+
 // Config represents the application configuration.
 type Config struct {
 	AnthropicAPIKey      string                      `yaml:"anthropic_api_key,omitempty"`
@@ -39,6 +46,7 @@ type Config struct {
 	ClaudeMCP            ClaudeMCPConfig             `yaml:"claude_mcp,omitempty"`
 	ChatTimeout          int                         `yaml:"chat_timeout,omitempty"`          // Timeout in seconds for chat operations (default: 60)
 	MessageSummarization MessageSummarization        `yaml:"message_summarization,omitempty"` // Message summarization configuration
+	Ollama               OllamaConfig                `yaml:"ollama,omitempty"`                // Ollama LLM provider configuration
 }
 
 // GetConfigPath returns the default config file path, expanding ~ to home directory.
@@ -76,7 +84,7 @@ func LoadConfig(path string) (*Config, error) {
 	// Check if file exists
 	if _, err := os.Stat(expandedPath); os.IsNotExist(err) {
 		// File doesn't exist - return empty config (non-fatal)
-		return &Config{
+		cfg := &Config{
 			MCPServers:  make(map[string]MCPServerSecrets),
 			ChatTimeout: 60, // Default timeout
 			MessageSummarization: MessageSummarization{
@@ -85,7 +93,10 @@ func LoadConfig(path string) (*Config, error) {
 				MaxLines:      50,
 				MaxLineBreaks: 10,
 			},
-		}, nil
+		}
+		// Apply environment variable defaults for Ollama
+		applyOllamaEnvDefaults(cfg)
+		return cfg, nil
 	}
 
 	// Read file
@@ -143,7 +154,35 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.ClaudeMCP.ConfigPath = envConfigPath
 	}
 
+	// Apply environment variable overrides for Ollama
+	applyOllamaEnvDefaults(&cfg)
+
 	return &cfg, nil
+}
+
+// applyOllamaEnvDefaults applies environment variable defaults and overrides for Ollama config.
+func applyOllamaEnvDefaults(cfg *Config) {
+	// Set default host if not specified
+	if cfg.Ollama.Host == "" {
+		if envHost := os.Getenv("OLLAMA_HOST"); envHost != "" {
+			cfg.Ollama.Host = envHost
+		} else {
+			cfg.Ollama.Host = "http://localhost:11434" // Default Ollama host
+		}
+	} else if envHost := os.Getenv("OLLAMA_HOST"); envHost != "" {
+		// Environment variable overrides config file
+		cfg.Ollama.Host = envHost
+	}
+
+	// Set default model if not specified
+	if cfg.Ollama.Model == "" {
+		if envModel := os.Getenv("OLLAMA_MODEL"); envModel != "" {
+			cfg.Ollama.Model = envModel
+		}
+	} else if envModel := os.Getenv("OLLAMA_MODEL"); envModel != "" {
+		// Environment variable overrides config file
+		cfg.Ollama.Model = envModel
+	}
 }
 
 // MergeMCPServerConfigs merges MCP server configurations from agents.yaml (base) with secrets from config file (overrides).

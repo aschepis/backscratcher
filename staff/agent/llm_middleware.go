@@ -339,4 +339,3 @@ func convertLLMMessagesToAnthropic(msgs []llm.Message) []anthropic.MessageParam 
 	}
 	return result
 }
-

@@ -11,6 +11,7 @@ import (
 
 	"github.com/aschepis/backscratcher/staff/llm"
 	llmanthropic "github.com/aschepis/backscratcher/staff/llm/anthropic"
+	llmollama "github.com/aschepis/backscratcher/staff/llm/ollama"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/mcp"
 	"github.com/aschepis/backscratcher/staff/tools"
@@ -122,6 +123,8 @@ func (c *Crew) InitializeAgents() error {
 		}
 
 		// Create LLM client with middleware
+		// Phase 3: For now, pass empty strings to default to Anthropic
+		// Phase 5 will add per-agent provider selection
 		llmClient, err := createLLMClientWithMiddleware(
 			c.apiKey,
 			id,
@@ -129,6 +132,8 @@ func (c *Crew) InitializeAgents() error {
 			c.stateManager,
 			c.messagePersister,
 			c.messageSummarizer,
+			"", // ollamaHost - empty = use Anthropic
+			"", // ollamaModel - empty = use Anthropic
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create LLM client for agent %s: %w", id, err)
@@ -363,6 +368,8 @@ func (c *Crew) GetRunner(agentID string) *AgentRunner {
 }
 
 // createLLMClientWithMiddleware creates an LLM client with rate limiting and compression middleware.
+// If ollamaHost and ollamaModel are provided (non-empty), it will create an Ollama client.
+// Otherwise, it defaults to Anthropic for backward compatibility.
 func createLLMClientWithMiddleware(
 	apiKey string,
 	agentID string,
@@ -370,11 +377,28 @@ func createLLMClientWithMiddleware(
 	stateManager *StateManager,
 	messagePersister MessagePersister,
 	messageSummarizer *MessageSummarizer,
+	ollamaHost string,  // Optional: Ollama host (empty = use Anthropic)
+	ollamaModel string, // Optional: Ollama model (empty = use Anthropic)
 ) (llm.Client, error) {
-	// Create base Anthropic client
-	baseClient, err := llmanthropic.NewAnthropicClient(apiKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create anthropic client: %w", err)
+	var baseClient llm.Client
+	var err error
+
+	// Check if we should use Ollama (Phase 3: basic Ollama support)
+	// Phase 5 will add per-agent provider selection
+	useOllama := ollamaHost != "" || ollamaModel != ""
+
+	if useOllama {
+		// Create Ollama client
+		baseClient, err = llmollama.NewOllamaClient(ollamaHost, ollamaModel)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ollama client: %w", err)
+		}
+	} else {
+		// Default to Anthropic for backward compatibility
+		baseClient, err = llmanthropic.NewAnthropicClient(apiKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create anthropic client: %w", err)
+		}
 	}
 
 	// Create middleware
