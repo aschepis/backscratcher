@@ -9,6 +9,8 @@ import (
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 
+	"github.com/aschepis/backscratcher/staff/llm"
+	llmanthropic "github.com/aschepis/backscratcher/staff/llm/anthropic"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/mcp"
 	"github.com/aschepis/backscratcher/staff/tools"
@@ -119,7 +121,20 @@ func (c *Crew) InitializeAgents() error {
 			continue
 		}
 
-		runner, err := NewAgentRunner(c.apiKey, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider, c.stateManager, c.statsManager, c.messagePersister, c.messageSummarizer)
+		// Create LLM client with middleware
+		llmClient, err := createLLMClientWithMiddleware(
+			c.apiKey,
+			id,
+			cfg,
+			c.stateManager,
+			c.messagePersister,
+			c.messageSummarizer,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create LLM client for agent %s: %w", id, err)
+		}
+
+		runner, err := NewAgentRunner(llmClient, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider, c.stateManager, c.statsManager, c.messagePersister, c.messageSummarizer)
 		if err != nil {
 			return fmt.Errorf("failed to create runner for agent %s: %w", id, err)
 		}
@@ -345,4 +360,50 @@ func (c *Crew) GetRunner(agentID string) *AgentRunner {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.Runners[agentID]
+}
+
+// createLLMClientWithMiddleware creates an LLM client with rate limiting and compression middleware.
+func createLLMClientWithMiddleware(
+	apiKey string,
+	agentID string,
+	agentConfig *AgentConfig,
+	stateManager *StateManager,
+	messagePersister MessagePersister,
+	messageSummarizer *MessageSummarizer,
+) (llm.Client, error) {
+	// Create base Anthropic client
+	baseClient, err := llmanthropic.NewAnthropicClient(apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create anthropic client: %w", err)
+	}
+
+	// Create middleware
+	var middleware []llm.Middleware
+
+	// Add rate limit middleware
+	rateLimitHandler := NewRateLimitHandler(stateManager)
+	rateLimitHandler.SetOnRateLimitCallback(func(agentID string, retryAfter time.Duration, attempt int) error {
+		logger.Info("Rate limit callback: agent %s will retry after %v (attempt %d)", agentID, retryAfter, attempt)
+		return nil
+	})
+	rateLimitMw := NewRateLimitMiddleware(rateLimitHandler, agentID, agentConfig)
+	middleware = append(middleware, rateLimitMw)
+
+	// Add compression middleware if dependencies are provided
+	if messagePersister != nil && messageSummarizer != nil {
+		compressionMw := NewCompressionMiddleware(
+			messagePersister,
+			messageSummarizer,
+			agentID,
+			agentConfig.System,
+		)
+		middleware = append(middleware, compressionMw)
+	}
+
+	// Wrap client with middleware
+	if len(middleware) > 0 {
+		return llm.WrapWithMiddleware(baseClient, middleware...), nil
+	}
+
+	return baseClient, nil
 }
