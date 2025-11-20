@@ -80,6 +80,9 @@ type ChatService interface {
 
 	// LoadMessagesWithTimestamps loads regular (non-system) messages with their timestamps.
 	LoadMessagesWithTimestamps(ctx context.Context, agentID, threadID string) ([]MessageWithTimestamp, error)
+
+	// GetSystemInfo returns information about the system configuration.
+	GetSystemInfo(ctx context.Context) (*SystemInfo, error)
 }
 
 // MessageWithTimestamp represents a message with its database timestamp.
@@ -106,4 +109,25 @@ type InboxItem struct {
 	ArchivedAt       *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+}
+
+// SystemInfo provides information about the system configuration.
+type SystemInfo struct {
+	LLMProvider string
+	MCPServers  []MCPServerInfo
+	Tools       []ToolInfo
+}
+
+// MCPServerInfo provides information about an MCP server.
+type MCPServerInfo struct {
+	Name    string
+	Tools   []string
+	Enabled bool
+}
+
+// ToolInfo provides information about a tool.
+type ToolInfo struct {
+	Name        string
+	Description string
+	Server      string // MCP server name if from MCP, empty for native tools
 }

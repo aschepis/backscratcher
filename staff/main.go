@@ -572,7 +572,7 @@ func main() {
 	// Get Anthropic API key: env var takes precedence, then config file
 	anthropicAPIKey := os.Getenv("ANTHROPIC_API_KEY")
 	if anthropicAPIKey == "" {
-		anthropicAPIKey = appConfig.AnthropicAPIKey
+		anthropicAPIKey = appConfig.Anthropic.APIKey
 	}
 	if anthropicAPIKey == "" {
 		logger.Error("Missing ANTHROPIC_API_KEY (not found in environment or config file)")
@@ -815,10 +815,17 @@ func main() {
 	} else if appConfig.ChatTimeout > 0 {
 		chatTimeout = appConfig.ChatTimeout
 	}
-	chatService := ui.NewChatService(crew, db, chatTimeout)
+	chatService := ui.NewChatService(crew, db, chatTimeout, appConfig)
 
 	// Initialize AgentRunners (after message persister is set)
-	if err := crew.InitializeAgents(); err != nil {
+	// Extract provider-specific config values
+	llmProvider := appConfig.LLMProvider
+	if llmProvider == "" {
+		llmProvider = "anthropic" // Default for backward compatibility
+	}
+	ollamaHost, ollamaModel := config.LoadOllamaConfig(appConfig)
+	openaiAPIKey, openaiBaseURL, openaiModel, openaiOrg := config.LoadOpenAIConfig(appConfig)
+	if err := crew.InitializeAgents(llmProvider, ollamaHost, ollamaModel, openaiAPIKey, openaiBaseURL, openaiModel, openaiOrg); err != nil {
 		logger.Error("Failed to initialize agents: %v", err)
 		log.Fatalf("Failed to initialize agents: %v", err)
 	}

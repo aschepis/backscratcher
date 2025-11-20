@@ -12,6 +12,7 @@ import (
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/aschepis/backscratcher/staff/agent"
+	"github.com/aschepis/backscratcher/staff/config"
 )
 
 const (
@@ -26,11 +27,12 @@ type chatService struct {
 	crew    *agent.Crew
 	db      *sql.DB
 	timeout time.Duration // Timeout for chat operations
+	config  *config.Config
 }
 
 // NewChatService creates a new ChatService that wraps the given crew and database.
 // timeoutSeconds is the timeout in seconds for chat operations (default: 60 if 0).
-func NewChatService(crew *agent.Crew, db *sql.DB, timeoutSeconds int) ChatService {
+func NewChatService(crew *agent.Crew, db *sql.DB, timeoutSeconds int, appConfig *config.Config) ChatService {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 60 // Default timeout
 	}
@@ -38,6 +40,7 @@ func NewChatService(crew *agent.Crew, db *sql.DB, timeoutSeconds int) ChatServic
 		crew:    crew,
 		db:      db,
 		timeout: time.Duration(timeoutSeconds) * time.Second,
+		config:  appConfig,
 	}
 	// Register chatService as the message persister for the crew
 	crew.SetMessagePersister(cs)
@@ -923,4 +926,82 @@ func (s *chatService) CompressContext(ctx context.Context, agentID, threadID str
 	cm := agent.NewContextManager(s)
 	_, err = cm.CompressContext(ctx, agentID, threadID, agentConfig.System, history, summarizer)
 	return err
+}
+
+// GetSystemInfo returns information about the system configuration.
+func (s *chatService) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
+	info := &SystemInfo{
+		MCPServers: make([]MCPServerInfo, 0),
+		Tools:      make([]ToolInfo, 0),
+	}
+
+	// Get LLM provider
+	if s.config != nil {
+		info.LLMProvider = s.config.LLMProvider
+		if info.LLMProvider == "" {
+			info.LLMProvider = "anthropic" // Default
+		}
+	} else {
+		info.LLMProvider = "anthropic" // Default
+	}
+
+	// Get MCP servers
+	mcpServers := s.crew.GetMCPServers()
+	mcpClients := s.crew.GetMCPClients()
+	for name, serverCfg := range mcpServers {
+		serverInfo := MCPServerInfo{
+			Name:    name,
+			Enabled: serverCfg != nil,
+			Tools:   make([]string, 0),
+		}
+
+		// Get tools from MCP client if available
+		if client, ok := mcpClients[name]; ok && client != nil {
+			mcpTools, err := client.ListTools(ctx)
+			if err == nil {
+				for _, tool := range mcpTools {
+					serverInfo.Tools = append(serverInfo.Tools, tool.Name)
+				}
+			}
+		}
+
+		info.MCPServers = append(info.MCPServers, serverInfo)
+	}
+
+	// Get native tools from tool provider schemas
+	toolProvider := s.crew.GetToolProvider()
+	if toolProvider != nil {
+		schemas := toolProvider.GetAllSchemas()
+		for toolName, schema := range schemas {
+			info.Tools = append(info.Tools, ToolInfo{
+				Name:        toolName,
+				Description: schema.Description,
+				Server:      schema.ServerName,
+			})
+		}
+	}
+
+	// MCP tools are already included in the schemas above, but let's also
+	// add any tools from MCP clients that might not be in schemas yet
+	for _, serverInfo := range info.MCPServers {
+		for _, toolName := range serverInfo.Tools {
+			// Check if we already have this tool
+			found := false
+			for _, existingTool := range info.Tools {
+				if existingTool.Name == toolName && existingTool.Server == serverInfo.Name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				info.Tools = append(info.Tools, ToolInfo{
+					Name:        toolName,
+					Description: "", // Description not available from MCP client directly
+					Server:      serverInfo.Name,
+				})
+			}
+		}
+	}
+
+	return info, nil
 }

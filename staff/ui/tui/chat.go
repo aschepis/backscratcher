@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -378,6 +380,21 @@ func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName,
 
 // handleChatMessage processes a chat message in the background
 func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay *tview.TextView) {
+	// Recover from panics and display the full stack trace
+	defer func() {
+		if r := recover(); r != nil {
+			stackTrace := string(debug.Stack())
+			// Display panic in UI
+			a.app.QueueUpdateDraw(func() {
+				_, _ = fmt.Fprintf(chatDisplay, "\n[red]PANIC: %v[white]\n\n", r)
+				_, _ = fmt.Fprintf(chatDisplay, "[red]Stack trace:[white]\n%s\n", stackTrace)
+				chatDisplay.ScrollToEnd()
+			})
+			// Also print to stderr for logging (will be visible in terminal)
+			fmt.Fprintf(os.Stderr, "PANIC: %v\nStack trace:\n%s\n", r, stackTrace)
+		}
+	}()
+
 	// Update UI to show user message and thinking indicator
 	a.app.QueueUpdateDraw(func() {
 		formattedMessage := formatURLsAsHyperlinks(message)

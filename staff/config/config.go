@@ -31,22 +31,37 @@ type MessageSummarization struct {
 	MaxLineBreaks int    `yaml:"max_line_breaks,omitempty"` // Maximum line breaks before summarization (default: 10)
 }
 
+// AnthropicConfig represents configuration for Anthropic LLM provider.
+type AnthropicConfig struct {
+	APIKey string `yaml:"api_key,omitempty"` // Anthropic API key
+}
+
 // OllamaConfig represents configuration for Ollama LLM provider.
 type OllamaConfig struct {
-	Host    string `yaml:"host,omitempty"`     // Ollama host (default: "http://localhost:11434")
-	Model   string `yaml:"model,omitempty"`     // Default model name
-	Timeout int    `yaml:"timeout,omitempty"`   // Request timeout in seconds
+	Host    string `yaml:"host,omitempty"`    // Ollama host (default: "http://localhost:11434")
+	Model   string `yaml:"model,omitempty"`   // Default model name
+	Timeout int    `yaml:"timeout,omitempty"` // Request timeout in seconds
+}
+
+// OpenAIConfig represents configuration for OpenAI LLM provider.
+type OpenAIConfig struct {
+	APIKey       string `yaml:"api_key,omitempty"`      // OpenAI API key
+	BaseURL      string `yaml:"base_url,omitempty"`     // Custom base URL (default: official API)
+	Model        string `yaml:"model,omitempty"`        // Default model name
+	Organization string `yaml:"organization,omitempty"` // Organization ID
 }
 
 // Config represents the application configuration.
 type Config struct {
-	AnthropicAPIKey      string                      `yaml:"anthropic_api_key,omitempty"`
+	LLMProvider          string                      `yaml:"llm_provider,omitempty"` // LLM provider selection: "anthropic", "ollama", or "openai" (default: "anthropic")
+	Anthropic            AnthropicConfig             `yaml:"anthropic,omitempty"`    // Anthropic LLM provider configuration
 	Theme                string                      `yaml:"theme,omitempty"`
 	MCPServers           map[string]MCPServerSecrets `yaml:"mcp_servers,omitempty"`
 	ClaudeMCP            ClaudeMCPConfig             `yaml:"claude_mcp,omitempty"`
 	ChatTimeout          int                         `yaml:"chat_timeout,omitempty"`          // Timeout in seconds for chat operations (default: 60)
 	MessageSummarization MessageSummarization        `yaml:"message_summarization,omitempty"` // Message summarization configuration
 	Ollama               OllamaConfig                `yaml:"ollama,omitempty"`                // Ollama LLM provider configuration
+	OpenAI               OpenAIConfig                `yaml:"openai,omitempty"`                // OpenAI LLM provider configuration
 }
 
 // GetConfigPath returns the default config file path, expanding ~ to home directory.
@@ -85,6 +100,7 @@ func LoadConfig(path string) (*Config, error) {
 	if _, err := os.Stat(expandedPath); os.IsNotExist(err) {
 		// File doesn't exist - return empty config (non-fatal)
 		cfg := &Config{
+			LLMProvider: "anthropic", // Default to Anthropic for backward compatibility
 			MCPServers:  make(map[string]MCPServerSecrets),
 			ChatTimeout: 60, // Default timeout
 			MessageSummarization: MessageSummarization{
@@ -94,8 +110,11 @@ func LoadConfig(path string) (*Config, error) {
 				MaxLineBreaks: 10,
 			},
 		}
-		// Apply environment variable defaults for Ollama
+		// Apply environment variable defaults
+		applyLLMProviderEnvDefaults(cfg)
+		applyAnthropicEnvDefaults(cfg)
 		applyOllamaEnvDefaults(cfg)
+		applyOpenAIEnvDefaults(cfg)
 		return cfg, nil
 	}
 
@@ -114,6 +133,11 @@ func LoadConfig(path string) (*Config, error) {
 	// Initialize MCPServers map if nil
 	if cfg.MCPServers == nil {
 		cfg.MCPServers = make(map[string]MCPServerSecrets)
+	}
+
+	// Set default LLM provider if not specified (anthropic for backward compatibility)
+	if cfg.LLMProvider == "" {
+		cfg.LLMProvider = "anthropic"
 	}
 
 	// Set default chat timeout if not specified (60 seconds)
@@ -154,10 +178,34 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.ClaudeMCP.ConfigPath = envConfigPath
 	}
 
-	// Apply environment variable overrides for Ollama
+	// Apply environment variable overrides
+	applyLLMProviderEnvDefaults(&cfg)
+	applyAnthropicEnvDefaults(&cfg)
 	applyOllamaEnvDefaults(&cfg)
+	applyOpenAIEnvDefaults(&cfg)
 
 	return &cfg, nil
+}
+
+// applyLLMProviderEnvDefaults applies environment variable defaults and overrides for LLM provider selection.
+func applyLLMProviderEnvDefaults(cfg *Config) {
+	// Environment variable overrides config file
+	if envProvider := os.Getenv("STAFF_LLM_PROVIDER"); envProvider != "" {
+		cfg.LLMProvider = envProvider
+	}
+}
+
+// applyAnthropicEnvDefaults applies environment variable defaults and overrides for Anthropic config.
+func applyAnthropicEnvDefaults(cfg *Config) {
+	// Set API key from environment if not specified in config
+	if cfg.Anthropic.APIKey == "" {
+		if envAPIKey := os.Getenv("ANTHROPIC_API_KEY"); envAPIKey != "" {
+			cfg.Anthropic.APIKey = envAPIKey
+		}
+	} else if envAPIKey := os.Getenv("ANTHROPIC_API_KEY"); envAPIKey != "" {
+		// Environment variable overrides config file
+		cfg.Anthropic.APIKey = envAPIKey
+	}
 }
 
 // applyOllamaEnvDefaults applies environment variable defaults and overrides for Ollama config.
@@ -182,6 +230,49 @@ func applyOllamaEnvDefaults(cfg *Config) {
 	} else if envModel := os.Getenv("OLLAMA_MODEL"); envModel != "" {
 		// Environment variable overrides config file
 		cfg.Ollama.Model = envModel
+	}
+}
+
+// applyOpenAIEnvDefaults applies environment variable defaults and overrides for OpenAI config.
+func applyOpenAIEnvDefaults(cfg *Config) {
+	// Set API key from environment if not specified in config
+	if cfg.OpenAI.APIKey == "" {
+		if envAPIKey := os.Getenv("OPENAI_API_KEY"); envAPIKey != "" {
+			cfg.OpenAI.APIKey = envAPIKey
+		}
+	} else if envAPIKey := os.Getenv("OPENAI_API_KEY"); envAPIKey != "" {
+		// Environment variable overrides config file
+		cfg.OpenAI.APIKey = envAPIKey
+	}
+
+	// Set base URL from environment if not specified in config
+	if cfg.OpenAI.BaseURL == "" {
+		if envBaseURL := os.Getenv("OPENAI_BASE_URL"); envBaseURL != "" {
+			cfg.OpenAI.BaseURL = envBaseURL
+		}
+	} else if envBaseURL := os.Getenv("OPENAI_BASE_URL"); envBaseURL != "" {
+		// Environment variable overrides config file
+		cfg.OpenAI.BaseURL = envBaseURL
+	}
+
+	// Set model from environment if not specified in config
+	if cfg.OpenAI.Model == "" {
+		if envModel := os.Getenv("OPENAI_MODEL"); envModel != "" {
+			cfg.OpenAI.Model = envModel
+		}
+	} else if envModel := os.Getenv("OPENAI_MODEL"); envModel != "" {
+		// Environment variable overrides config file
+		cfg.OpenAI.Model = envModel
+	}
+
+	// Set organization from environment if not specified in config
+	if cfg.OpenAI.Organization == "" {
+		if envOrg := os.Getenv("OPENAI_ORG_ID"); envOrg != "" {
+			cfg.OpenAI.Organization = envOrg
+		}
+	} else if envOrg := os.Getenv("OPENAI_ORG_ID"); envOrg != "" {
+		// Environment variable overrides config file
+		cfg.OpenAI.Organization = envOrg
 	}
 }
 

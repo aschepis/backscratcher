@@ -430,6 +430,7 @@ func convertAnthropicMessagesToLLM(msgs []anthropicsdk.MessageParam) []llm.Messa
 					}
 				}
 				isError := false
+				// IsError is a param.Opt[bool], access Value directly
 				if blockUnion.OfToolResult.IsError.Value {
 					isError = true
 				}

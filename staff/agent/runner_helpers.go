@@ -341,4 +341,3 @@ func convertAnthropicToolsToLLM(tools []anthropic.ToolUnionParam) []llm.ToolSpec
 	}
 	return result
 }
-

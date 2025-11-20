@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"context"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -104,7 +107,9 @@ func (a *App) setupUI() {
 			a.showSettings()
 		}).
 		AddItem("About", "About this application", '4', func() {
-			a.showContent("About", "Staff v1.0.0\n\nAn idiomatic Go terminal UI application using tview.\n\nPowered by the Agent Crew framework.")
+			a.showAbout()
+			// Set focus to content view for scrolling
+			a.app.SetFocus(a.content)
 		}).
 		AddItem("Quit", "Exit the application", 'q', func() {
 			a.app.Stop()
@@ -118,15 +123,58 @@ func (a *App) setupUI() {
 		SetWordWrap(true).
 		SetBorder(true).
 		SetTitle("Content")
+	a.content.SetScrollable(true)
 
 	// Initialize content with a simple welcome message
 	// The inbox will be shown when user selects it from the menu
 	a.content.SetText("Welcome to Staff\n\nSelect an option from the menu to get started.")
 
+	// Add input capture for scrolling content view
+	a.content.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch ev.Key() {
+		case tcell.KeyUp:
+			row, col := a.content.GetScrollOffset()
+			if row > 0 {
+				a.content.ScrollTo(row-1, col)
+			}
+			return nil
+		case tcell.KeyDown:
+			row, col := a.content.GetScrollOffset()
+			a.content.ScrollTo(row+1, col)
+			return nil
+		case tcell.KeyPgUp:
+			row, col := a.content.GetScrollOffset()
+			if row > 10 {
+				a.content.ScrollTo(row-10, col)
+			} else {
+				a.content.ScrollTo(0, col)
+			}
+			return nil
+		case tcell.KeyPgDn:
+			row, col := a.content.GetScrollOffset()
+			a.content.ScrollTo(row+10, col)
+			return nil
+		case tcell.KeyHome:
+			_, col := a.content.GetScrollOffset()
+			a.content.ScrollTo(0, col)
+			return nil
+		case tcell.KeyEnd:
+			// Scroll to end (approximate - scroll to a large number)
+			_, col := a.content.GetScrollOffset()
+			a.content.ScrollTo(9999, col)
+			return nil
+		case tcell.KeyEsc, tcell.KeyTab:
+			// Return focus to sidebar
+			a.app.SetFocus(a.sidebar)
+			return nil
+		}
+		return ev
+	})
+
 	// Footer
 	a.footer = tview.NewTextView().
 		SetTextAlign(tview.AlignCenter).
-		SetText("↑/↓: Navigate | Enter: Select | q: Quit | Ctrl+C: Exit")
+		SetText("↑/↓: Navigate | Enter: Select | Tab/Esc: Focus sidebar | q: Quit | Ctrl+C: Exit")
 	// Footer will use theme colors from tview.Styles automatically
 
 	// Layout
@@ -152,6 +200,106 @@ func (a *App) setupUI() {
 func (a *App) showContent(title, text string) {
 	a.content.SetTitle(title)
 	a.content.SetText(text)
+	// Scroll to top when showing new content
+	a.content.ScrollToBeginning()
+}
+
+func (a *App) updateFooter(text string) {
+	a.footer.SetText(text)
+}
+
+// showAbout displays system information including LLM provider, MCP servers, and tools
+func (a *App) showAbout() {
+	ctx := context.Background()
+	sysInfo, err := a.chatService.GetSystemInfo(ctx)
+	if err != nil {
+		a.showContent("About", fmt.Sprintf("Staff v1.0.0\n\nError loading system information: %v", err))
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Staff v1.0.0\n\n")
+	sb.WriteString("An idiomatic Go terminal UI application using tview.\n")
+	sb.WriteString("Powered by the Agent Crew framework.\n\n")
+
+	// LLM Provider
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString("LLM Provider\n")
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString(fmt.Sprintf("Provider: %s\n\n", sysInfo.LLMProvider))
+
+	// MCP Servers
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString("MCP Servers\n")
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	if len(sysInfo.MCPServers) == 0 {
+		sb.WriteString("No MCP servers configured.\n\n")
+	} else {
+		for _, server := range sysInfo.MCPServers {
+			status := "Disabled"
+			if server.Enabled {
+				status = "Active"
+			}
+			sb.WriteString(fmt.Sprintf("• %s (%s)\n", server.Name, status))
+			if len(server.Tools) > 0 {
+				sb.WriteString(fmt.Sprintf("  Tools (%d): %s\n", len(server.Tools), strings.Join(server.Tools, ", ")))
+			} else {
+				sb.WriteString("  No tools available\n")
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	// Tools
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString("Available Tools\n")
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	if len(sysInfo.Tools) == 0 {
+		sb.WriteString("No tools available.\n")
+	} else {
+		// Group tools by server
+		nativeTools := make([]ui.ToolInfo, 0)
+		serverTools := make(map[string][]ui.ToolInfo)
+		for _, tool := range sysInfo.Tools {
+			if tool.Server == "" {
+				nativeTools = append(nativeTools, tool)
+			} else {
+				serverTools[tool.Server] = append(serverTools[tool.Server], tool)
+			}
+		}
+
+		// Show native tools first
+		if len(nativeTools) > 0 {
+			sb.WriteString("Native Tools:\n")
+			for _, tool := range nativeTools {
+				sb.WriteString(fmt.Sprintf("  • %s", tool.Name))
+				if tool.Description != "" {
+					sb.WriteString(fmt.Sprintf(" - %s", tool.Description))
+				}
+				sb.WriteString("\n")
+			}
+			sb.WriteString("\n")
+		}
+
+		// Show MCP tools grouped by server
+		for serverName, tools := range serverTools {
+			sb.WriteString(fmt.Sprintf("MCP Server '%s' Tools:\n", serverName))
+			for _, tool := range tools {
+				sb.WriteString(fmt.Sprintf("  • %s", tool.Name))
+				if tool.Description != "" {
+					sb.WriteString(fmt.Sprintf(" - %s", tool.Description))
+				}
+				sb.WriteString("\n")
+			}
+			sb.WriteString("\n")
+		}
+
+		sb.WriteString(fmt.Sprintf("Total: %d tools\n", len(sysInfo.Tools)))
+	}
+
+	a.showContent("About", sb.String())
+	// Update footer with scrolling instructions
+	a.updateFooter("↑/↓: Scroll | PgUp/PgDn: Page | Home/End: Top/Bottom | Tab/Esc: Back to menu | q: Quit")
 }
 
 // Run starts the application

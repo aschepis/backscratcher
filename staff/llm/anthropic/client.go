@@ -96,8 +96,8 @@ func (c *AnthropicClient) Synchronous(ctx context.Context, req *llm.Request) (*l
 
 	// Convert usage
 	usage := &llm.Usage{
-		InputTokens:             int64(message.Usage.InputTokens),
-		OutputTokens:            int64(message.Usage.OutputTokens),
+		InputTokens:              int64(message.Usage.InputTokens),
+		OutputTokens:             int64(message.Usage.OutputTokens),
 		CacheCreationInputTokens: int64(message.Usage.CacheCreationInputTokens),
 		CacheReadInputTokens:     int64(message.Usage.CacheReadInputTokens),
 	}
@@ -159,4 +159,3 @@ func buildSystemBlocks(systemPrompt string, tools []anthropic.ToolUnionParam) []
 
 	return blocks
 }
-

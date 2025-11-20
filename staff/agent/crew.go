@@ -12,6 +12,7 @@ import (
 	"github.com/aschepis/backscratcher/staff/llm"
 	llmanthropic "github.com/aschepis/backscratcher/staff/llm/anthropic"
 	llmollama "github.com/aschepis/backscratcher/staff/llm/ollama"
+	llmopenai "github.com/aschepis/backscratcher/staff/llm/openai"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/mcp"
 	"github.com/aschepis/backscratcher/staff/tools"
@@ -71,6 +72,11 @@ func (c *Crew) StatsManager() *StatsManager {
 	return c.statsManager
 }
 
+// GetToolProvider returns the tool provider for this crew
+func (c *Crew) GetToolProvider() *ToolProviderFromRegistry {
+	return c.ToolProvider
+}
+
 // SetMessagePersister sets the message persister for this crew.
 // All runners will use this persister to save conversation messages.
 func (c *Crew) SetMessagePersister(persister MessagePersister) {
@@ -111,9 +117,14 @@ func (c *Crew) LoadCrewConfig(cfg CrewConfig) error {
 	return nil
 }
 
-func (c *Crew) InitializeAgents() error {
+func (c *Crew) InitializeAgents(llmProvider string, ollamaHost, ollamaModel, openaiAPIKey, openaiBaseURL, openaiModel, openaiOrg string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Default to "anthropic" for backward compatibility
+	if llmProvider == "" {
+		llmProvider = "anthropic"
+	}
 
 	for id, cfg := range c.Agents {
 		// Skip disabled agents - they don't need runners or state initialization
@@ -123,8 +134,6 @@ func (c *Crew) InitializeAgents() error {
 		}
 
 		// Create LLM client with middleware
-		// Phase 3: For now, pass empty strings to default to Anthropic
-		// Phase 5 will add per-agent provider selection
 		llmClient, err := createLLMClientWithMiddleware(
 			c.apiKey,
 			id,
@@ -132,8 +141,13 @@ func (c *Crew) InitializeAgents() error {
 			c.stateManager,
 			c.messagePersister,
 			c.messageSummarizer,
-			"", // ollamaHost - empty = use Anthropic
-			"", // ollamaModel - empty = use Anthropic
+			llmProvider,
+			ollamaHost,
+			ollamaModel,
+			openaiAPIKey,
+			openaiBaseURL,
+			openaiModel,
+			openaiOrg,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create LLM client for agent %s: %w", id, err)
@@ -368,8 +382,7 @@ func (c *Crew) GetRunner(agentID string) *AgentRunner {
 }
 
 // createLLMClientWithMiddleware creates an LLM client with rate limiting and compression middleware.
-// If ollamaHost and ollamaModel are provided (non-empty), it will create an Ollama client.
-// Otherwise, it defaults to Anthropic for backward compatibility.
+// The provider is explicitly selected via llmProvider parameter ("anthropic", "ollama", or "openai").
 func createLLMClientWithMiddleware(
 	apiKey string,
 	agentID string,
@@ -377,28 +390,39 @@ func createLLMClientWithMiddleware(
 	stateManager *StateManager,
 	messagePersister MessagePersister,
 	messageSummarizer *MessageSummarizer,
-	ollamaHost string,  // Optional: Ollama host (empty = use Anthropic)
-	ollamaModel string, // Optional: Ollama model (empty = use Anthropic)
+	llmProvider string, // Explicit provider selection: "anthropic", "ollama", or "openai"
+	ollamaHost string,
+	ollamaModel string,
+	openaiAPIKey string,
+	openaiBaseURL string,
+	openaiModel string,
+	openaiOrg string,
 ) (llm.Client, error) {
 	var baseClient llm.Client
 	var err error
 
-	// Check if we should use Ollama (Phase 3: basic Ollama support)
-	// Phase 5 will add per-agent provider selection
-	useOllama := ollamaHost != "" || ollamaModel != ""
-
-	if useOllama {
+	// Select provider based on explicit llmProvider parameter
+	switch llmProvider {
+	case "ollama":
 		// Create Ollama client
 		baseClient, err = llmollama.NewOllamaClient(ollamaHost, ollamaModel)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ollama client: %w", err)
 		}
-	} else {
+	case "openai":
+		// Create OpenAI client
+		baseClient, err = llmopenai.NewOpenAIClient(openaiAPIKey, openaiBaseURL, openaiModel, openaiOrg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create openai client: %w", err)
+		}
+	case "anthropic", "":
 		// Default to Anthropic for backward compatibility
 		baseClient, err = llmanthropic.NewAnthropicClient(apiKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create anthropic client: %w", err)
 		}
+	default:
+		return nil, fmt.Errorf("unknown LLM provider: %s (must be 'anthropic', 'ollama', or 'openai')", llmProvider)
 	}
 
 	// Create middleware

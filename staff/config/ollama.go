@@ -50,4 +50,3 @@ func getOllamaHostFromEnv() string {
 func getOllamaModelFromEnv() string {
 	return os.Getenv("OLLAMA_MODEL")
 }
-

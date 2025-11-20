@@ -3,7 +3,11 @@ ollama:
   host: "http://localhost:11434"
   model: "gpt-oss:20b"
   timeout: 60
-
+openai:
+  api_key: "OPENAI_API_KEY"
+anthropic:
+  api_key: "ANTHROPIC_API_KEY"
+llm_provider: "anthropic"
 # MCP server configuration
 mcp_servers:
   # domain_lookup:

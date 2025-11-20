@@ -3,6 +3,7 @@ package ollama
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -29,7 +30,9 @@ func NewOllamaClient(host, model string) (*OllamaClient, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid host: %w", err)
 		}
-		client = api.NewClient(baseURL, nil)
+		// Create HTTP client (use default client)
+		httpClient := &http.Client{}
+		client = api.NewClient(baseURL, httpClient)
 	} else {
 		// Use environment-based client
 		client, err = api.ClientFromEnvironment()
@@ -244,4 +247,3 @@ func (c *OllamaClient) Stream(ctx context.Context, req *llm.Request) (llm.Stream
 	// Create and return stream
 	return newOllamaStream(ctx, c.client, chatReq), nil
 }
-
