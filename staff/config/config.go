@@ -1,6 +1,7 @@
 package config
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,11 +25,11 @@ type ClaudeMCPConfig struct {
 
 // MessageSummarization represents configuration for message summarization using Ollama.
 type MessageSummarization struct {
-	Enabled       bool   `yaml:"enabled,omitempty"`         // Enable/disable message summarization
-	Model         string `yaml:"model,omitempty"`           // Ollama model name (default: "llama3.2:3b")
-	MaxChars      int    `yaml:"max_chars,omitempty"`       // Maximum characters before summarization (default: 2000)
-	MaxLines      int    `yaml:"max_lines,omitempty"`       // Maximum lines before summarization (default: 50)
-	MaxLineBreaks int    `yaml:"max_line_breaks,omitempty"` // Maximum line breaks before summarization (default: 10)
+	Disabled      bool   `yaml:"disabled,omitempty"`        // Disable message summarization (enabled by default)
+	Model         string `yaml:"model,omitempty"`           // Ollama model name
+	MaxChars      int    `yaml:"max_chars,omitempty"`       // Maximum characters before summarization
+	MaxLines      int    `yaml:"max_lines,omitempty"`       // Maximum lines before summarization
+	MaxLineBreaks int    `yaml:"max_line_breaks,omitempty"` // Maximum line breaks before summarization
 }
 
 // AnthropicConfig represents configuration for Anthropic LLM provider.
@@ -55,13 +56,13 @@ type OpenAIConfig struct {
 type Config struct {
 	LLMProviders         []string                    `yaml:"llm_providers,omitempty"` // Array of enabled LLM providers: "anthropic", "ollama", "openai" (default: ["anthropic"])
 	Anthropic            AnthropicConfig             `yaml:"anthropic,omitempty"`     // Anthropic LLM provider configuration
+	Ollama               OllamaConfig                `yaml:"ollama,omitempty"`        // Ollama LLM provider configuration
+	OpenAI               OpenAIConfig                `yaml:"openai,omitempty"`        // OpenAI LLM provider configuration
 	Theme                string                      `yaml:"theme,omitempty"`
 	MCPServers           map[string]MCPServerSecrets `yaml:"mcp_servers,omitempty"`
 	ClaudeMCP            ClaudeMCPConfig             `yaml:"claude_mcp,omitempty"`
 	ChatTimeout          int                         `yaml:"chat_timeout,omitempty"`          // Timeout in seconds for chat operations (default: 60)
 	MessageSummarization MessageSummarization        `yaml:"message_summarization,omitempty"` // Message summarization configuration
-	Ollama               OllamaConfig                `yaml:"ollama,omitempty"`                // Ollama LLM provider configuration
-	OpenAI               OpenAIConfig                `yaml:"openai,omitempty"`                // OpenAI LLM provider configuration
 }
 
 // GetConfigPath returns the default config file path, expanding ~ to home directory.
@@ -91,32 +92,13 @@ func expandPath(path string) string {
 }
 
 // LoadConfig loads the configuration from the specified path.
-// Returns a config with defaults if the file doesn't exist (non-fatal).
-// Returns an error only if the file exists but cannot be parsed.
+// Configuration is merged on top of the default configuration.
 func LoadConfig(path string) (*Config, error) {
 	expandedPath := expandPath(path)
 
 	// Check if file exists
 	if _, err := os.Stat(expandedPath); os.IsNotExist(err) {
-		// File doesn't exist - return empty config (non-fatal)
-		cfg := &Config{
-			LLMProviders: []string{"anthropic"}, // Default to Anthropic for backward compatibility
-			MCPServers:   make(map[string]MCPServerSecrets),
-			ChatTimeout:  60, // Default timeout
-			MessageSummarization: MessageSummarization{
-				Enabled:       true,
-				Model:         "llama3.2:3b",
-				MaxChars:      2000,
-				MaxLines:      50,
-				MaxLineBreaks: 10,
-			},
-		}
-		// Apply environment variable defaults
-		applyLLMProviderEnvDefaults(cfg)
-		applyAnthropicEnvDefaults(cfg)
-		applyOllamaEnvDefaults(cfg)
-		applyOpenAIEnvDefaults(cfg)
-		return cfg, nil
+		return nil, fmt.Errorf("config file does not exist at %q", expandedPath)
 	}
 
 	// Read file
@@ -125,169 +107,45 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file %q: %w", expandedPath, err)
 	}
 
+	cfg := Config{
+		LLMProviders: []string{"anthropic"},
+		Anthropic: AnthropicConfig{
+			APIKey: "",
+		},
+		Ollama: OllamaConfig{
+			Host:    "http://localhost:11434",
+			Model:   "gpt-oss:20b",
+			Timeout: 60,
+		},
+		OpenAI: OpenAIConfig{
+			APIKey:       "",
+			BaseURL:      "https://api.openai.com/v1",
+			Model:        "llama3.2:3b",
+			Organization: "",
+		},
+		ChatTimeout: 60,
+		Theme:       "random",
+		MCPServers:  make(map[string]MCPServerSecrets),
+		ClaudeMCP: ClaudeMCPConfig{
+			Enabled:    false,
+			Projects:   []string{},
+			ConfigPath: "~/.claude.json",
+		},
+		MessageSummarization: MessageSummarization{
+			Disabled:      false,
+			Model:         "llama3.2:3b",
+			MaxChars:      2000,
+			MaxLines:      50,
+			MaxLineBreaks: 10,
+		},
+	}
+
 	// Parse YAML
-	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file %q: %w", expandedPath, err)
 	}
 
-	// Initialize MCPServers map if nil
-	if cfg.MCPServers == nil {
-		cfg.MCPServers = make(map[string]MCPServerSecrets)
-	}
-
-	// Migrate LLM provider configuration: convert legacy llm_provider to llm_providers array
-	if len(cfg.LLMProviders) == 0 {
-		return nil, fmt.Errorf("llm_providers is required")
-	}
-
-	// Set default chat timeout if not specified (60 seconds)
-	if cfg.ChatTimeout == 0 {
-		cfg.ChatTimeout = 60
-	}
-
-	// Set default message summarization values if not specified
-	// TODO: fix to correctly enable/disable this
-	cfg.MessageSummarization.Enabled = true
-	if cfg.MessageSummarization.Model == "" {
-		cfg.MessageSummarization.Model = "llama3.2:3b"
-	}
-	if cfg.MessageSummarization.MaxChars == 0 {
-		cfg.MessageSummarization.MaxChars = 2000
-	}
-	if cfg.MessageSummarization.MaxLines == 0 {
-		cfg.MessageSummarization.MaxLines = 50
-	}
-	if cfg.MessageSummarization.MaxLineBreaks == 0 {
-		cfg.MessageSummarization.MaxLineBreaks = 10
-	}
-
-	// Apply environment variable overrides for Claude MCP settings
-	// Environment variables take precedence over config file values
-	if envEnabled := os.Getenv("STAFF_CLAUDE_MCP_ENABLED"); envEnabled != "" {
-		cfg.ClaudeMCP.Enabled = (envEnabled == "true" || envEnabled == "1")
-	}
-	if envProjects := os.Getenv("STAFF_CLAUDE_MCP_PROJECTS"); envProjects != "" {
-		// Split comma-separated list
-		projects := strings.Split(envProjects, ",")
-		cfg.ClaudeMCP.Projects = make([]string, 0, len(projects))
-		for _, p := range projects {
-			if trimmed := strings.TrimSpace(p); trimmed != "" {
-				cfg.ClaudeMCP.Projects = append(cfg.ClaudeMCP.Projects, trimmed)
-			}
-		}
-	}
-	if envConfigPath := os.Getenv("STAFF_CLAUDE_MCP_CONFIG_PATH"); envConfigPath != "" {
-		cfg.ClaudeMCP.ConfigPath = envConfigPath
-	}
-
-	// Apply environment variable overrides
-	applyLLMProviderEnvDefaults(&cfg)
-	applyAnthropicEnvDefaults(&cfg)
-	applyOllamaEnvDefaults(&cfg)
-	applyOpenAIEnvDefaults(&cfg)
-
 	return &cfg, nil
-}
-
-// applyLLMProviderEnvDefaults applies environment variable defaults and overrides for LLM provider selection.
-func applyLLMProviderEnvDefaults(cfg *Config) {
-	// Environment variable overrides config file
-	// Support both STAFF_LLM_PROVIDER (legacy, single provider) and STAFF_LLM_PROVIDERS (comma-separated list)
-	if envProviders := os.Getenv("STAFF_LLM_PROVIDERS"); envProviders != "" {
-		// New format: comma-separated list
-		providers := strings.Split(envProviders, ",")
-		cfg.LLMProviders = make([]string, 0, len(providers))
-		for _, p := range providers {
-			if trimmed := strings.TrimSpace(p); trimmed != "" {
-				cfg.LLMProviders = append(cfg.LLMProviders, trimmed)
-			}
-		}
-	} else if envProvider := os.Getenv("STAFF_LLM_PROVIDER"); envProvider != "" {
-		// Legacy: single provider, convert to array
-		cfg.LLMProviders = []string{envProvider}
-	}
-}
-
-// applyAnthropicEnvDefaults applies environment variable defaults and overrides for Anthropic config.
-func applyAnthropicEnvDefaults(cfg *Config) {
-	// Set API key from environment if not specified in config
-	if cfg.Anthropic.APIKey == "" {
-		if envAPIKey := os.Getenv("ANTHROPIC_API_KEY"); envAPIKey != "" {
-			cfg.Anthropic.APIKey = envAPIKey
-		}
-	} else if envAPIKey := os.Getenv("ANTHROPIC_API_KEY"); envAPIKey != "" {
-		// Environment variable overrides config file
-		cfg.Anthropic.APIKey = envAPIKey
-	}
-}
-
-// applyOllamaEnvDefaults applies environment variable defaults and overrides for Ollama config.
-func applyOllamaEnvDefaults(cfg *Config) {
-	// Set default host if not specified
-	if cfg.Ollama.Host == "" {
-		if envHost := os.Getenv("OLLAMA_HOST"); envHost != "" {
-			cfg.Ollama.Host = envHost
-		} else {
-			cfg.Ollama.Host = "http://localhost:11434" // Default Ollama host
-		}
-	} else if envHost := os.Getenv("OLLAMA_HOST"); envHost != "" {
-		// Environment variable overrides config file
-		cfg.Ollama.Host = envHost
-	}
-
-	// Set default model if not specified
-	if cfg.Ollama.Model == "" {
-		if envModel := os.Getenv("OLLAMA_MODEL"); envModel != "" {
-			cfg.Ollama.Model = envModel
-		}
-	} else if envModel := os.Getenv("OLLAMA_MODEL"); envModel != "" {
-		// Environment variable overrides config file
-		cfg.Ollama.Model = envModel
-	}
-}
-
-// applyOpenAIEnvDefaults applies environment variable defaults and overrides for OpenAI config.
-func applyOpenAIEnvDefaults(cfg *Config) {
-	// Set API key from environment if not specified in config
-	if cfg.OpenAI.APIKey == "" {
-		if envAPIKey := os.Getenv("OPENAI_API_KEY"); envAPIKey != "" {
-			cfg.OpenAI.APIKey = envAPIKey
-		}
-	} else if envAPIKey := os.Getenv("OPENAI_API_KEY"); envAPIKey != "" {
-		// Environment variable overrides config file
-		cfg.OpenAI.APIKey = envAPIKey
-	}
-
-	// Set base URL from environment if not specified in config
-	if cfg.OpenAI.BaseURL == "" {
-		if envBaseURL := os.Getenv("OPENAI_BASE_URL"); envBaseURL != "" {
-			cfg.OpenAI.BaseURL = envBaseURL
-		}
-	} else if envBaseURL := os.Getenv("OPENAI_BASE_URL"); envBaseURL != "" {
-		// Environment variable overrides config file
-		cfg.OpenAI.BaseURL = envBaseURL
-	}
-
-	// Set model from environment if not specified in config
-	if cfg.OpenAI.Model == "" {
-		if envModel := os.Getenv("OPENAI_MODEL"); envModel != "" {
-			cfg.OpenAI.Model = envModel
-		}
-	} else if envModel := os.Getenv("OPENAI_MODEL"); envModel != "" {
-		// Environment variable overrides config file
-		cfg.OpenAI.Model = envModel
-	}
-
-	// Set organization from environment if not specified in config
-	if cfg.OpenAI.Organization == "" {
-		if envOrg := os.Getenv("OPENAI_ORG_ID"); envOrg != "" {
-			cfg.OpenAI.Organization = envOrg
-		}
-	} else if envOrg := os.Getenv("OPENAI_ORG_ID"); envOrg != "" {
-		// Environment variable overrides config file
-		cfg.OpenAI.Organization = envOrg
-	}
 }
 
 // MergeMCPServerConfigs merges MCP server configurations from agents.yaml (base) with secrets from config file (overrides).

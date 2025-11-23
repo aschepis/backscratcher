@@ -1,6 +1,8 @@
 package themes
 
 import (
+	"math/rand"
+
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -18,6 +20,27 @@ type Theme struct {
 	TertiaryTextColor           tcell.Color
 	InverseTextColor            tcell.Color
 	ContrastSecondaryTextColor  tcell.Color
+}
+
+// NewRandom returns a new Theme configured with a random color palette
+func NewRandom() *Theme {
+	themeNames := []string{"solarized", "gruvbox", "zenburn", "apprentice", "cyberpunk", "cherryblossom"}
+	themeName := themeNames[rand.Intn(len(themeNames))]
+	switch themeName {
+	case "solarized":
+		return NewSolarized()
+	case "gruvbox":
+		return NewGruvbox()
+	case "zenburn":
+		return NewZenburn()
+	case "apprentice":
+		return NewApprentice()
+	case "cyberpunk":
+		return NewCyberpunk()
+	case "cherryblossom":
+		return NewCherryBlossom()
+	}
+	return NewSolarized()
 }
 
 // Apply applies the theme to tview.Styles (global styles).

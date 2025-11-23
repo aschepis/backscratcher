@@ -100,14 +100,6 @@ func (cm *ContextManager) CompressContext(
 	messages []anthropic.MessageParam,
 	summarizer *MessageSummarizer,
 ) (string, error) {
-	if cm.messagePersister == nil {
-		return "", fmt.Errorf("message persister is required for context compression")
-	}
-
-	if summarizer == nil {
-		return "", fmt.Errorf("summarizer is required for context compression")
-	}
-
 	// Calculate original size
 	originalSize := GetContextSize(systemPrompt, messages)
 

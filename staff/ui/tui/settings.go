@@ -73,23 +73,11 @@ func (a *App) showSettings() {
 	claudeEnabled := cfg.ClaudeMCP.Enabled
 
 	// Message Summarization settings
-	summarizationEnabled := cfg.MessageSummarization.Enabled
+	summarizationDisabled := !cfg.MessageSummarization.Disabled
 	summarizationModel := cfg.MessageSummarization.Model
-	if summarizationModel == "" {
-		summarizationModel = "llama3.2:3b"
-	}
 	summarizationMaxChars := fmt.Sprintf("%d", cfg.MessageSummarization.MaxChars)
-	if summarizationMaxChars == "0" {
-		summarizationMaxChars = "2000"
-	}
 	summarizationMaxLines := fmt.Sprintf("%d", cfg.MessageSummarization.MaxLines)
-	if summarizationMaxLines == "0" {
-		summarizationMaxLines = "50"
-	}
 	summarizationMaxLineBreaks := fmt.Sprintf("%d", cfg.MessageSummarization.MaxLineBreaks)
-	if summarizationMaxLineBreaks == "0" {
-		summarizationMaxLineBreaks = "10"
-	}
 
 	var updateProjectList func()
 	updateProjectList = func() {
@@ -137,8 +125,8 @@ func (a *App) showSettings() {
 	})
 
 	// Message Summarization settings
-	form.AddCheckbox("Enable Message Summarization", summarizationEnabled, func(checked bool) {
-		summarizationEnabled = checked
+	form.AddCheckbox("Disable Message Summarization", summarizationDisabled, func(checked bool) {
+		summarizationDisabled = checked
 	})
 
 	form.AddInputField("Ollama Model", summarizationModel, 30, nil, func(text string) {
@@ -178,10 +166,9 @@ func (a *App) showSettings() {
 		cfg.ClaudeMCP.Projects = selectedProjects
 
 		// Update message summarization settings
-		cfg.MessageSummarization.Enabled = summarizationEnabled
-		cfg.MessageSummarization.Model = summarizationModel
-		if summarizationModel == "" {
-			cfg.MessageSummarization.Model = "llama3.2:3b"
+		cfg.MessageSummarization.Disabled = summarizationDisabled
+		if summarizationModel != "" {
+			cfg.MessageSummarization.Model = summarizationModel
 		}
 
 		// Parse threshold values

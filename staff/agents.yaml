@@ -9,7 +9,7 @@ anthropic:
   api_key: "ANTHROPIC_API_KEY"
 # LLM providers enabled for use (agents can specify preferences or use first enabled provider)
 llm_providers:
-#  - anthropic
+  - anthropic
   - ollama
   # - openai
 chat_timeout: 6000 # 100 minutes

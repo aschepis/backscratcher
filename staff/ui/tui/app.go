@@ -69,6 +69,8 @@ func (a *App) SetConfigPath(configPath string) {
 // getThemeByName returns a theme by name, defaulting to Solarized if invalid
 func getThemeByName(themeName string) *themes.Theme {
 	switch themeName {
+	case "random":
+		return themes.NewRandom()
 	case "solarized":
 		return themes.NewSolarized()
 	case "gruvbox":

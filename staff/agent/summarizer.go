@@ -11,10 +11,8 @@ import (
 	"github.com/aschepis/backscratcher/staff/memory/ollama"
 )
 
-// MessageSummarizationConfig holds configuration for message summarization.
-// This is a duplicate of config.MessageSummarization to avoid import cycles.
-type MessageSummarizationConfig struct {
-	Enabled       bool
+// MessageSummarizerConfig holds configuration for message summarization.
+type MessageSummarizerConfig struct {
 	Model         string
 	MaxChars      int
 	MaxLines      int
@@ -24,17 +22,13 @@ type MessageSummarizationConfig struct {
 // MessageSummarizer wraps an Ollama summarizer and provides methods to check
 // if text should be summarized and to perform summarization.
 type MessageSummarizer struct {
-	config     MessageSummarizationConfig
+	config     MessageSummarizerConfig
 	summarizer *ollama.Summarizer
 }
 
 // NewMessageSummarizer creates a new MessageSummarizer with the given config.
 // If summarization is disabled or summarizer creation fails, returns nil.
-func NewMessageSummarizer(cfg MessageSummarizationConfig) (*MessageSummarizer, error) {
-	if !cfg.Enabled {
-		return nil, nil
-	}
-
+func NewMessageSummarizer(cfg MessageSummarizerConfig) (*MessageSummarizer, error) {
 	summarizer, err := ollama.NewSummarizer(cfg.Model)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ollama summarizer: %w", err)
@@ -50,10 +44,6 @@ func NewMessageSummarizer(cfg MessageSummarizationConfig) (*MessageSummarizer, e
 // the configured heuristics (character count, line count, line breaks).
 // Returns true if any threshold is exceeded.
 func (m *MessageSummarizer) ShouldSummarize(text string) bool {
-	if m == nil || !m.config.Enabled {
-		return false
-	}
-
 	if text == "" {
 		return false
 	}
@@ -77,10 +67,6 @@ func (m *MessageSummarizer) ShouldSummarize(text string) bool {
 // Summarize summarizes the given text using the configured Ollama model.
 // Returns the original text if summarization fails or is disabled.
 func (m *MessageSummarizer) Summarize(ctx context.Context, text string) (string, error) {
-	if m == nil || !m.config.Enabled {
-		return text, nil
-	}
-
 	if text == "" {
 		return text, nil
 	}
@@ -102,10 +88,6 @@ func (m *MessageSummarizer) SummarizeContext(
 	systemPrompt string,
 	messages []anthropic.MessageParam,
 ) (string, error) {
-	if m == nil || !m.config.Enabled {
-		return "", fmt.Errorf("summarizer is not enabled")
-	}
-
 	// Convert conversation to text format for summarization
 	var conversationText strings.Builder
 

@@ -786,12 +786,10 @@ func main() {
 	registerMCPServers(crew, cfg.MCPServers)
 
 	// Initialize message summarizer if enabled
-	// TODO: configuration of this is broken.
-	if appConfig.MessageSummarization.Enabled {
+	if !appConfig.MessageSummarization.Disabled {
 		logger.Info("Message summarization is enabled, initializing Ollama summarizer (model: %s)", appConfig.MessageSummarization.Model)
 		// Convert config.MessageSummarization to agent.MessageSummarizationConfig to avoid import cycle
-		summarizerConfig := agent.MessageSummarizationConfig{
-			Enabled:       appConfig.MessageSummarization.Enabled,
+		summarizerConfig := agent.MessageSummarizerConfig{
 			Model:         appConfig.MessageSummarization.Model,
 			MaxChars:      appConfig.MessageSummarization.MaxChars,
 			MaxLines:      appConfig.MessageSummarization.MaxLines,
