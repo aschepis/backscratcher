@@ -1,11 +1,27 @@
 package themes
 
 import (
+	"fmt"
 	"math/rand"
+	"slices"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
+
+type ThemeName string
+
+const (
+	ThemeSolarized     ThemeName = "solarized"
+	ThemeGruvbox       ThemeName = "gruvbox"
+	ThemeZenburn       ThemeName = "zenburn"
+	ThemeApprentice    ThemeName = "apprentice"
+	ThemeCyberpunk     ThemeName = "cyberpunk"
+	ThemeCherryblossom ThemeName = "cherryblossom"
+	ThemeRandom        ThemeName = "random"
+)
+
+var themeNames = []ThemeName{ThemeRandom, ThemeSolarized, ThemeGruvbox, ThemeZenburn, ThemeApprentice, ThemeCyberpunk, ThemeCherryblossom}
 
 // Theme represents a color theme for tview applications
 type Theme struct {
@@ -22,22 +38,31 @@ type Theme struct {
 	ContrastSecondaryTextColor  tcell.Color
 }
 
+func ApplyByName(app *tview.Application, themeNameStr string) error {
+	themeName := ThemeName(themeNameStr)
+	if !slices.Contains(themeNames, themeName) {
+		return fmt.Errorf("invalid theme name: %s", themeNameStr)
+	}
+	theme := getThemeByName(themeName)
+	theme.Apply(app)
+	return nil
+}
+
 // NewRandom returns a new Theme configured with a random color palette
 func NewRandom() *Theme {
-	themeNames := []string{"solarized", "gruvbox", "zenburn", "apprentice", "cyberpunk", "cherryblossom"}
 	themeName := themeNames[rand.Intn(len(themeNames))]
 	switch themeName {
-	case "solarized":
+	case ThemeSolarized:
 		return NewSolarized()
-	case "gruvbox":
+	case ThemeGruvbox:
 		return NewGruvbox()
-	case "zenburn":
+	case ThemeZenburn:
 		return NewZenburn()
-	case "apprentice":
+	case ThemeApprentice:
 		return NewApprentice()
-	case "cyberpunk":
+	case ThemeCyberpunk:
 		return NewCyberpunk()
-	case "cherryblossom":
+	case ThemeCherryblossom:
 		return NewCherryBlossom()
 	}
 	return NewSolarized()
@@ -233,4 +258,25 @@ func NewCherryBlossom() *Theme {
 		InverseTextColor:            fg1,
 		ContrastSecondaryTextColor:  pink,
 	}
+}
+
+// getThemeByName returns a theme by name, defaulting to Solarized if invalid
+func getThemeByName(themeName ThemeName) *Theme {
+	switch themeName {
+	case ThemeRandom:
+		return NewRandom()
+	case ThemeSolarized:
+		return NewSolarized()
+	case ThemeGruvbox:
+		return NewGruvbox()
+	case ThemeZenburn:
+		return NewZenburn()
+	case ThemeApprentice:
+		return NewApprentice()
+	case ThemeCyberpunk:
+		return NewCyberpunk()
+	case ThemeCherryblossom:
+		return NewCherryBlossom()
+	}
+	return NewSolarized()
 }

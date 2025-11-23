@@ -50,11 +50,14 @@ func NewApp(chatService ui.ChatService) *App {
 func NewAppWithTheme(chatService ui.ChatService, themeName string) *App {
 	// Apply theme based on provided theme name
 	logger.Info("NewAppWithTheme: themeName=%s", themeName)
-	theme := getThemeByName(themeName)
-	theme.Apply(nil)
+	tviewApp := tview.NewApplication()
+	err := themes.ApplyByName(tviewApp, themeName)
+	if err != nil {
+		logger.Error("Failed to apply theme: %v. Continuing with no theme.", err)
+	}
 
 	return &App{
-		app:         tview.NewApplication(),
+		app:         tviewApp,
 		pages:       tview.NewPages(),
 		chatService: chatService,
 		chatHistory: make(map[string][]anthropic.MessageParam),
@@ -64,28 +67,6 @@ func NewAppWithTheme(chatService ui.ChatService, themeName string) *App {
 // SetConfigPath sets the config file path for the app
 func (a *App) SetConfigPath(configPath string) {
 	a.configPath = configPath
-}
-
-// getThemeByName returns a theme by name, defaulting to Solarized if invalid
-func getThemeByName(themeName string) *themes.Theme {
-	switch themeName {
-	case "random":
-		return themes.NewRandom()
-	case "solarized":
-		return themes.NewSolarized()
-	case "gruvbox":
-		return themes.NewGruvbox()
-	case "zenburn":
-		return themes.NewZenburn()
-	case "apprentice":
-		return themes.NewApprentice()
-	case "cyberpunk":
-		return themes.NewCyberpunk()
-	case "cherryblossom":
-		return themes.NewCherryBlossom()
-	default:
-		return themes.NewSolarized()
-	}
 }
 
 // setupUI initializes the UI components and layout
