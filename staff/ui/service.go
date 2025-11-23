@@ -20,6 +20,9 @@ const (
 	roleUser      = "user"
 	roleTool      = "tool"
 	roleSystem    = "system"
+
+	providerAnthropic = "anthropic"
+	providerOllama    = "ollama"
 )
 
 // chatService implements ChatService by wrapping an agent.Crew
@@ -88,12 +91,13 @@ func (s *chatService) ListAgents() []AgentInfo {
 				// No preferences - use legacy model field and infer provider from config
 				agentInfo.Model = ag.Config.Model
 				// Try to infer provider from model name (heuristic)
-				if strings.HasPrefix(ag.Config.Model, "claude-") {
-					agentInfo.Provider = "anthropic"
-				} else if strings.Contains(ag.Config.Model, ":") {
-					agentInfo.Provider = "ollama"
-				} else {
-					agentInfo.Provider = "anthropic" // Default
+				switch {
+				case strings.HasPrefix(ag.Config.Model, "claude-"):
+					agentInfo.Provider = providerAnthropic
+				case strings.Contains(ag.Config.Model, ":"):
+					agentInfo.Provider = providerOllama
+				default:
+					agentInfo.Provider = providerAnthropic // Default
 				}
 			}
 		}

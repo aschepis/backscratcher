@@ -859,7 +859,7 @@ func main() {
 
 	// Create provider registry
 	logger.Info("Creating provider registry with enabled providers: %v", enabledProviders)
-	registry := llm.NewProviderRegistry(providerConfig, enabledProviders)
+	registry := llm.NewProviderRegistry(&providerConfig, enabledProviders)
 
 	// Initialize agents with registry
 	if err := crew.InitializeAgents(registry); err != nil {

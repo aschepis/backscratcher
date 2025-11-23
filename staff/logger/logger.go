@@ -117,7 +117,7 @@ func Error(format string, v ...interface{}) {
 
 	// Log to file
 	if fileHandler != nil {
-		fileHandler.Handle(context.Background(), slog.NewRecord(
+		_ = fileHandler.Handle(context.Background(), slog.NewRecord(
 			time.Now(), slog.LevelError, msg, 0,
 		))
 	}
@@ -128,7 +128,7 @@ func Error(format string, v ...interface{}) {
 	mu.RUnlock()
 
 	if !suppress && consoleHandler != nil && slog.LevelError >= logLevel {
-		consoleHandler.Handle(context.Background(), slog.NewRecord(
+		_ = consoleHandler.Handle(context.Background(), slog.NewRecord(
 			time.Now(), slog.LevelError, msg, 0,
 		))
 	}
@@ -141,7 +141,7 @@ func Debug(format string, v ...interface{}) {
 
 	// Log to file only
 	if fileHandler != nil {
-		fileHandler.Handle(context.Background(), slog.NewRecord(
+		_ = fileHandler.Handle(context.Background(), slog.NewRecord(
 			time.Now(), slog.LevelDebug, msg, 0,
 		))
 	}
@@ -153,7 +153,7 @@ func Warn(format string, v ...interface{}) {
 
 	// Log to file
 	if fileHandler != nil {
-		fileHandler.Handle(context.Background(), slog.NewRecord(
+		_ = fileHandler.Handle(context.Background(), slog.NewRecord(
 			time.Now(), slog.LevelWarn, msg, 0,
 		))
 	}
@@ -164,7 +164,7 @@ func Warn(format string, v ...interface{}) {
 	mu.RUnlock()
 
 	if !suppress && consoleHandler != nil && slog.LevelWarn >= logLevel {
-		consoleHandler.Handle(context.Background(), slog.NewRecord(
+		_ = consoleHandler.Handle(context.Background(), slog.NewRecord(
 			time.Now(), slog.LevelWarn, msg, 0,
 		))
 	}
@@ -274,7 +274,7 @@ func (h *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.file.Enabled(ctx, level) || h.console.Enabled(ctx, level)
 }
 
-func (h *multiHandler) Handle(ctx context.Context, r slog.Record) error {
+func (h *multiHandler) Handle(ctx context.Context, r slog.Record) error { //nolint:gocritic // hugeParam is justified here
 	// Always write to file
 	if h.file != nil {
 		if err := h.file.Handle(ctx, r); err != nil {

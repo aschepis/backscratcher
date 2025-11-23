@@ -11,6 +11,10 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
+// OpenAI API errors don't directly expose retry-after headers
+// We'll use a default retry after duration for rate limits
+const defaultRetryAfter = 60 * time.Second
+
 // OpenAIClient implements the llm.Client interface for OpenAI's API.
 type OpenAIClient struct {
 	client *openai.Client
@@ -151,12 +155,15 @@ func (c *OpenAIClient) Synchronous(ctx context.Context, req *llm.Request) (*llm.
 
 	// Determine stop reason
 	stopReason := "stop"
-	if choice.FinishReason == openai.FinishReasonLength {
+	switch reason := choice.FinishReason; reason {
+	case openai.FinishReasonLength:
 		stopReason = "max_tokens"
-	} else if choice.FinishReason == openai.FinishReasonToolCalls {
+	case openai.FinishReasonToolCalls:
 		stopReason = "tool_calls"
-	} else if choice.FinishReason == openai.FinishReasonStop {
+	case openai.FinishReasonStop:
 		stopReason = "stop"
+	default:
+		// leave as default "stop"
 	}
 
 	return &llm.Response{
@@ -255,10 +262,10 @@ func convertOpenAIError(err error) error {
 	switch apiErr.HTTPStatusCode {
 	case http.StatusTooManyRequests:
 		// Rate limit error
-		retryAfter := extractRetryAfter(apiErr)
+		retryAfter := defaultRetryAfter
 		return llm.NewRateLimitError(
 			fmt.Sprintf("OpenAI rate limit: %s", apiErr.Message),
-			retryAfter,
+			&retryAfter,
 			err,
 		)
 	case http.StatusRequestEntityTooLarge:
@@ -295,13 +302,4 @@ func convertOpenAIError(err error) error {
 			ProviderErr: err,
 		}
 	}
-}
-
-// extractRetryAfter extracts retry-after duration from an error.
-// OpenAI rate limit errors may include retry-after information in headers.
-func extractRetryAfter(apiErr *openai.APIError) *time.Duration {
-	// OpenAI API errors don't directly expose retry-after headers
-	// We'll use a default retry after duration for rate limits
-	defaultRetry := 60 * time.Second
-	return &defaultRetry
 }

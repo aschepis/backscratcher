@@ -188,7 +188,7 @@ func FromToolUnionParam(tool anthropic.ToolUnionParam) (llm.ToolSpec, error) {
 }
 
 // ToToolUnionParam converts an llm.ToolSpec to an Anthropic ToolUnionParam.
-func ToToolUnionParam(spec llm.ToolSpec) anthropic.ToolUnionParam {
+func ToToolUnionParam(spec *llm.ToolSpec) anthropic.ToolUnionParam {
 	desc := anthropic.String(spec.Description)
 
 	toolParam := anthropic.ToolParam{
@@ -222,7 +222,7 @@ func FromToolUnionParams(tools []anthropic.ToolUnionParam) ([]llm.ToolSpec, erro
 func ToToolUnionParams(specs []llm.ToolSpec) []anthropic.ToolUnionParam {
 	result := make([]anthropic.ToolUnionParam, 0, len(specs))
 	for _, spec := range specs {
-		result = append(result, ToToolUnionParam(spec))
+		result = append(result, ToToolUnionParam(&spec))
 	}
 	return result
 }

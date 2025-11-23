@@ -226,10 +226,7 @@ func (s *openaiStream) startStream() {
 				Delta: nil,
 				Usage: usage,
 				Done:  false,
-			})
-
-			// Emit stop event
-			s.events = append(s.events, &llm.StreamEvent{
+			}, &llm.StreamEvent{ // Emit stop event
 				Type:  llm.StreamEventTypeStop,
 				Delta: nil,
 				Usage: usage,

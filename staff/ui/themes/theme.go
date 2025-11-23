@@ -2,7 +2,7 @@ package themes
 
 import (
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"slices"
 
 	"github.com/gdamore/tcell/v2"
@@ -50,22 +50,8 @@ func ApplyByName(app *tview.Application, themeNameStr string) error {
 
 // NewRandom returns a new Theme configured with a random color palette
 func NewRandom() *Theme {
-	themeName := themeNames[rand.Intn(len(themeNames))]
-	switch themeName {
-	case ThemeSolarized:
-		return NewSolarized()
-	case ThemeGruvbox:
-		return NewGruvbox()
-	case ThemeZenburn:
-		return NewZenburn()
-	case ThemeApprentice:
-		return NewApprentice()
-	case ThemeCyberpunk:
-		return NewCyberpunk()
-	case ThemeCherryblossom:
-		return NewCherryBlossom()
-	}
-	return NewSolarized()
+	themeName := themeNames[rand.IntN(len(themeNames))] // #nosec G404 // no need for cryptographically secure random number generator
+	return getThemeByName(themeName)
 }
 
 // Apply applies the theme to tview.Styles (global styles).

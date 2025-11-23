@@ -110,7 +110,7 @@ func getPropertyType(propSchema interface{}) string {
 }
 
 // convertValueToType converts a value to the specified type
-func convertValueToType(v interface{}, targetType string, paramName string) (interface{}, error) {
+func convertValueToType(v interface{}, targetType, paramName string) (interface{}, error) {
 	// If already the correct type, return as-is
 	switch targetType {
 	case "integer", "int":
@@ -307,7 +307,7 @@ func ToOllamaMessage(ctx context.Context, msg llm.Message, toolSpecMap map[strin
 }
 
 // FromOllamaMessage converts an Ollama message to llm.Message.
-func FromOllamaMessage(ctx context.Context, msg api.Message) (llm.Message, error) {
+func FromOllamaMessage(ctx context.Context, msg *api.Message) (llm.Message, error) {
 	var role llm.MessageRole
 	switch msg.Role {
 	case "user":
@@ -375,7 +375,7 @@ func FromOllamaMessage(ctx context.Context, msg api.Message) (llm.Message, error
 func ToOllamaTools(specs []llm.ToolSpec) ([]api.Tool, error) {
 	result := make([]api.Tool, 0, len(specs))
 	for _, spec := range specs {
-		tool, err := ToOllamaTool(spec)
+		tool, err := ToOllamaTool(&spec)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert tool %s: %w", spec.Name, err)
 		}
@@ -385,7 +385,7 @@ func ToOllamaTools(specs []llm.ToolSpec) ([]api.Tool, error) {
 }
 
 // ToOllamaTool converts a single llm.ToolSpec to Ollama Tool format.
-func ToOllamaTool(spec llm.ToolSpec) (api.Tool, error) {
+func ToOllamaTool(spec *llm.ToolSpec) (api.Tool, error) {
 	// Build JSON schema for the function parameters
 	// ToolFunctionParameters is a struct with specific fields
 	// Convert Properties from map[string]interface{} to map[string]ToolProperty

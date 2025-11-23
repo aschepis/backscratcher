@@ -96,67 +96,14 @@ func ToOpenAIMessage(msg llm.Message) (openai.ChatCompletionMessage, error) {
 	return openaiMsg, nil
 }
 
-// FromOpenAIMessage converts an OpenAI message to llm.Message.
-func FromOpenAIMessage(msg openai.ChatCompletionMessage) (llm.Message, error) {
-	var role llm.MessageRole
-	switch msg.Role {
-	case openai.ChatMessageRoleUser:
-		role = llm.RoleUser
-	case openai.ChatMessageRoleAssistant:
-		role = llm.RoleAssistant
-	case openai.ChatMessageRoleSystem:
-		role = llm.RoleSystem
-	default:
-		role = llm.RoleUser // Default fallback
-	}
-
-	content := make([]llm.ContentBlock, 0)
-
-	// Add text content if present
-	if msg.Content != "" {
-		content = append(content, llm.ContentBlock{
-			Type: llm.ContentBlockTypeText,
-			Text: msg.Content,
-		})
-	}
-
-	// Add tool calls if present
-	for _, toolCall := range msg.ToolCalls {
-		// Parse arguments JSON string
-		var input map[string]interface{}
-		if toolCall.Function.Arguments != "" {
-			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
-				// If parsing fails, create empty map
-				input = make(map[string]interface{})
-			}
-		} else {
-			input = make(map[string]interface{})
-		}
-
-		content = append(content, llm.ContentBlock{
-			Type: llm.ContentBlockTypeToolUse,
-			ToolUse: &llm.ToolUseBlock{
-				ID:    toolCall.ID,
-				Name:  toolCall.Function.Name,
-				Input: input,
-			},
-		})
-	}
-
-	return llm.Message{
-		Role:    role,
-		Content: content,
-	}, nil
-}
-
 // ToOpenAITools converts llm.ToolSpecs to OpenAI function format.
 // OpenAI uses a JSON schema format for function definitions.
 func ToOpenAITools(specs []llm.ToolSpec) ([]openai.Tool, error) {
 	result := make([]openai.Tool, 0, len(specs))
-	for _, spec := range specs {
-		tool, err := ToOpenAITool(spec)
+	for i := range specs {
+		tool, err := ToOpenAITool(&specs[i])
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert tool %s: %w", spec.Name, err)
+			return nil, fmt.Errorf("failed to convert tool %s: %w", specs[i].Name, err)
 		}
 		result = append(result, tool)
 	}
@@ -164,7 +111,7 @@ func ToOpenAITools(specs []llm.ToolSpec) ([]openai.Tool, error) {
 }
 
 // ToOpenAITool converts a single llm.ToolSpec to OpenAI Tool format.
-func ToOpenAITool(spec llm.ToolSpec) (openai.Tool, error) {
+func ToOpenAITool(spec *llm.ToolSpec) (openai.Tool, error) {
 	// Build JSON schema for the function parameters
 	// Convert Properties from map[string]interface{} to proper JSON schema
 	properties := make(map[string]interface{})

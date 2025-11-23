@@ -6,7 +6,7 @@ import (
 )
 
 func TestProviderRegistry_IsProviderEnabled(t *testing.T) {
-	registry := NewProviderRegistry(ProviderConfig{}, []string{"anthropic", "ollama"})
+	registry := NewProviderRegistry(&ProviderConfig{}, []string{"anthropic", "ollama"})
 
 	if !registry.IsProviderEnabled("anthropic") {
 		t.Error("anthropic should be enabled")
@@ -21,7 +21,7 @@ func TestProviderRegistry_IsProviderEnabled(t *testing.T) {
 
 func TestProviderRegistry_IsProviderConfigured(t *testing.T) {
 	// Test Anthropic - should require API key
-	registry := NewProviderRegistry(ProviderConfig{}, []string{"anthropic"})
+	registry := NewProviderRegistry(&ProviderConfig{}, []string{"anthropic"})
 	if registry.IsProviderConfigured("anthropic") {
 		t.Error("anthropic should not be configured without API key")
 	}
@@ -30,19 +30,19 @@ func TestProviderRegistry_IsProviderConfigured(t *testing.T) {
 	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
 	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
 
-	registry2 := NewProviderRegistry(ProviderConfig{}, []string{"anthropic"})
+	registry2 := NewProviderRegistry(&ProviderConfig{}, []string{"anthropic"})
 	if !registry2.IsProviderConfigured("anthropic") {
 		t.Error("anthropic should be configured with API key")
 	}
 
 	// Test Ollama - should always be configured (no API key required)
-	registry3 := NewProviderRegistry(ProviderConfig{}, []string{"ollama"})
+	registry3 := NewProviderRegistry(&ProviderConfig{}, []string{"ollama"})
 	if !registry3.IsProviderConfigured("ollama") {
 		t.Error("ollama should always be configured")
 	}
 
 	// Test OpenAI - should require API key
-	registry4 := NewProviderRegistry(ProviderConfig{}, []string{"openai"})
+	registry4 := NewProviderRegistry(&ProviderConfig{}, []string{"openai"})
 	if registry4.IsProviderConfigured("openai") {
 		t.Error("openai should not be configured without API key")
 	}
@@ -50,7 +50,7 @@ func TestProviderRegistry_IsProviderConfigured(t *testing.T) {
 	_ = os.Setenv("OPENAI_API_KEY", "test-key") //nolint:errcheck // ignore error
 	defer os.Unsetenv("OPENAI_API_KEY")         //nolint:errcheck // ignore error
 
-	registry5 := NewProviderRegistry(ProviderConfig{}, []string{"openai"})
+	registry5 := NewProviderRegistry(&ProviderConfig{}, []string{"openai"})
 	if !registry5.IsProviderConfigured("openai") {
 		t.Error("openai should be configured with API key")
 	}
@@ -60,13 +60,13 @@ func TestProviderRegistry_ResolveAgentLLMConfig_WithPreferences(t *testing.T) {
 	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
 	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
 
-	registry := NewProviderRegistry(ProviderConfig{}, []string{"anthropic", "ollama"})
+	registry := NewProviderRegistry(&ProviderConfig{}, []string{"anthropic", "ollama"})
 
 	// Agent with preferences - first preference should be selected
 	agentCfg := AgentLLMConfig{
 		LLMPreferences: []LLMPreference{
-			{Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
-			{Provider: "ollama", Model: "mistral:20b"},
+			{Provider: providerAnthropic, Model: "claude-sonnet-4-20250514"},
+			{Provider: providerOllama, Model: "mistral:20b"},
 		},
 	}
 
@@ -75,7 +75,7 @@ func TestProviderRegistry_ResolveAgentLLMConfig_WithPreferences(t *testing.T) {
 		t.Fatalf("Failed to resolve config: %v", err)
 	}
 
-	if key.Provider != "anthropic" {
+	if key.Provider != providerAnthropic {
 		t.Errorf("Expected provider 'anthropic', got '%s'", key.Provider)
 	}
 	if key.Model != "claude-sonnet-4-20250514" {
@@ -87,7 +87,7 @@ func TestProviderRegistry_ResolveAgentLLMConfig_WithoutPreferences(t *testing.T)
 	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
 	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
 
-	registry := NewProviderRegistry(ProviderConfig{}, []string{"anthropic", "ollama"})
+	registry := NewProviderRegistry(&ProviderConfig{}, []string{providerAnthropic, providerOllama})
 
 	// Agent without preferences - should use first enabled provider with its default model
 	// (agent's model field is ignored as it may be provider-specific)
@@ -115,7 +115,7 @@ func TestProviderRegistry_ResolveAgentLLMConfig_Fallback(t *testing.T) {
 	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
 
 	// Only enable anthropic, not ollama
-	registry := NewProviderRegistry(ProviderConfig{}, []string{"anthropic"})
+	registry := NewProviderRegistry(&ProviderConfig{}, []string{"anthropic"})
 
 	// Agent prefers ollama first, but it's not enabled - should fallback to anthropic
 	agentCfg := AgentLLMConfig{
@@ -137,7 +137,7 @@ func TestProviderRegistry_ResolveAgentLLMConfig_Fallback(t *testing.T) {
 
 func TestProviderRegistry_ResolveAgentLLMConfig_NoAvailableProvider(t *testing.T) {
 	// No providers enabled
-	registry := NewProviderRegistry(ProviderConfig{}, []string{})
+	registry := NewProviderRegistry(&ProviderConfig{}, []string{})
 
 	agentCfg := AgentLLMConfig{
 		Model: "claude-haiku-4-5",

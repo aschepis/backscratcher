@@ -6,6 +6,12 @@ import (
 	"sync"
 )
 
+const (
+	providerAnthropic = "anthropic"
+	providerOllama    = "ollama"
+	providerOpenAI    = "openai"
+)
+
 // AgentLLMConfig represents the LLM configuration portion of an agent config.
 // This is used to avoid import cycles.
 type AgentLLMConfig struct {
@@ -31,11 +37,6 @@ type ClientKey struct {
 	Organization string // For OpenAI
 }
 
-// keyString returns a string representation of the ClientKey for use as a map key.
-func (k ClientKey) keyString() string {
-	return fmt.Sprintf("%s:%s:%s:%s:%s:%s", k.Provider, k.Model, k.APIKey, k.Host, k.BaseURL, k.Organization)
-}
-
 // ProviderConfig holds the configuration needed for provider registry.
 // This avoids import cycles by not importing the config package.
 type ProviderConfig struct {
@@ -53,11 +54,11 @@ type ProviderConfig struct {
 type ProviderRegistry struct {
 	enabledProviders map[string]bool // Set of enabled providers
 	mu               sync.RWMutex
-	config           ProviderConfig
+	config           *ProviderConfig
 }
 
 // NewProviderRegistry creates a new ProviderRegistry with the given config and enabled providers.
-func NewProviderRegistry(providerConfig ProviderConfig, enabledProviders []string) *ProviderRegistry {
+func NewProviderRegistry(providerConfig *ProviderConfig, enabledProviders []string) *ProviderRegistry {
 	enabledMap := make(map[string]bool)
 	for _, p := range enabledProviders {
 		enabledMap[p] = true
@@ -85,7 +86,7 @@ func (r *ProviderRegistry) IsProviderConfigured(provider string) bool {
 
 // ResolveAgentLLMConfig resolves an agent's LLM configuration using preference-based selection.
 // It returns a ClientKey for the first available provider from the agent's preference list.
-func (r *ProviderRegistry) ResolveAgentLLMConfig(agentID string, agentCfg AgentLLMConfig) (ClientKey, error) {
+func (r *ProviderRegistry) ResolveAgentLLMConfig(agentID string, agentCfg AgentLLMConfig) (*ClientKey, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -115,13 +116,13 @@ func (r *ProviderRegistry) ResolveAgentLLMConfig(agentID string, agentCfg AgentL
 			return key, nil
 		}
 
-		return ClientKey{}, fmt.Errorf("agent %s: no available provider from preferences %v (enabled: %v)", agentID, attemptedProviders, r.getEnabledProvidersList())
+		return nil, fmt.Errorf("agent %s: no available provider from preferences %v (enabled: %v)", agentID, attemptedProviders, r.getEnabledProvidersList())
 	}
 
 	// Agent has no LLM preferences - use first enabled provider
 	// Don't use agent's model field as it may be provider-specific (e.g., "claude-haiku-4-5" won't work with Ollama)
 	if len(r.enabledProviders) == 0 {
-		return ClientKey{}, fmt.Errorf("no providers enabled")
+		return nil, fmt.Errorf("no providers enabled")
 	}
 
 	// Get first enabled provider
@@ -132,14 +133,14 @@ func (r *ProviderRegistry) ResolveAgentLLMConfig(agentID string, agentCfg AgentL
 	}
 
 	if !r.isProviderConfiguredUnlocked(firstProvider) {
-		return ClientKey{}, fmt.Errorf("agent %s: first enabled provider %s is not configured", agentID, firstProvider)
+		return nil, fmt.Errorf("agent %s: first enabled provider %s is not configured", agentID, firstProvider)
 	}
 
 	// Don't use agent's model field - it may be provider-specific
 	// Use provider's default model instead
 	key, err := r.resolveProviderConfig(firstProvider, "")
 	if err != nil {
-		return ClientKey{}, fmt.Errorf("agent %s: failed to resolve config for provider %s: %w", agentID, firstProvider, err)
+		return nil, fmt.Errorf("agent %s: failed to resolve config for provider %s: %w", agentID, firstProvider, err)
 	}
 
 	return key, nil
@@ -149,17 +150,17 @@ func (r *ProviderRegistry) ResolveAgentLLMConfig(agentID string, agentCfg AgentL
 // Must be called with r.mu already locked.
 func (r *ProviderRegistry) isProviderConfiguredUnlocked(provider string) bool {
 	switch provider {
-	case "anthropic":
+	case providerAnthropic:
 		// Check config first, then environment
 		apiKey := r.config.AnthropicAPIKey
 		if apiKey == "" {
 			apiKey = os.Getenv("ANTHROPIC_API_KEY")
 		}
 		return apiKey != ""
-	case "ollama":
+	case providerOllama:
 		// Ollama doesn't require API key, just needs host (which has a default)
 		return true
-	case "openai":
+	case providerOpenAI:
 		// Check config first, then environment
 		apiKey := r.config.OpenAIAPIKey
 		if apiKey == "" {
@@ -172,21 +173,21 @@ func (r *ProviderRegistry) isProviderConfiguredUnlocked(provider string) bool {
 }
 
 // resolveProviderConfig resolves provider-specific configuration and returns a ClientKey.
-func (r *ProviderRegistry) resolveProviderConfig(provider, modelOverride string) (ClientKey, error) {
-	key := ClientKey{
+func (r *ProviderRegistry) resolveProviderConfig(provider, modelOverride string) (*ClientKey, error) {
+	key := &ClientKey{
 		Provider: provider,
 		Model:    modelOverride,
 	}
 
 	switch provider {
-	case "anthropic":
+	case providerAnthropic:
 		// Get API key from config or environment
 		apiKey := r.config.AnthropicAPIKey
 		if apiKey == "" {
 			apiKey = os.Getenv("ANTHROPIC_API_KEY")
 		}
 		if apiKey == "" {
-			return ClientKey{}, fmt.Errorf("anthropic API key not configured")
+			return nil, fmt.Errorf("anthropic API key not configured")
 		}
 		key.APIKey = apiKey
 		// If model not specified, use a default (will be overridden by agent's model field if present)
@@ -194,7 +195,7 @@ func (r *ProviderRegistry) resolveProviderConfig(provider, modelOverride string)
 			key.Model = "claude-haiku-4-5" // Default Anthropic model
 		}
 
-	case "ollama":
+	case providerOllama:
 		// Get host from config or environment
 		host := r.config.OllamaHost
 		if host == "" {
@@ -217,17 +218,17 @@ func (r *ProviderRegistry) resolveProviderConfig(provider, modelOverride string)
 		}
 		// Ensure we have a model - if still empty, this is an error
 		if key.Model == "" {
-			return ClientKey{}, fmt.Errorf("ollama model not specified and no default configured")
+			return nil, fmt.Errorf("ollama model not specified and no default configured")
 		}
 
-	case "openai":
+	case providerOpenAI:
 		// Get API key from config or environment
 		apiKey := r.config.OpenAIAPIKey
 		if apiKey == "" {
 			apiKey = os.Getenv("OPENAI_API_KEY")
 		}
 		if apiKey == "" {
-			return ClientKey{}, fmt.Errorf("openai API key not configured")
+			return nil, fmt.Errorf("openai API key not configured")
 		}
 		key.APIKey = apiKey
 
@@ -256,7 +257,7 @@ func (r *ProviderRegistry) resolveProviderConfig(provider, modelOverride string)
 		}
 
 	default:
-		return ClientKey{}, fmt.Errorf("unknown provider: %s", provider)
+		return nil, fmt.Errorf("unknown provider: %s", provider)
 	}
 
 	return key, nil

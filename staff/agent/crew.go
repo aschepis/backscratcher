@@ -162,7 +162,7 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 
 		// Get or create LLM client (with caching) - this may take time, so don't hold lock
 		logger.Info("Getting or creating LLM client for agent %s", id)
-		llmClient, err := c.getOrCreateClient(clientKey, id, cfg, registry)
+		llmClient, err := c.getOrCreateClient(clientKey, id, cfg)
 		if err != nil {
 			return fmt.Errorf("failed to create LLM client for agent %s: %w", id, err)
 		}
@@ -401,7 +401,7 @@ func (c *Crew) GetRunner(agentID string) *AgentRunner {
 
 // getOrCreateClient gets or creates an LLM client for the given ClientKey with caching.
 // Clients are cached by ClientKey string representation to avoid creating duplicate clients.
-func (c *Crew) getOrCreateClient(key llm.ClientKey, agentID string, agentConfig *AgentConfig, registry *llm.ProviderRegistry) (llm.Client, error) {
+func (c *Crew) getOrCreateClient(key *llm.ClientKey, agentID string, agentConfig *AgentConfig) (llm.Client, error) {
 	// Create cache key from ClientKey
 	keyStr := fmt.Sprintf("%s:%s:%s:%s:%s:%s", key.Provider, key.Model, key.APIKey, key.Host, key.BaseURL, key.Organization)
 

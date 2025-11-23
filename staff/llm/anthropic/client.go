@@ -96,10 +96,10 @@ func (c *AnthropicClient) Synchronous(ctx context.Context, req *llm.Request) (*l
 
 	// Convert usage
 	usage := &llm.Usage{
-		InputTokens:              int64(message.Usage.InputTokens),
-		OutputTokens:             int64(message.Usage.OutputTokens),
-		CacheCreationInputTokens: int64(message.Usage.CacheCreationInputTokens),
-		CacheReadInputTokens:     int64(message.Usage.CacheReadInputTokens),
+		InputTokens:              message.Usage.InputTokens,
+		OutputTokens:             message.Usage.OutputTokens,
+		CacheCreationInputTokens: message.Usage.CacheCreationInputTokens,
+		CacheReadInputTokens:     message.Usage.CacheReadInputTokens,
 	}
 
 	// Extract stop reason

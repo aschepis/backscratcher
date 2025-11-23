@@ -312,7 +312,6 @@ func executeToolLoopStream(
 		if err != nil {
 			return "", err
 		}
-		defer stream.Close()
 
 		// Accumulate tool uses + any plain text
 		var (
@@ -341,6 +340,7 @@ func executeToolLoopStream(
 							finalText.WriteString(event.Delta.Text)
 							if streamCallback != nil {
 								if err := streamCallback(event.Delta.Text); err != nil {
+									_ = stream.Close()
 									return "", fmt.Errorf("stream callback error: %w", err)
 								}
 							}
@@ -416,6 +416,7 @@ func executeToolLoopStream(
 							finalText.WriteString(event.Delta.Text)
 							if streamCallback != nil {
 								if err := streamCallback(event.Delta.Text); err != nil {
+									_ = stream.Close()
 									return "", fmt.Errorf("stream callback error: %w", err)
 								}
 							}
@@ -463,8 +464,11 @@ func executeToolLoopStream(
 
 		// Check for stream errors
 		if err := stream.Err(); err != nil {
+			_ = stream.Close()
 			return "", err
 		}
+		// Close stream after processing is complete
+		_ = stream.Close()
 
 		// Process any accumulated tool uses
 		// First, process any tool uses we collected
@@ -710,19 +714,6 @@ func executeToolLoopStream(
 			// Empty response - this shouldn't happen, but handle it gracefully
 			return "", fmt.Errorf("received empty response from LLM")
 		}
-
-		// Add assistant message to conversation history
-		assistantContent := []llm.ContentBlock{
-			{
-				Type: llm.ContentBlockTypeText,
-				Text: text,
-			},
-		}
-		assistantMsg := llm.Message{
-			Role:    llm.RoleAssistant,
-			Content: assistantContent,
-		}
-		conversationHistory = append(conversationHistory, assistantMsg)
 
 		// Persist assistant message if we have a message persister
 		if messagePersister != nil {
