@@ -27,8 +27,8 @@ func TestProviderRegistry_IsProviderConfigured(t *testing.T) {
 	}
 
 	// Set API key via environment
-	os.Setenv("ANTHROPIC_API_KEY", "test-key")
-	defer os.Unsetenv("ANTHROPIC_API_KEY")
+	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
+	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
 
 	registry2 := NewProviderRegistry(ProviderConfig{}, []string{"anthropic"})
 	if !registry2.IsProviderConfigured("anthropic") {
@@ -47,8 +47,8 @@ func TestProviderRegistry_IsProviderConfigured(t *testing.T) {
 		t.Error("openai should not be configured without API key")
 	}
 
-	os.Setenv("OPENAI_API_KEY", "test-key")
-	defer os.Unsetenv("OPENAI_API_KEY")
+	_ = os.Setenv("OPENAI_API_KEY", "test-key") //nolint:errcheck // ignore error
+	defer os.Unsetenv("OPENAI_API_KEY")         //nolint:errcheck // ignore error
 
 	registry5 := NewProviderRegistry(ProviderConfig{}, []string{"openai"})
 	if !registry5.IsProviderConfigured("openai") {
@@ -57,8 +57,8 @@ func TestProviderRegistry_IsProviderConfigured(t *testing.T) {
 }
 
 func TestProviderRegistry_ResolveAgentLLMConfig_WithPreferences(t *testing.T) {
-	os.Setenv("ANTHROPIC_API_KEY", "test-key")
-	defer os.Unsetenv("ANTHROPIC_API_KEY")
+	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
+	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
 
 	registry := NewProviderRegistry(ProviderConfig{}, []string{"anthropic", "ollama"})
 
@@ -84,8 +84,8 @@ func TestProviderRegistry_ResolveAgentLLMConfig_WithPreferences(t *testing.T) {
 }
 
 func TestProviderRegistry_ResolveAgentLLMConfig_WithoutPreferences(t *testing.T) {
-	os.Setenv("ANTHROPIC_API_KEY", "test-key")
-	defer os.Unsetenv("ANTHROPIC_API_KEY")
+	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
+	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
 
 	registry := NewProviderRegistry(ProviderConfig{}, []string{"anthropic", "ollama"})
 
@@ -111,8 +111,8 @@ func TestProviderRegistry_ResolveAgentLLMConfig_WithoutPreferences(t *testing.T)
 }
 
 func TestProviderRegistry_ResolveAgentLLMConfig_Fallback(t *testing.T) {
-	os.Setenv("ANTHROPIC_API_KEY", "test-key")
-	defer os.Unsetenv("ANTHROPIC_API_KEY")
+	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
+	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
 
 	// Only enable anthropic, not ollama
 	registry := NewProviderRegistry(ProviderConfig{}, []string{"anthropic"})
@@ -148,4 +148,3 @@ func TestProviderRegistry_ResolveAgentLLMConfig_NoAvailableProvider(t *testing.T
 		t.Error("Expected error when no providers are enabled")
 	}
 }
-

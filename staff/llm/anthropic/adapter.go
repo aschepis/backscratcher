@@ -226,4 +226,3 @@ func ToToolUnionParams(specs []llm.ToolSpec) []anthropic.ToolUnionParam {
 	}
 	return result
 }
-

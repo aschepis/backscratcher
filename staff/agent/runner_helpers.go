@@ -185,13 +185,9 @@ func executeToolLoop(
 		}
 
 		// Add assistant message to conversation history
-		assistantContent := make([]llm.ContentBlock, 0, len(resp.Content))
-		for _, block := range resp.Content {
-			assistantContent = append(assistantContent, block)
-		}
 		assistantMsg := llm.Message{
 			Role:    llm.RoleAssistant,
-			Content: assistantContent,
+			Content: resp.Content,
 		}
 		conversationHistory = append(conversationHistory, assistantMsg)
 
@@ -278,7 +274,6 @@ func executeToolLoopStream(
 	toolExec ToolExecutor,
 	messagePersister MessagePersister,
 	messageSummarizer *MessageSummarizer,
-	debugCallback DebugCallback,
 	streamCallback StreamCallback,
 ) (string, error) {
 	// Track conversation history in llm.Message format

@@ -380,9 +380,6 @@ func (r *AgentRunner) RunAgentStream(
 		r.updateAgentStateAfterExecution(executionSuccessful, executionError)
 	}()
 
-	// Get debug callback from context
-	debugCallback, _ := GetDebugCallback(ctx)
-
 	// Convert history from Anthropic types to llm types
 	llmHistory := convertAnthropicMessagesToLLM(history)
 
@@ -399,7 +396,6 @@ func (r *AgentRunner) RunAgentStream(
 		r.toolExec,
 		r.messagePersister,
 		r.messageSummarizer,
-		debugCallback,
 		callback,
 	)
 

@@ -213,10 +213,10 @@ func (s *anthropicStream) startStream() {
 		case anthropic.MessageDeltaEvent:
 			// Message delta - contains usage information
 			usage = &llm.Usage{
-				InputTokens:              int64(evt.Usage.InputTokens),
-				OutputTokens:             int64(evt.Usage.OutputTokens),
-				CacheCreationInputTokens: int64(evt.Usage.CacheCreationInputTokens),
-				CacheReadInputTokens:     int64(evt.Usage.CacheReadInputTokens),
+				InputTokens:              evt.Usage.InputTokens,
+				OutputTokens:             evt.Usage.OutputTokens,
+				CacheCreationInputTokens: evt.Usage.CacheCreationInputTokens,
+				CacheReadInputTokens:     evt.Usage.CacheReadInputTokens,
 			}
 
 		case anthropic.MessageStopEvent:
@@ -278,4 +278,3 @@ func (s *anthropicStream) startStream() {
 	}
 	s.mu.Unlock()
 }
-
