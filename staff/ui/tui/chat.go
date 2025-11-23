@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/aschepis/backscratcher/staff/agent"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -486,9 +487,10 @@ func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay 
 			chatDisplay.ScrollToEnd()
 		})
 	}
+	ctx = agent.WithDebugCallback(ctx, debugCallback)
 
 	// Run agent with streaming using the chat service
-	response, err := a.chatService.SendMessageStream(ctx, agentID, threadID, message, history, streamCallback, debugCallback)
+	response, err := a.chatService.SendMessageStream(ctx, agentID, threadID, message, history, streamCallback)
 
 	// Update UI in main thread
 	a.app.QueueUpdateDraw(func() {

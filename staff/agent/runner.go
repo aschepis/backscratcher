@@ -210,37 +210,6 @@ func (r *AgentRunner) GetResolvedProvider() string {
 	return r.resolvedProvider
 }
 
-// buildSystemBlocks moved to llm/anthropic/client.go
-
-// logDetailedError logs detailed error information from Anthropic API errors
-func logDetailedError(agentID string, err error, debugCallback DebugCallback, context string) {
-	if err == nil {
-		return
-	}
-
-	// Get the full error string
-	errStr := err.Error()
-
-	// Try to extract structured error information if available
-	// The Anthropic SDK may wrap errors with additional context
-	errDetails := fmt.Sprintf("Anthropic API error for agent %s (%s): %s", agentID, context, errStr)
-
-	// Log the detailed error
-	logger.Error("%s", errDetails)
-
-	// Also send to debug callback if available
-	if debugCallback != nil {
-		debugCallback(fmt.Sprintf("ERROR: %s", errDetails))
-	}
-
-	// Try to extract additional error context using type assertions
-	// Check if error has additional fields we can log
-	if errStr != "" {
-		// Log the full error message which may contain API response details
-		logger.Debug("Full error details for agent %s: %+v", agentID, err)
-	}
-}
-
 // trackExecutionStats records execution statistics (success or failure) for the agent
 func (r *AgentRunner) trackExecutionStats(successful bool, errorMsg string) {
 	if !successful {
@@ -346,9 +315,6 @@ func (r *AgentRunner) RunAgent(
 		r.updateAgentStateAfterExecution(executionSuccessful, executionError)
 	}()
 
-	// Get debug callback from context
-	debugCallback, _ := GetDebugCallback(ctx)
-
 	// Convert history from Anthropic types to llm types
 	llmHistory := convertAnthropicMessagesToLLM(history)
 
@@ -365,7 +331,6 @@ func (r *AgentRunner) RunAgent(
 		r.toolExec,
 		r.messagePersister,
 		r.messageSummarizer,
-		debugCallback,
 	)
 
 	if err != nil {

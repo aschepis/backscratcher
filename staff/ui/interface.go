@@ -22,8 +22,7 @@ type ChatService interface {
 
 	// SendMessageStream sends a message to an agent with streaming support.
 	// The streamCallback is called for each text delta received.
-	// The debugCallback is added to the context for debug information.
-	SendMessageStream(ctx context.Context, agentID, threadID, message string, history []anthropic.MessageParam, streamCallback StreamCallback, debugCallback DebugCallback) (string, error)
+	SendMessageStream(ctx context.Context, agentID, threadID, message string, history []anthropic.MessageParam, streamCallback StreamCallback) (string, error)
 
 	// GetChatTimeout returns the timeout duration for chat operations.
 	GetChatTimeout() time.Duration

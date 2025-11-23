@@ -9,6 +9,7 @@ import (
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/aschepis/backscratcher/staff/ui/tui/debug"
 )
 
 // prepareLLMRequest converts agent config, history, and tools to an llm.Request.
@@ -48,7 +49,6 @@ func executeToolLoop(
 	toolExec ToolExecutor,
 	messagePersister MessagePersister,
 	messageSummarizer *MessageSummarizer,
-	debugCallback DebugCallback,
 ) (string, error) {
 	// Track conversation history in llm.Message format
 	conversationHistory := req.Messages
@@ -79,14 +79,7 @@ func executeToolLoop(
 		}
 
 		// Output debug info about LLM request
-		if debugCallback != nil {
-			toolCount := 0
-			if req.Tools != nil {
-				toolCount = len(req.Tools)
-			}
-			msgCount := len(conversationHistory)
-			debugCallback(fmt.Sprintf("🤖 Calling LLM (model: %s, messages: %d, tools: %d)", req.Model, msgCount, toolCount))
-		}
+		debug.ChatMessage(ctx, fmt.Sprintf("🤖 Calling LLM (model: %s, messages: %d, tools: %d)", req.Model, len(conversationHistory), len(req.Tools)))
 
 		// Call LLM
 		resp, err := client.Synchronous(ctx, currentReq)
@@ -126,15 +119,7 @@ func executeToolLoop(
 				}
 
 				// Output debug info about tool call
-				if debugCallback != nil {
-					var argsStr string
-					if prettyArgs, err := json.MarshalIndent(toolUse.Input, "", "  "); err == nil {
-						argsStr = string(prettyArgs)
-					} else {
-						argsStr = string(raw)
-					}
-					debugCallback(fmt.Sprintf("🔧 Tool call detected: %s\nArguments: %s", toolUse.Name, argsStr))
-				}
+				debug.ChatMessage(ctx, fmt.Sprintf("🔧 Tool call detected: %s\nArguments: %s", toolUse.Name, string(raw)))
 
 				// Execute tool
 				result, callErr := toolExec.Handle(ctx, toolUse.Name, agentID, raw)
@@ -175,27 +160,11 @@ func executeToolLoop(
 				isError := callErr != nil
 
 				// Output debug info about tool result
-				if debugCallback != nil {
-					var resultStr string
-					if isError {
-						resultStr = fmt.Sprintf("ERROR: %v", callErr)
-					} else {
-						// Pretty-print result if possible
-						if prettyResult, err := json.MarshalIndent(summarizedResult, "", "  "); err == nil {
-							resultStr = string(prettyResult)
-							// Truncate very long results
-							if len(resultStr) > 500 {
-								resultStr = resultStr[:500] + "... (truncated)"
-							}
-						} else {
-							resultStr = string(b)
-							if len(resultStr) > 500 {
-								resultStr = resultStr[:500] + "... (truncated)"
-							}
-						}
-					}
-					debugCallback(fmt.Sprintf("✅ Tool result for %s: %s", toolUse.Name, resultStr))
+				resultStr := string(b)
+				if len(resultStr) > 500 {
+					resultStr = resultStr[:500] + "... (truncated)"
 				}
+				debug.ChatMessage(ctx, fmt.Sprintf("✅ Tool result for %s: %s", toolUse.Name, resultStr))
 
 				// Check if we already have a result for this tool ID (avoid duplicates)
 				alreadyExists := false
@@ -341,14 +310,7 @@ func executeToolLoopStream(
 		}
 
 		// Output debug info about LLM request
-		if debugCallback != nil {
-			toolCount := 0
-			if req.Tools != nil {
-				toolCount = len(req.Tools)
-			}
-			msgCount := len(conversationHistory)
-			debugCallback(fmt.Sprintf("🤖 Calling LLM stream (model: %s, messages: %d, tools: %d)", req.Model, msgCount, toolCount))
-		}
+		debug.ChatMessage(ctx, fmt.Sprintf("🤖 Calling LLM stream (model: %s, messages: %d, tools: %d)", req.Model, len(conversationHistory), len(req.Tools)))
 
 		// Start streaming
 		stream, err := client.Stream(ctx, currentReq)
@@ -409,19 +371,19 @@ func executeToolLoopStream(
 							}
 							if !found {
 								// Output debug info about tool call
-								if debugCallback != nil {
-									var argsStr string
-									if currentToolUse.Input != nil {
-										if prettyArgs, err := json.MarshalIndent(currentToolUse.Input, "", "  "); err == nil {
-											argsStr = string(prettyArgs)
-										} else {
-											argsStr = fmt.Sprintf("%v", currentToolUse.Input)
-										}
+								// TODO: shortent this code
+								var argsStr string
+								if currentToolUse.Input != nil {
+									if prettyArgs, err := json.MarshalIndent(currentToolUse.Input, "", "  "); err == nil {
+										argsStr = string(prettyArgs)
 									} else {
-										argsStr = "{}"
+										argsStr = fmt.Sprintf("%v", currentToolUse.Input)
 									}
-									debugCallback(fmt.Sprintf("🔧 Tool call detected: %s\nArguments: %s", currentToolUse.Name, argsStr))
+								} else {
+									argsStr = "{}"
 								}
+								debug.ChatMessage(ctx, fmt.Sprintf("🔧 Tool call detected: %s\nArguments: %s", currentToolUse.Name, argsStr))
+
 								// Make a copy to track
 								toolUseCopy := *currentToolUse
 								toolUseCopy.Input = make(map[string]interface{})
@@ -560,26 +522,14 @@ func executeToolLoopStream(
 				isError := callErr != nil
 
 				// Output debug info about tool result
-				if debugCallback != nil {
-					var resultStr string
-					if isError {
-						resultStr = fmt.Sprintf("ERROR: %v", callErr)
-					} else {
-						// Pretty-print result if possible
-						if prettyResult, err := json.MarshalIndent(summarizedResult, "", "  "); err == nil {
-							resultStr = string(prettyResult)
-							// Truncate very long results
-							if len(resultStr) > 500 {
-								resultStr = resultStr[:500] + "... (truncated)"
-							}
-						} else {
-							resultStr = string(b)
-							if len(resultStr) > 500 {
-								resultStr = resultStr[:500] + "... (truncated)"
-							}
-						}
+				if isError {
+					debug.ChatMessage(ctx, fmt.Sprintf("❌ Tool result for %s: %v", toolUse.Name, callErr))
+				} else {
+					resultStr := string(b)
+					if len(resultStr) > 500 {
+						resultStr = resultStr[:500] + "... (truncated)"
 					}
-					debugCallback(fmt.Sprintf("✅ Tool result for %s: %s", toolUse.Name, resultStr))
+					debug.ChatMessage(ctx, fmt.Sprintf("✅ Tool result for %s: %s", toolUse.Name, resultStr))
 				}
 
 				toolResults = append(toolResults, llm.ToolResultBlock{
@@ -603,15 +553,7 @@ func executeToolLoopStream(
 			}
 
 			// Output debug info about tool call
-			if debugCallback != nil {
-				var argsStr string
-				if prettyArgs, err := json.MarshalIndent(toolUse.Input, "", "  "); err == nil {
-					argsStr = string(prettyArgs)
-				} else {
-					argsStr = string(raw)
-				}
-				debugCallback(fmt.Sprintf("🔧 Tool call detected: %s\nArguments: %s", toolUse.Name, argsStr))
-			}
+			debug.ChatMessage(ctx, fmt.Sprintf("🔧 Tool call detected: %s\nArguments: %s", toolUse.Name, string(raw)))
 
 			// Execute tool
 			result, callErr := toolExec.Handle(ctx, toolUse.Name, agentID, raw)
@@ -651,27 +593,14 @@ func executeToolLoopStream(
 			b, _ := json.Marshal(summarizedResult)
 			isError := callErr != nil
 
-			// Output debug info about tool result
-			if debugCallback != nil {
-				var resultStr string
-				if isError {
-					resultStr = fmt.Sprintf("ERROR: %v", callErr)
-				} else {
-					// Pretty-print result if possible
-					if prettyResult, err := json.MarshalIndent(summarizedResult, "", "  "); err == nil {
-						resultStr = string(prettyResult)
-						// Truncate very long results
-						if len(resultStr) > 500 {
-							resultStr = resultStr[:500] + "... (truncated)"
-						}
-					} else {
-						resultStr = string(b)
-						if len(resultStr) > 500 {
-							resultStr = resultStr[:500] + "... (truncated)"
-						}
-					}
+			if isError {
+				debug.ChatMessage(ctx, fmt.Sprintf("❌ Tool result for %s: %v", toolUse.Name, callErr))
+			} else {
+				resultStr := string(b)
+				if len(resultStr) > 500 {
+					resultStr = resultStr[:500] + "... (truncated)"
 				}
-				debugCallback(fmt.Sprintf("✅ Tool result for %s: %s", toolUse.Name, resultStr))
+				debug.ChatMessage(ctx, fmt.Sprintf("✅ Tool result for %s: %s", toolUse.Name, resultStr))
 			}
 
 			// Check if we already have a result for this tool ID (avoid duplicates)

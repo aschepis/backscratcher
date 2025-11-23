@@ -8,6 +8,7 @@ import (
 
 	ctxpkg "github.com/aschepis/backscratcher/staff/context"
 	"github.com/aschepis/backscratcher/staff/llm"
+	"github.com/aschepis/backscratcher/staff/ui/tui/debug"
 	"github.com/ollama/ollama/api"
 )
 
@@ -16,19 +17,8 @@ import (
 func validateAndConvertToolArguments(ctx context.Context, toolName string, args map[string]interface{}, schema llm.ToolSchema) (api.ToolCallFunctionArguments, error) {
 	result := make(api.ToolCallFunctionArguments)
 
-	// Try to get debug callback from context
-	debugCallback, _ := ctxpkg.GetDebugCallback(ctx)
-
 	// Output what we received from LLM
-	if debugCallback != nil {
-		var originalArgs string
-		if pretty, err := json.MarshalIndent(args, "", "  "); err == nil {
-			originalArgs = string(pretty)
-		} else {
-			originalArgs = fmt.Sprintf("%v", args)
-		}
-		debugCallback(fmt.Sprintf("📥 LLM provided arguments for %s:\n%s", toolName, originalArgs))
-	}
+	debug.ChatMessage(ctx, fmt.Sprintf("📥 LLM provided arguments for %s:\n%v", toolName, args))
 
 	// Validate required parameters
 	requiredSet := make(map[string]bool)
@@ -84,15 +74,7 @@ func validateAndConvertToolArguments(ctx context.Context, toolName string, args 
 	}
 
 	// After conversion, output what was converted
-	if debugCallback != nil {
-		var convertedArgs string
-		if pretty, err := json.MarshalIndent(result, "", "  "); err == nil {
-			convertedArgs = string(pretty)
-		} else {
-			convertedArgs = fmt.Sprintf("%v", result)
-		}
-		debugCallback(fmt.Sprintf("✅ Converted/validated arguments for %s:\n%s", toolName, convertedArgs))
-	}
+	debug.ChatMessage(ctx, fmt.Sprintf("✅ Converted/validated arguments for %s:\n%v", toolName, result))
 
 	return result, nil
 }
@@ -246,19 +228,6 @@ func ToOllamaMessages(ctx context.Context, msgs []llm.Message, toolSpecs ...[]ll
 // ToOllamaMessage converts a single llm.Message to Ollama format.
 // toolSpecMap is optional and used for validating/converting tool arguments.
 func ToOllamaMessage(ctx context.Context, msg llm.Message, toolSpecMap map[string]llm.ToolSpec) (api.Message, error) {
-	// Convert role
-	var role string
-	switch msg.Role {
-	case llm.RoleUser:
-		role = "user"
-	case llm.RoleAssistant:
-		role = "assistant"
-	case llm.RoleSystem:
-		role = "system"
-	default:
-		role = "user" // Default fallback
-	}
-
 	// Convert content blocks to Ollama format
 	// Ollama messages can have text content or tool calls
 	var content string
@@ -329,18 +298,9 @@ func ToOllamaMessage(ctx context.Context, msg llm.Message, toolSpecMap map[strin
 	}
 
 	ollamaMsg := api.Message{
-		Role: role,
-	}
-
-	// Set content or tool calls based on what we have
-	if len(toolCalls) > 0 {
-		ollamaMsg.ToolCalls = toolCalls
-		// If we have both content and tool calls, include content as well
-		if content != "" {
-			ollamaMsg.Content = content
-		}
-	} else {
-		ollamaMsg.Content = content
+		Role:      string(msg.Role),
+		Content:   content,
+		ToolCalls: toolCalls,
 	}
 
 	return ollamaMsg, nil

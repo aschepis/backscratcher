@@ -53,12 +53,7 @@ func (s *chatService) SendMessage(ctx context.Context, agentID, threadID, messag
 }
 
 // SendMessageStream sends a message to an agent with streaming support.
-func (s *chatService) SendMessageStream(ctx context.Context, agentID, threadID, message string, history []anthropic.MessageParam, streamCallback StreamCallback, debugCallback DebugCallback) (string, error) {
-	// Add debug callback to context if provided
-	if debugCallback != nil {
-		ctx = agent.WithDebugCallback(ctx, agent.DebugCallback(debugCallback))
-	}
-
+func (s *chatService) SendMessageStream(ctx context.Context, agentID, threadID, message string, history []anthropic.MessageParam, streamCallback StreamCallback) (string, error) {
 	return s.crew.RunStream(ctx, agentID, threadID, message, history, agent.StreamCallback(streamCallback))
 }
 
