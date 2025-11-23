@@ -1,18 +1,240 @@
 package ollama
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
+	ctxpkg "github.com/aschepis/backscratcher/staff/context"
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/ollama/ollama/api"
 )
 
+// validateAndConvertToolArguments validates required parameters and converts
+// argument values to their proper types based on the tool schema.
+func validateAndConvertToolArguments(ctx context.Context, toolName string, args map[string]interface{}, schema llm.ToolSchema) (api.ToolCallFunctionArguments, error) {
+	result := make(api.ToolCallFunctionArguments)
+
+	// Try to get debug callback from context
+	debugCallback, _ := ctxpkg.GetDebugCallback(ctx)
+
+	// Output what we received from LLM
+	if debugCallback != nil {
+		var originalArgs string
+		if pretty, err := json.MarshalIndent(args, "", "  "); err == nil {
+			originalArgs = string(pretty)
+		} else {
+			originalArgs = fmt.Sprintf("%v", args)
+		}
+		debugCallback(fmt.Sprintf("📥 LLM provided arguments for %s:\n%s", toolName, originalArgs))
+	}
+
+	// Validate required parameters
+	requiredSet := make(map[string]bool)
+	for _, req := range schema.Required {
+		requiredSet[req] = true
+	}
+
+	// Check that all required parameters are present and non-empty
+	for _, reqParam := range schema.Required {
+		val, exists := args[reqParam]
+		if !exists {
+			// Build helpful error message showing what was provided
+			providedKeys := make([]string, 0, len(args))
+			for k := range args {
+				providedKeys = append(providedKeys, k)
+			}
+			return nil, fmt.Errorf("missing required parameter '%s' for tool '%s' (provided: %v)", reqParam, toolName, providedKeys)
+		}
+		// Check if value is empty (nil, empty string, etc.)
+		if isEmptyValue(val) {
+			return nil, fmt.Errorf("required parameter '%s' for tool '%s' cannot be empty", reqParam, toolName)
+		}
+	}
+
+	// Convert arguments based on schema types
+	properties := schema.Properties
+	if properties == nil {
+		properties = make(map[string]interface{})
+	}
+
+	for k, v := range args {
+		// Get the property schema for this parameter
+		propSchema, exists := properties[k]
+		if !exists {
+			// Parameter not in schema, pass through as-is
+			result[k] = v
+			continue
+		}
+
+		// Extract type from property schema
+		propType := getPropertyType(propSchema)
+
+		// Convert value to the correct type
+		converted, err := convertValueToType(v, propType, k)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert parameter '%s' for tool '%s': %w", k, toolName, err)
+		}
+
+		result[k] = converted
+
+		// Mark as processed if it was required
+		delete(requiredSet, k)
+	}
+
+	// After conversion, output what was converted
+	if debugCallback != nil {
+		var convertedArgs string
+		if pretty, err := json.MarshalIndent(result, "", "  "); err == nil {
+			convertedArgs = string(pretty)
+		} else {
+			convertedArgs = fmt.Sprintf("%v", result)
+		}
+		debugCallback(fmt.Sprintf("✅ Converted/validated arguments for %s:\n%s", toolName, convertedArgs))
+	}
+
+	return result, nil
+}
+
+// isEmptyValue checks if a value is considered empty (nil, empty string, empty array, etc.)
+func isEmptyValue(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+
+	switch val := v.(type) {
+	case string:
+		return val == ""
+	case []interface{}:
+		return len(val) == 0
+	case []string:
+		return len(val) == 0
+	case map[string]interface{}:
+		return len(val) == 0
+	}
+
+	return false
+}
+
+// getPropertyType extracts the type from a property schema definition
+func getPropertyType(propSchema interface{}) string {
+	if propMap, ok := propSchema.(map[string]interface{}); ok {
+		if propType, ok := propMap["type"].(string); ok {
+			return propType
+		}
+	}
+	return "string" // Default type
+}
+
+// convertValueToType converts a value to the specified type
+func convertValueToType(v interface{}, targetType string, paramName string) (interface{}, error) {
+	// If already the correct type, return as-is
+	switch targetType {
+	case "integer", "int":
+		return convertToInteger(v, paramName)
+	case "number", "float":
+		return convertToNumber(v, paramName)
+	case "boolean", "bool":
+		return convertToBoolean(v, paramName)
+	case "string":
+		return convertToString(v), nil
+	case "array":
+		// Arrays are typically passed through, but we could validate
+		return v, nil
+	case "object":
+		// Objects are typically passed through
+		return v, nil
+	default:
+		// Unknown type, pass through
+		return v, nil
+	}
+}
+
+// convertToInteger converts a value to an integer
+func convertToInteger(v interface{}, paramName string) (interface{}, error) {
+	switch val := v.(type) {
+	case int:
+		return val, nil
+	case int64:
+		return int(val), nil
+	case float64:
+		return int(val), nil
+	case string:
+		// Try to parse string as integer
+		var i int
+		if _, err := fmt.Sscanf(val, "%d", &i); err != nil {
+			return nil, fmt.Errorf("parameter '%s': cannot convert '%s' to integer", paramName, val)
+		}
+		return i, nil
+	default:
+		return nil, fmt.Errorf("parameter '%s': cannot convert %T to integer", paramName, v)
+	}
+}
+
+// convertToNumber converts a value to a float64
+func convertToNumber(v interface{}, paramName string) (interface{}, error) {
+	switch val := v.(type) {
+	case float64:
+		return val, nil
+	case int:
+		return float64(val), nil
+	case int64:
+		return float64(val), nil
+	case string:
+		var f float64
+		if _, err := fmt.Sscanf(val, "%f", &f); err != nil {
+			return nil, fmt.Errorf("parameter '%s': cannot convert '%s' to number", paramName, val)
+		}
+		return f, nil
+	default:
+		return nil, fmt.Errorf("parameter '%s': cannot convert %T to number", paramName, v)
+	}
+}
+
+// convertToBoolean converts a value to a boolean
+func convertToBoolean(v interface{}, paramName string) (interface{}, error) {
+	switch val := v.(type) {
+	case bool:
+		return val, nil
+	case string:
+		switch strings.ToLower(val) {
+		case "true", "1", "yes", "on":
+			return true, nil
+		case "false", "0", "no", "off":
+			return false, nil
+		default:
+			return nil, fmt.Errorf("parameter '%s': cannot convert '%s' to boolean", paramName, val)
+		}
+	case int:
+		return val != 0, nil
+	default:
+		return nil, fmt.Errorf("parameter '%s': cannot convert %T to boolean", paramName, v)
+	}
+}
+
+// convertToString converts a value to a string
+func convertToString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
 // ToOllamaMessages converts llm.Messages to Ollama chat message format.
-// Ollama expects messages in a specific format with role and content.
-func ToOllamaMessages(msgs []llm.Message) ([]api.Message, error) {
+// It optionally accepts tool specs for validating and converting tool arguments.
+func ToOllamaMessages(ctx context.Context, msgs []llm.Message, toolSpecs ...[]llm.ToolSpec) ([]api.Message, error) {
+	var toolSpecMap map[string]llm.ToolSpec
+	if len(toolSpecs) > 0 && len(toolSpecs[0]) > 0 {
+		toolSpecMap = make(map[string]llm.ToolSpec)
+		for _, spec := range toolSpecs[0] {
+			toolSpecMap[spec.Name] = spec
+		}
+	}
+
 	result := make([]api.Message, 0, len(msgs))
 	for _, msg := range msgs {
-		ollamaMsg, err := ToOllamaMessage(msg)
+		ollamaMsg, err := ToOllamaMessage(ctx, msg, toolSpecMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert message: %w", err)
 		}
@@ -22,7 +244,8 @@ func ToOllamaMessages(msgs []llm.Message) ([]api.Message, error) {
 }
 
 // ToOllamaMessage converts a single llm.Message to Ollama format.
-func ToOllamaMessage(msg llm.Message) (api.Message, error) {
+// toolSpecMap is optional and used for validating/converting tool arguments.
+func ToOllamaMessage(ctx context.Context, msg llm.Message, toolSpecMap map[string]llm.ToolSpec) (api.Message, error) {
 	// Convert role
 	var role string
 	switch msg.Role {
@@ -51,13 +274,40 @@ func ToOllamaMessage(msg llm.Message) (api.Message, error) {
 		case llm.ContentBlockTypeToolUse:
 			if block.ToolUse != nil {
 				// Convert tool use to Ollama tool call format
-				// ToolCallFunctionArguments is a map[string]any
-				args := make(api.ToolCallFunctionArguments)
-				if block.ToolUse.Input != nil {
-					for k, v := range block.ToolUse.Input {
-						args[k] = v
+				var args api.ToolCallFunctionArguments
+
+				if toolSpecMap != nil {
+					// Validate and convert arguments using schema
+					if spec, ok := toolSpecMap[block.ToolUse.Name]; ok {
+						convertedArgs, err := validateAndConvertToolArguments(
+							ctx,
+							block.ToolUse.Name,
+							block.ToolUse.Input,
+							spec.Schema,
+						)
+						if err != nil {
+							return api.Message{}, fmt.Errorf("tool argument validation failed: %w", err)
+						}
+						args = convertedArgs
+					} else {
+						// No schema found, pass through as-is (for backward compatibility)
+						args = make(api.ToolCallFunctionArguments)
+						if block.ToolUse.Input != nil {
+							for k, v := range block.ToolUse.Input {
+								args[k] = v
+							}
+						}
+					}
+				} else {
+					// No tool specs provided, pass through as-is (for backward compatibility)
+					args = make(api.ToolCallFunctionArguments)
+					if block.ToolUse.Input != nil {
+						for k, v := range block.ToolUse.Input {
+							args[k] = v
+						}
 					}
 				}
+
 				toolCall := api.ToolCall{
 					Function: api.ToolCallFunction{
 						Name:      block.ToolUse.Name,
@@ -97,7 +347,7 @@ func ToOllamaMessage(msg llm.Message) (api.Message, error) {
 }
 
 // FromOllamaMessage converts an Ollama message to llm.Message.
-func FromOllamaMessage(msg api.Message) (llm.Message, error) {
+func FromOllamaMessage(ctx context.Context, msg api.Message) (llm.Message, error) {
 	var role llm.MessageRole
 	switch msg.Role {
 	case "user":
@@ -130,8 +380,18 @@ func FromOllamaMessage(msg api.Message) (llm.Message, error) {
 			}
 		}
 
+		// Attempt to retrieve debugCallback from context and log the raw arguments if available
+		if cb, ok := ctxpkg.GetDebugCallback(ctx); ok && cb != nil {
+			var pretty string
+			if b, err := json.MarshalIndent(input, "", "  "); err == nil {
+				pretty = string(b)
+			} else {
+				pretty = fmt.Sprintf("%v", input)
+			}
+			cb(fmt.Sprintf("🔍 [FromOllamaMessage] Raw tool call arguments for function '%s':\n%s", toolCall.Function.Name, pretty))
+		}
+
 		// Generate a tool use ID (Ollama doesn't provide one, so we'll use the function name + index)
-		// In practice, we might need to track this differently
 		toolUseID := fmt.Sprintf("call_%s_%d", toolCall.Function.Name, len(content))
 
 		content = append(content, llm.ContentBlock{
@@ -231,4 +491,3 @@ func FromOllamaToolCall(toolCall api.ToolCall) (*llm.ToolUseBlock, error) {
 		Input: input,
 	}, nil
 }
-

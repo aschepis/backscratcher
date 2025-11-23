@@ -72,7 +72,7 @@ func (c *OllamaClient) Synchronous(ctx context.Context, req *llm.Request) (*llm.
 	}
 
 	// Convert messages
-	ollamaMsgs, err := ToOllamaMessages(req.Messages)
+	ollamaMsgs, err := ToOllamaMessages(ctx, req.Messages, req.Tools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert messages: %w", err)
 	}
@@ -196,7 +196,7 @@ func (c *OllamaClient) Stream(ctx context.Context, req *llm.Request) (llm.Stream
 	}
 
 	// Convert messages
-	ollamaMsgs, err := ToOllamaMessages(req.Messages)
+	ollamaMsgs, err := ToOllamaMessages(ctx, req.Messages, req.Tools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert messages: %w", err)
 	}

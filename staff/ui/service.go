@@ -67,10 +67,43 @@ func (s *chatService) ListAgents() []AgentInfo {
 	agents := s.crew.ListAgents()
 	info := make([]AgentInfo, 0, len(agents))
 	for _, ag := range agents {
-		info = append(info, AgentInfo{
+		agentInfo := AgentInfo{
 			ID:   ag.ID,
 			Name: ag.Config.Name,
-		})
+		}
+
+		// Get the actual resolved provider and model from the runner
+		// This ensures we show the model that's actually being used, not just the first preference
+		runner := s.crew.GetRunner(ag.ID)
+		if runner != nil {
+			agentInfo.Provider = runner.GetResolvedProvider()
+			agentInfo.Model = runner.GetResolvedModel()
+		} else {
+			// Runner not available (e.g., agent disabled or not initialized)
+			// Fall back to config-based inference
+			if len(ag.Config.LLM) > 0 {
+				pref := ag.Config.LLM[0]
+				agentInfo.Provider = pref.Provider
+				if pref.Model != "" {
+					agentInfo.Model = pref.Model
+				} else {
+					agentInfo.Model = ag.Config.Model // Fallback to legacy model field
+				}
+			} else {
+				// No preferences - use legacy model field and infer provider from config
+				agentInfo.Model = ag.Config.Model
+				// Try to infer provider from model name (heuristic)
+				if strings.HasPrefix(ag.Config.Model, "claude-") {
+					agentInfo.Provider = "anthropic"
+				} else if strings.Contains(ag.Config.Model, ":") {
+					agentInfo.Provider = "ollama"
+				} else {
+					agentInfo.Provider = "anthropic" // Default
+				}
+			}
+		}
+
+		info = append(info, agentInfo)
 	}
 	return info
 }
@@ -204,14 +237,248 @@ func (s *chatService) LoadConversationHistory(ctx context.Context, agentID, thre
 	return s.LoadThread(ctx, agentID, threadID)
 }
 
-// LoadMessagesWithTimestamps loads regular (non-system) messages with their timestamps.
-func (s *chatService) LoadMessagesWithTimestamps(ctx context.Context, agentID, threadID string) ([]MessageWithTimestamp, error) {
+// LoadAllMessagesWithTimestamps loads ALL regular (non-system) messages with their timestamps.
+// This is used for display purposes to show the full conversation history.
+func (s *chatService) LoadAllMessagesWithTimestamps(ctx context.Context, agentID, threadID string) ([]MessageWithTimestamp, error) {
 	query := sq.Select("role", "content", "tool_name", "created_at").
 		From("conversations").
 		Where(sq.Eq{"agent_id": agentID}).
 		Where(sq.Eq{"thread_id": threadID}).
 		Where(sq.NotEq{"role": "system"}).
 		OrderBy("created_at ASC")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, queryStr, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
+
+	var messages []MessageWithTimestamp
+	var currentUserTextBlocks []string
+	var currentAssistantTextBlocks []string
+	var currentAssistantToolBlocks []anthropic.ContentBlockParamUnion
+	var currentToolResultBlocks []anthropic.ContentBlockParamUnion
+	var lastRole string
+	var currentUserTimestamp int64
+	var currentAssistantTimestamp int64
+	var currentToolTimestamp int64
+	// Track tool_use IDs to prevent duplicates within the same message
+	seenToolUseIDs := make(map[string]bool)
+	seenToolResultIDs := make(map[string]bool)
+
+	for rows.Next() {
+		var role string
+		var content string
+		var toolName sql.NullString
+		var createdAt int64
+
+		if err := rows.Scan(&role, &content, &toolName, &createdAt); err != nil {
+			return nil, err
+		}
+
+		// Handle different message types (same logic as LoadThread, but we track timestamps)
+		switch role {
+		case roleUser:
+			if lastRole == roleUser {
+				currentUserTextBlocks = append(currentUserTextBlocks, content)
+				// Keep the earliest timestamp for this message group
+				if currentUserTimestamp == 0 || createdAt < currentUserTimestamp {
+					currentUserTimestamp = createdAt
+				}
+			} else {
+				// Role changed, commit previous messages
+				s.commitPendingMessagesWithTimestamp(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
+					currentAssistantToolBlocks, currentToolResultBlocks, currentUserTimestamp, currentAssistantTimestamp, currentToolTimestamp)
+
+				currentUserTextBlocks = []string{content}
+				currentUserTimestamp = createdAt
+				currentAssistantTextBlocks = nil
+				currentAssistantToolBlocks = nil
+				currentToolResultBlocks = nil
+				currentAssistantTimestamp = 0
+				currentToolTimestamp = 0
+				seenToolUseIDs = make(map[string]bool)
+				seenToolResultIDs = make(map[string]bool)
+			}
+
+		case roleAssistant:
+			if toolName.Valid && toolName.String != "" {
+				// Assistant message with tool call
+				var toolUseData map[string]interface{}
+				if err := json.Unmarshal([]byte(content), &toolUseData); err != nil {
+					continue
+				}
+
+				toolID, _ := toolUseData["id"].(string)
+				if toolID == "" || seenToolUseIDs[toolID] {
+					continue
+				}
+				seenToolUseIDs[toolID] = true
+
+				toolInput := toolUseData["input"]
+				if _, ok := toolInput.(map[string]any); !ok {
+					toolInput = map[string]any{}
+				}
+				toolNameStr := toolName.String
+
+				toolUseBlock := anthropic.NewToolUseBlock(toolID, toolInput, toolNameStr)
+				currentAssistantToolBlocks = append(currentAssistantToolBlocks, toolUseBlock)
+				// Keep the earliest timestamp for this message group
+				if currentAssistantTimestamp == 0 || createdAt < currentAssistantTimestamp {
+					currentAssistantTimestamp = createdAt
+				}
+
+				if lastRole != roleAssistant && lastRole != "" {
+					s.commitPendingMessagesWithTimestamp(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
+						currentAssistantToolBlocks, currentToolResultBlocks, currentUserTimestamp, currentAssistantTimestamp, currentToolTimestamp)
+					currentUserTextBlocks = nil
+					currentAssistantTextBlocks = nil
+					currentAssistantToolBlocks = nil
+					currentToolResultBlocks = nil
+					currentUserTimestamp = 0
+					currentAssistantTimestamp = 0
+					currentToolTimestamp = 0
+					seenToolUseIDs = make(map[string]bool)
+					seenToolResultIDs = make(map[string]bool)
+				}
+			} else {
+				if lastRole == roleAssistant && len(currentAssistantToolBlocks) == 0 {
+					currentAssistantTextBlocks = append(currentAssistantTextBlocks, content)
+					// Keep the earliest timestamp for this message group
+					if currentAssistantTimestamp == 0 || createdAt < currentAssistantTimestamp {
+						currentAssistantTimestamp = createdAt
+					}
+				} else {
+					s.commitPendingMessagesWithTimestamp(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
+						currentAssistantToolBlocks, currentToolResultBlocks, currentUserTimestamp, currentAssistantTimestamp, currentToolTimestamp)
+
+					currentUserTextBlocks = nil
+					currentAssistantTextBlocks = []string{content}
+					currentAssistantTimestamp = createdAt
+					currentAssistantToolBlocks = nil
+					currentToolResultBlocks = nil
+					currentUserTimestamp = 0
+					currentToolTimestamp = 0
+					seenToolUseIDs = make(map[string]bool)
+					seenToolResultIDs = make(map[string]bool)
+				}
+			}
+
+		case roleTool:
+			if toolName.Valid && toolName.String != "" {
+				var toolResultData map[string]interface{}
+				if err := json.Unmarshal([]byte(content), &toolResultData); err != nil {
+					continue
+				}
+
+				toolID, _ := toolResultData["id"].(string)
+				if toolID == "" || seenToolResultIDs[toolID] {
+					continue
+				}
+				seenToolResultIDs[toolID] = true
+
+				resultStr, _ := toolResultData["result"].(string)
+				isError, _ := toolResultData["is_error"].(bool)
+
+				// If result is not a string, marshal it back to JSON
+				if resultStr == "" {
+					if resultBytes, err := json.Marshal(toolResultData["result"]); err == nil {
+						resultStr = string(resultBytes)
+					}
+				}
+
+				// Create tool result block
+				toolResultBlock := anthropic.NewToolResultBlock(toolID, resultStr, isError)
+				currentToolResultBlocks = append(currentToolResultBlocks, toolResultBlock)
+
+				// Keep the earliest timestamp for this message group
+				if currentToolTimestamp == 0 || createdAt < currentToolTimestamp {
+					currentToolTimestamp = createdAt
+				}
+
+				// Commit if role changed
+				if lastRole != roleTool && lastRole != "" {
+					s.commitPendingMessagesWithTimestamp(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
+						currentAssistantToolBlocks, currentToolResultBlocks, currentUserTimestamp, currentAssistantTimestamp, currentToolTimestamp)
+					currentUserTextBlocks = nil
+					currentAssistantTextBlocks = nil
+					currentAssistantToolBlocks = nil
+					currentToolResultBlocks = nil
+					currentUserTimestamp = 0
+					currentAssistantTimestamp = 0
+					currentToolTimestamp = 0
+					seenToolUseIDs = make(map[string]bool)
+					seenToolResultIDs = make(map[string]bool)
+				}
+			}
+		}
+
+		lastRole = role
+	}
+
+	// Commit any remaining messages
+	s.commitPendingMessagesWithTimestamp(&messages, currentUserTextBlocks, currentAssistantTextBlocks,
+		currentAssistantToolBlocks, currentToolResultBlocks, currentUserTimestamp, currentAssistantTimestamp, currentToolTimestamp)
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return messages, nil
+}
+
+// LoadMessagesWithTimestamps loads regular (non-system) messages with their timestamps.
+// Only loads messages after the most recent reset or compression break (if any).
+// This is used for LLM context - only messages after the break are sent to the model.
+func (s *chatService) LoadMessagesWithTimestamps(ctx context.Context, agentID, threadID string) ([]MessageWithTimestamp, error) {
+	// First, find the most recent context break (system message with type="reset" or "compress")
+	var breakTimestamp sql.NullInt64
+	breakQuery := sq.Select("content", "created_at").
+		From("conversations").
+		Where(sq.Eq{"agent_id": agentID}).
+		Where(sq.Eq{"thread_id": threadID}).
+		Where(sq.Eq{"role": roleSystem}).
+		OrderBy("created_at DESC")
+
+	breakQueryStr, breakArgs, err := breakQuery.ToSql()
+	if err == nil {
+		rows, err := s.db.QueryContext(ctx, breakQueryStr, breakArgs...)
+		if err == nil {
+			for rows.Next() {
+				var content string
+				var createdAt int64
+				if err := rows.Scan(&content, &createdAt); err == nil {
+					// Parse JSON to check if it's a reset or compress message
+					var msgData map[string]interface{}
+					if err := json.Unmarshal([]byte(content), &msgData); err == nil {
+						if msgType, ok := msgData["type"].(string); ok && (msgType == "reset" || msgType == "compress") {
+							breakTimestamp = sql.NullInt64{Int64: createdAt, Valid: true}
+							break
+						}
+					}
+				}
+			}
+			_ = rows.Close()
+		}
+	}
+
+	// Build main query - only load messages after the break (if any)
+	query := sq.Select("role", "content", "tool_name", "created_at").
+		From("conversations").
+		Where(sq.Eq{"agent_id": agentID}).
+		Where(sq.Eq{"thread_id": threadID}).
+		Where(sq.NotEq{"role": "system"}).
+		OrderBy("created_at ASC")
+
+	// If we found a break, only load messages after it
+	if breakTimestamp.Valid {
+		query = query.Where(sq.Gt{"created_at": breakTimestamp.Int64})
+	}
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
@@ -438,12 +705,50 @@ func (s *chatService) commitPendingMessagesWithTimestamp(
 
 // LoadThread loads conversation history for a given agent and thread ID.
 // Reconstructs proper Anthropic message structures from database rows.
+// Only loads messages after the most recent reset or compression break (if any).
 func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) ([]anthropic.MessageParam, error) {
+	// First, find the most recent context break (system message with type="reset" or "compress")
+	var breakTimestamp sql.NullInt64
+	breakQuery := sq.Select("content", "created_at").
+		From("conversations").
+		Where(sq.Eq{"agent_id": agentID}).
+		Where(sq.Eq{"thread_id": threadID}).
+		Where(sq.Eq{"role": roleSystem}).
+		OrderBy("created_at DESC")
+
+	breakQueryStr, breakArgs, err := breakQuery.ToSql()
+	if err == nil {
+		rows, err := s.db.QueryContext(ctx, breakQueryStr, breakArgs...)
+		if err == nil {
+			for rows.Next() {
+				var content string
+				var createdAt int64
+				if err := rows.Scan(&content, &createdAt); err == nil {
+					// Parse JSON to check if it's a reset or compress message
+					var msgData map[string]interface{}
+					if err := json.Unmarshal([]byte(content), &msgData); err == nil {
+						if msgType, ok := msgData["type"].(string); ok && (msgType == "reset" || msgType == "compress") {
+							breakTimestamp = sql.NullInt64{Int64: createdAt, Valid: true}
+							break
+						}
+					}
+				}
+			}
+			_ = rows.Close()
+		}
+	}
+
+	// Build main query - only load messages after the break (if any)
 	query := sq.Select("role", "content", "tool_name", "created_at").
 		From("conversations").
 		Where(sq.Eq{"agent_id": agentID}).
 		Where(sq.Eq{"thread_id": threadID}).
 		OrderBy("created_at ASC")
+
+	// If we found a break, only load messages after it
+	if breakTimestamp.Valid {
+		query = query.Where(sq.Gt{"created_at": breakTimestamp.Int64})
+	}
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
@@ -937,10 +1242,7 @@ func (s *chatService) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 
 	// Get LLM provider
 	if s.config != nil {
-		info.LLMProvider = s.config.LLMProvider
-		if info.LLMProvider == "" {
-			info.LLMProvider = "anthropic" // Default
-		}
+		info.LLMProvider = strings.Join(s.config.LLMProviders, ", ")
 	} else {
 		info.LLMProvider = "anthropic" // Default
 	}

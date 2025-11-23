@@ -53,8 +53,8 @@ type OpenAIConfig struct {
 
 // Config represents the application configuration.
 type Config struct {
-	LLMProvider          string                      `yaml:"llm_provider,omitempty"` // LLM provider selection: "anthropic", "ollama", or "openai" (default: "anthropic")
-	Anthropic            AnthropicConfig             `yaml:"anthropic,omitempty"`    // Anthropic LLM provider configuration
+	LLMProviders         []string                    `yaml:"llm_providers,omitempty"` // Array of enabled LLM providers: "anthropic", "ollama", "openai" (default: ["anthropic"])
+	Anthropic            AnthropicConfig             `yaml:"anthropic,omitempty"`     // Anthropic LLM provider configuration
 	Theme                string                      `yaml:"theme,omitempty"`
 	MCPServers           map[string]MCPServerSecrets `yaml:"mcp_servers,omitempty"`
 	ClaudeMCP            ClaudeMCPConfig             `yaml:"claude_mcp,omitempty"`
@@ -100,10 +100,11 @@ func LoadConfig(path string) (*Config, error) {
 	if _, err := os.Stat(expandedPath); os.IsNotExist(err) {
 		// File doesn't exist - return empty config (non-fatal)
 		cfg := &Config{
-			LLMProvider: "anthropic", // Default to Anthropic for backward compatibility
-			MCPServers:  make(map[string]MCPServerSecrets),
-			ChatTimeout: 60, // Default timeout
+			LLMProviders: []string{"anthropic"}, // Default to Anthropic for backward compatibility
+			MCPServers:   make(map[string]MCPServerSecrets),
+			ChatTimeout:  60, // Default timeout
 			MessageSummarization: MessageSummarization{
+				Enabled:       true,
 				Model:         "llama3.2:3b",
 				MaxChars:      2000,
 				MaxLines:      50,
@@ -135,9 +136,9 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.MCPServers = make(map[string]MCPServerSecrets)
 	}
 
-	// Set default LLM provider if not specified (anthropic for backward compatibility)
-	if cfg.LLMProvider == "" {
-		cfg.LLMProvider = "anthropic"
+	// Migrate LLM provider configuration: convert legacy llm_provider to llm_providers array
+	if len(cfg.LLMProviders) == 0 {
+		return nil, fmt.Errorf("llm_providers is required")
 	}
 
 	// Set default chat timeout if not specified (60 seconds)
@@ -146,6 +147,8 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	// Set default message summarization values if not specified
+	// TODO: fix to correctly enable/disable this
+	cfg.MessageSummarization.Enabled = true
 	if cfg.MessageSummarization.Model == "" {
 		cfg.MessageSummarization.Model = "llama3.2:3b"
 	}
@@ -190,8 +193,19 @@ func LoadConfig(path string) (*Config, error) {
 // applyLLMProviderEnvDefaults applies environment variable defaults and overrides for LLM provider selection.
 func applyLLMProviderEnvDefaults(cfg *Config) {
 	// Environment variable overrides config file
-	if envProvider := os.Getenv("STAFF_LLM_PROVIDER"); envProvider != "" {
-		cfg.LLMProvider = envProvider
+	// Support both STAFF_LLM_PROVIDER (legacy, single provider) and STAFF_LLM_PROVIDERS (comma-separated list)
+	if envProviders := os.Getenv("STAFF_LLM_PROVIDERS"); envProviders != "" {
+		// New format: comma-separated list
+		providers := strings.Split(envProviders, ",")
+		cfg.LLMProviders = make([]string, 0, len(providers))
+		for _, p := range providers {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				cfg.LLMProviders = append(cfg.LLMProviders, trimmed)
+			}
+		}
+	} else if envProvider := os.Getenv("STAFF_LLM_PROVIDER"); envProvider != "" {
+		// Legacy: single provider, convert to array
+		cfg.LLMProviders = []string{envProvider}
 	}
 }
 

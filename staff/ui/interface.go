@@ -79,7 +79,13 @@ type ChatService interface {
 	LoadSystemMessages(ctx context.Context, agentID, threadID string) ([]map[string]interface{}, error)
 
 	// LoadMessagesWithTimestamps loads regular (non-system) messages with their timestamps.
+	// Only loads messages after the most recent reset or compression break (if any).
+	// This is used for LLM context - only messages after the break are sent to the model.
 	LoadMessagesWithTimestamps(ctx context.Context, agentID, threadID string) ([]MessageWithTimestamp, error)
+
+	// LoadAllMessagesWithTimestamps loads ALL regular (non-system) messages with their timestamps.
+	// This is used for display purposes to show the full conversation history.
+	LoadAllMessagesWithTimestamps(ctx context.Context, agentID, threadID string) ([]MessageWithTimestamp, error)
 
 	// GetSystemInfo returns information about the system configuration.
 	GetSystemInfo(ctx context.Context) (*SystemInfo, error)
@@ -93,8 +99,10 @@ type MessageWithTimestamp struct {
 
 // AgentInfo provides basic information about an agent for UI display.
 type AgentInfo struct {
-	ID   string
-	Name string
+	ID       string
+	Name     string
+	Provider string // e.g., "anthropic", "ollama", "openai"
+	Model    string // e.g., "claude-sonnet-4-20250514"
 }
 
 // InboxItem represents an inbox notification item.

@@ -19,6 +19,7 @@ type ollamaStream struct {
 	events   []*llm.StreamEvent
 	current  int
 	mu       sync.Mutex
+	cond     *sync.Cond // Condition variable to wait for events
 	err      error
 	done     bool
 	started  bool
@@ -27,13 +28,15 @@ type ollamaStream struct {
 
 // newOllamaStream creates a new ollamaStream.
 func newOllamaStream(ctx context.Context, client *api.Client, req *api.ChatRequest) *ollamaStream {
-	return &ollamaStream{
+	stream := &ollamaStream{
 		ctx:     ctx,
 		client:  client,
 		req:     req,
 		events:  make([]*llm.StreamEvent, 0),
 		current: -1,
 	}
+	stream.cond = sync.NewCond(&stream.mu)
+	return stream
 }
 
 // Next advances to the next event in the stream.
@@ -41,19 +44,29 @@ func (s *ollamaStream) Next() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// If we haven't started, start the stream
+	// If we haven't started, start the stream in a goroutine
 	if !s.started {
 		s.started = true
-		s.startStream()
-	}
-
-	// If there's an error or we're done, return false
-	if s.err != nil || s.done {
-		return false
+		go s.startStream()
 	}
 
 	// Move to next event
 	s.current++
+
+	// Wait for events to be available if we've consumed all current events
+	// and the stream isn't done yet
+	for s.current >= len(s.events) && !s.done && s.err == nil {
+		s.cond.Wait()
+	}
+
+	// If there's an error or we're done and no more events, return false
+	if s.err != nil {
+		return false
+	}
+	if s.done && s.current >= len(s.events) {
+		return false
+	}
+
 	return s.current < len(s.events)
 }
 
@@ -85,18 +98,22 @@ func (s *ollamaStream) Close() error {
 
 // startStream starts the streaming request and processes responses.
 func (s *ollamaStream) startStream() {
-	// Emit start event
+	// Emit start event (lock required for shared state access)
+	s.mu.Lock()
 	s.events = append(s.events, &llm.StreamEvent{
-		Type: llm.StreamEventTypeStart,
+		Type:  llm.StreamEventTypeStart,
 		Delta: nil,
 		Usage: nil,
 		Done:  false,
 	})
+	s.cond.Broadcast() // Signal that a new event is available
+	s.mu.Unlock()
 
 	// Track accumulated content for tool calls
+	// Ollama sends incremental deltas (new tokens) in each response, not cumulative content
 	var accumulatedText strings.Builder
 	var currentToolCall *llm.ToolUseBlock
-	var toolInputBuilder strings.Builder
+	var isFirstContentBlock bool = true
 
 	// Call Chat with streaming callback
 	err := s.client.Chat(s.ctx, s.req, func(resp api.ChatResponse) error {
@@ -107,16 +124,25 @@ func (s *ollamaStream) startStream() {
 		s.response = &resp
 
 		// Handle message content deltas
+		// Ollama sends incremental deltas (just the new token), not cumulative content
 		if resp.Message.Content != "" {
-			// If we have accumulated text, check if we need to emit it
-			// For streaming, we get incremental content
-			contentDelta := resp.Message.Content
-			if accumulatedText.Len() > 0 {
-				// Calculate delta (new content since last update)
-				// This is simplified - in practice, Ollama may send full content or deltas
-				// We'll emit the content as a delta
-				delta := contentDelta[len(accumulatedText.String()):]
-				if len(delta) > 0 {
+			delta := resp.Message.Content
+			if delta != "" {
+				accumulatedText.WriteString(delta)
+
+				// Emit first content block, then deltas
+				if isFirstContentBlock {
+					s.events = append(s.events, &llm.StreamEvent{
+						Type: llm.StreamEventTypeContentBlock,
+						Delta: &llm.StreamDelta{
+							Type: llm.StreamDeltaTypeText,
+							Text: delta,
+						},
+						Usage: nil,
+						Done:  false,
+					})
+					isFirstContentBlock = false
+				} else {
 					s.events = append(s.events, &llm.StreamEvent{
 						Type: llm.StreamEventTypeContentDelta,
 						Delta: &llm.StreamDelta{
@@ -127,41 +153,15 @@ func (s *ollamaStream) startStream() {
 						Done:  false,
 					})
 				}
-			} else {
-				// First content block
-				s.events = append(s.events, &llm.StreamEvent{
-					Type: llm.StreamEventTypeContentBlock,
-					Delta: &llm.StreamDelta{
-						Type: llm.StreamDeltaTypeText,
-						Text: contentDelta,
-					},
-					Usage: nil,
-					Done:  false,
-				})
+				s.cond.Broadcast() // Signal that a new event is available
 			}
-			accumulatedText.Reset()
-			accumulatedText.WriteString(contentDelta)
 		}
 
 		// Handle tool calls
 		for _, toolCall := range resp.Message.ToolCalls {
 			// Check if this is a new tool call or continuation
 			if currentToolCall == nil || currentToolCall.Name != toolCall.Function.Name {
-				// New tool call
-				if currentToolCall != nil {
-					// Finish previous tool call
-					var input map[string]interface{}
-					if toolInputBuilder.Len() > 0 {
-						if err := json.Unmarshal([]byte(toolInputBuilder.String()), &input); err != nil {
-							input = make(map[string]interface{})
-						}
-					} else {
-						input = make(map[string]interface{})
-					}
-					currentToolCall.Input = input
-					toolInputBuilder.Reset()
-				}
-
+				// New tool call - previous one is already complete (Input already set)
 				// Start new tool call
 				toolUseID := fmt.Sprintf("tool_%s_%d", toolCall.Function.Name, len(s.events))
 				currentToolCall = &llm.ToolUseBlock{
@@ -179,15 +179,24 @@ func (s *ollamaStream) startStream() {
 					Usage: nil,
 					Done:  false,
 				})
+				s.cond.Broadcast() // Signal that a new event is available
 			}
 
 			// Accumulate tool input (Arguments is a map[string]any)
-			if toolCall.Function.Arguments != nil && len(toolCall.Function.Arguments) > 0 {
-				// Marshal arguments to JSON string for streaming
-				argsBytes, err := json.Marshal(toolCall.Function.Arguments)
+			// Ollama sends incremental updates, so we merge them directly into the map
+			if len(toolCall.Function.Arguments) > 0 {
+				// Merge new arguments into existing input map
+				if currentToolCall.Input == nil {
+					currentToolCall.Input = make(map[string]interface{})
+				}
+				for k, v := range toolCall.Function.Arguments {
+					currentToolCall.Input[k] = v
+				}
+
+				// Marshal the current merged state for streaming events
+				argsBytes, err := json.Marshal(currentToolCall.Input)
 				if err == nil {
 					argsStr := string(argsBytes)
-					toolInputBuilder.WriteString(argsStr)
 					s.events = append(s.events, &llm.StreamEvent{
 						Type: llm.StreamEventTypeContentDelta,
 						Delta: &llm.StreamDelta{
@@ -197,6 +206,7 @@ func (s *ollamaStream) startStream() {
 						Usage: nil,
 						Done:  false,
 					})
+					s.cond.Broadcast() // Signal that a new event is available
 				}
 			}
 		}
@@ -204,17 +214,9 @@ func (s *ollamaStream) startStream() {
 		// Check if done
 		if resp.Done {
 			// Finish any pending tool call
-			if currentToolCall != nil {
-				// Parse accumulated tool input
-				var input map[string]interface{}
-				if toolInputBuilder.Len() > 0 {
-					if err := json.Unmarshal([]byte(toolInputBuilder.String()), &input); err != nil {
-						input = make(map[string]interface{})
-					}
-				} else {
-					input = make(map[string]interface{})
-				}
-				currentToolCall.Input = input
+			// Input is already set from merging arguments above, no need to parse
+			if currentToolCall != nil && currentToolCall.Input == nil {
+				currentToolCall.Input = make(map[string]interface{})
 			}
 
 			// Emit usage if available
@@ -236,6 +238,7 @@ func (s *ollamaStream) startStream() {
 				Usage: usage,
 				Done:  false,
 			})
+			s.cond.Broadcast() // Signal that a new event is available
 
 			// Emit stop event
 			s.events = append(s.events, &llm.StreamEvent{
@@ -246,6 +249,7 @@ func (s *ollamaStream) startStream() {
 			})
 
 			s.done = true
+			s.cond.Broadcast() // Signal that stream is done
 		}
 
 		return nil
@@ -256,7 +260,6 @@ func (s *ollamaStream) startStream() {
 		defer s.mu.Unlock()
 		s.err = err
 		s.done = true
+		s.cond.Broadcast() // Signal that stream has an error
 	}
 }
-
-

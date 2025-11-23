@@ -43,10 +43,12 @@ func formatURLsAsHyperlinks(text string) string {
 
 func (a *App) showChat(agentID string) {
 	agents := a.chatService.ListAgents()
-	var agentName string
+	var agentName, provider, model string
 	for _, ag := range agents {
 		if ag.ID == agentID {
 			agentName = ag.Name
+			provider = ag.Provider
+			model = ag.Model
 			break
 		}
 	}
@@ -75,10 +77,15 @@ func (a *App) showChat(agentID string) {
 
 	// Chat history display
 	chatDisplay := tview.NewTextView()
+	title := fmt.Sprintf("Chat with %s", agentName)
+	if provider != "" && model != "" {
+		title += fmt.Sprintf(" (%s/%s)", provider, model)
+	}
+	title += " (Esc: back, Tab: focus input, /reset: reset context, /compress: compress context, exit: leave)"
 	chatDisplay.SetDynamicColors(true).
 		SetWordWrap(true).
 		SetBorder(true).
-		SetTitle(fmt.Sprintf("Chat with %s (Esc: back, Tab: focus input, /reset: reset context, /compress: compress context, exit: leave)", agentName))
+		SetTitle(title)
 	chatDisplay.SetScrollable(true)
 
 	// Display existing chat history
@@ -269,8 +276,8 @@ func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName,
 
 		var allMessages []messageItem
 
-		// Load regular messages with their actual timestamps
-		regularMsgsWithTimestamps, err := a.chatService.LoadMessagesWithTimestamps(ctx, agentID, threadID)
+		// Load regular messages with their actual timestamps (all messages for display)
+		regularMsgsWithTimestamps, err := a.chatService.LoadAllMessagesWithTimestamps(ctx, agentID, threadID)
 		if err != nil {
 			// Fallback: use history without timestamps (will sort by order)
 			for i, msg := range history {

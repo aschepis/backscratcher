@@ -31,13 +31,15 @@ type Crew struct {
 	MCPServers map[string]*MCPServerConfig
 	MCPClients map[string]mcp.MCPClient
 
-	apiKey string
-	mu     sync.RWMutex
+	apiKey      string
+	clientCache map[string]llm.Client // Cache for LLM clients by ClientKey
+	mu          sync.RWMutex
 }
 
 type CrewConfig struct {
-	Agents     map[string]*AgentConfig     `yaml:"agents" json:"agents"`
-	MCPServers map[string]*MCPServerConfig `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
+	LLMProviders []string                    `yaml:"llm_providers,omitempty" json:"llm_providers,omitempty"` // Array of enabled providers
+	Agents       map[string]*AgentConfig     `yaml:"agents" json:"agents"`
+	MCPServers   map[string]*MCPServerConfig `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
 }
 
 func NewCrew(apiKey string, db *sql.DB) *Crew {
@@ -57,6 +59,7 @@ func NewCrew(apiKey string, db *sql.DB) *Crew {
 		stateManager: stateManager,
 		statsManager: statsManager,
 		apiKey:       apiKey,
+		clientCache:  make(map[string]llm.Client),
 		MCPServers:   make(map[string]*MCPServerConfig),
 		MCPClients:   make(map[string]mcp.MCPClient),
 	}
@@ -117,47 +120,63 @@ func (c *Crew) LoadCrewConfig(cfg CrewConfig) error {
 	return nil
 }
 
-func (c *Crew) InitializeAgents(llmProvider string, ollamaHost, ollamaModel, openaiAPIKey, openaiBaseURL, openaiModel, openaiOrg string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
+	logger.Info("Initializing agents")
 
-	// Default to "anthropic" for backward compatibility
-	if llmProvider == "" {
-		llmProvider = "anthropic"
-	}
-
+	// Get a copy of agents to iterate over (to avoid holding lock during client creation)
+	c.mu.RLock()
+	agentsCopy := make(map[string]*AgentConfig)
 	for id, cfg := range c.Agents {
+		agentsCopy[id] = cfg
+	}
+	c.mu.RUnlock()
+
+	for id, cfg := range agentsCopy {
+		logger.Info("Initializing agent %s", id)
 		// Skip disabled agents - they don't need runners or state initialization
 		if cfg.Disabled {
 			logger.Info("Agent %s: disabled, skipping initialization", id)
 			continue
 		}
 
-		// Create LLM client with middleware
-		llmClient, err := createLLMClientWithMiddleware(
-			c.apiKey,
-			id,
-			cfg,
-			c.stateManager,
-			c.messagePersister,
-			c.messageSummarizer,
-			llmProvider,
-			ollamaHost,
-			ollamaModel,
-			openaiAPIKey,
-			openaiBaseURL,
-			openaiModel,
-			openaiOrg,
-		)
+		// Convert agent config to registry format
+		agentLLMConfig := llm.AgentLLMConfig{
+			LLMPreferences: make([]llm.LLMPreference, len(cfg.LLM)),
+			Model:          cfg.Model,
+		}
+		for i, pref := range cfg.LLM {
+			agentLLMConfig.LLMPreferences[i] = llm.LLMPreference{
+				Provider:    pref.Provider,
+				Model:       pref.Model,
+				Temperature: pref.Temperature,
+				APIKeyRef:   pref.APIKeyRef,
+			}
+		}
+
+		// Resolve LLM configuration using preference-based selection
+		logger.Info("Resolving LLM configuration for agent %s", id)
+		clientKey, err := registry.ResolveAgentLLMConfig(id, agentLLMConfig)
+		if err != nil {
+			return fmt.Errorf("failed to resolve LLM config for agent %s: %w", id, err)
+		}
+
+		// Get or create LLM client (with caching) - this may take time, so don't hold lock
+		logger.Info("Getting or creating LLM client for agent %s", id)
+		llmClient, err := c.getOrCreateClient(clientKey, id, cfg, registry)
 		if err != nil {
 			return fmt.Errorf("failed to create LLM client for agent %s: %w", id, err)
 		}
 
-		runner, err := NewAgentRunner(llmClient, NewAgent(id, cfg), c.ToolRegistry, c.ToolProvider, c.stateManager, c.statsManager, c.messagePersister, c.messageSummarizer)
+		logger.Info("Creating agent runner for agent %s", id)
+		runner, err := NewAgentRunner(llmClient, NewAgent(id, cfg), clientKey.Model, clientKey.Provider, c.ToolRegistry, c.ToolProvider, c.stateManager, c.statsManager, c.messagePersister, c.messageSummarizer)
 		if err != nil {
 			return fmt.Errorf("failed to create runner for agent %s: %w", id, err)
 		}
+
+		// Now acquire lock only to store the runner
+		c.mu.Lock()
 		c.Runners[id] = runner
+		c.mu.Unlock()
 		// Initialize agent state to idle if not exists
 		exists, err := c.stateManager.StateExists(id)
 		if err != nil {
@@ -218,7 +237,6 @@ func (c *Crew) InitializeAgents(llmProvider string, ollamaHost, ollamaModel, ope
 					return fmt.Errorf("failed to initialize agent state for %s: %w", id, err)
 				}
 			}
-			return nil
 		} else if cfg.StartupDelay != "" {
 			// Agent state already exists - check if we need to apply startup delay
 			// Startup delay should apply on every app startup if the agent is idle or doesn't have a next_wake set
@@ -381,55 +399,77 @@ func (c *Crew) GetRunner(agentID string) *AgentRunner {
 	return c.Runners[agentID]
 }
 
-// createLLMClientWithMiddleware creates an LLM client with rate limiting and compression middleware.
-// The provider is explicitly selected via llmProvider parameter ("anthropic", "ollama", or "openai").
-func createLLMClientWithMiddleware(
-	apiKey string,
-	agentID string,
-	agentConfig *AgentConfig,
-	stateManager *StateManager,
-	messagePersister MessagePersister,
-	messageSummarizer *MessageSummarizer,
-	llmProvider string, // Explicit provider selection: "anthropic", "ollama", or "openai"
-	ollamaHost string,
-	ollamaModel string,
-	openaiAPIKey string,
-	openaiBaseURL string,
-	openaiModel string,
-	openaiOrg string,
-) (llm.Client, error) {
+// getOrCreateClient gets or creates an LLM client for the given ClientKey with caching.
+// Clients are cached by ClientKey string representation to avoid creating duplicate clients.
+func (c *Crew) getOrCreateClient(key llm.ClientKey, agentID string, agentConfig *AgentConfig, registry *llm.ProviderRegistry) (llm.Client, error) {
+	// Create cache key from ClientKey
+	keyStr := fmt.Sprintf("%s:%s:%s:%s:%s:%s", key.Provider, key.Model, key.APIKey, key.Host, key.BaseURL, key.Organization)
+
+	// Check cache first with read lock
+	logger.Info("Checking cache for client %s", keyStr)
+	c.mu.RLock()
+	if client, ok := c.clientCache[keyStr]; ok {
+		c.mu.RUnlock()
+		// Client found in cache, but we still need to wrap with agent-specific middleware
+		return c.wrapClientWithMiddleware(client, agentID, agentConfig), nil
+	}
+	c.mu.RUnlock()
+
+	// Not in cache - create new base client (no lock held during creation)
 	var baseClient llm.Client
 	var err error
 
-	// Select provider based on explicit llmProvider parameter
-	switch llmProvider {
-	case "ollama":
-		// Create Ollama client
-		baseClient, err = llmollama.NewOllamaClient(ollamaHost, ollamaModel)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create ollama client: %w", err)
+	switch key.Provider {
+	case "anthropic":
+		if key.APIKey == "" {
+			return nil, fmt.Errorf("anthropic API key is required")
 		}
-	case "openai":
-		// Create OpenAI client
-		baseClient, err = llmopenai.NewOpenAIClient(openaiAPIKey, openaiBaseURL, openaiModel, openaiOrg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create openai client: %w", err)
-		}
-	case "anthropic", "":
-		// Default to Anthropic for backward compatibility
-		baseClient, err = llmanthropic.NewAnthropicClient(apiKey)
+		baseClient, err = llmanthropic.NewAnthropicClient(key.APIKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create anthropic client: %w", err)
 		}
+
+	case "ollama":
+		baseClient, err = llmollama.NewOllamaClient(key.Host, key.Model)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ollama client: %w", err)
+		}
+
+	case "openai":
+		if key.APIKey == "" {
+			return nil, fmt.Errorf("openai API key is required")
+		}
+		baseClient, err = llmopenai.NewOpenAIClient(key.APIKey, key.BaseURL, key.Model, key.Organization)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create openai client: %w", err)
+		}
+
 	default:
-		return nil, fmt.Errorf("unknown LLM provider: %s (must be 'anthropic', 'ollama', or 'openai')", llmProvider)
+		return nil, fmt.Errorf("unknown provider: %s", key.Provider)
 	}
 
+	// Cache the base client using double-checked locking pattern
+	c.mu.Lock()
+	// Double-check: another goroutine might have created it while we were creating
+	if existingClient, ok := c.clientCache[keyStr]; ok {
+		c.mu.Unlock()
+		// Use the existing client instead
+		return c.wrapClientWithMiddleware(existingClient, agentID, agentConfig), nil
+	}
+	c.clientCache[keyStr] = baseClient
+	c.mu.Unlock()
+
+	// Wrap with agent-specific middleware
+	return c.wrapClientWithMiddleware(baseClient, agentID, agentConfig), nil
+}
+
+// wrapClientWithMiddleware wraps a base client with agent-specific middleware.
+func (c *Crew) wrapClientWithMiddleware(baseClient llm.Client, agentID string, agentConfig *AgentConfig) llm.Client {
 	// Create middleware
 	var middleware []llm.Middleware
 
 	// Add rate limit middleware
-	rateLimitHandler := NewRateLimitHandler(stateManager)
+	rateLimitHandler := NewRateLimitHandler(c.stateManager)
 	rateLimitHandler.SetOnRateLimitCallback(func(agentID string, retryAfter time.Duration, attempt int) error {
 		logger.Info("Rate limit callback: agent %s will retry after %v (attempt %d)", agentID, retryAfter, attempt)
 		return nil
@@ -438,10 +478,10 @@ func createLLMClientWithMiddleware(
 	middleware = append(middleware, rateLimitMw)
 
 	// Add compression middleware if dependencies are provided
-	if messagePersister != nil && messageSummarizer != nil {
+	if c.messagePersister != nil && c.messageSummarizer != nil {
 		compressionMw := NewCompressionMiddleware(
-			messagePersister,
-			messageSummarizer,
+			c.messagePersister,
+			c.messageSummarizer,
 			agentID,
 			agentConfig.System,
 		)
@@ -450,8 +490,8 @@ func createLLMClientWithMiddleware(
 
 	// Wrap client with middleware
 	if len(middleware) > 0 {
-		return llm.WrapWithMiddleware(baseClient, middleware...), nil
+		return llm.WrapWithMiddleware(baseClient, middleware...)
 	}
 
-	return baseClient, nil
+	return baseClient
 }

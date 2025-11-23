@@ -1,0 +1,11 @@
+{
+  "configurations": [
+    {
+      "name": "Attach to Go Process",
+      "type": "go",
+      "request": "attach",
+      "mode": "local",
+      "processId": 0
+    }
+  ]
+}

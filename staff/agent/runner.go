@@ -38,6 +38,8 @@ type MessagePersister interface {
 type AgentRunner struct {
 	llmClient         llm.Client
 	agent             *Agent
+	resolvedModel     string // Model resolved from LLM preferences (not the legacy agent.Config.Model)
+	resolvedProvider  string // Provider resolved from LLM preferences
 	toolExec          ToolExecutor
 	toolProvider      ToolProvider
 	stateManager      *StateManager
@@ -151,6 +153,8 @@ func (r *AgentRunner) summarizeToolResult(ctx context.Context, result any) (any,
 func NewAgentRunner(
 	llmClient llm.Client,
 	agent *Agent,
+	resolvedModel string, // Model resolved from LLM preferences
+	resolvedProvider string, // Provider resolved from LLM preferences
 	toolExec ToolExecutor,
 	toolProvider ToolProvider,
 	stateManager *StateManager,
@@ -184,6 +188,8 @@ func NewAgentRunner(
 	return &AgentRunner{
 		llmClient:         llmClient,
 		agent:             agent,
+		resolvedModel:     resolvedModel,
+		resolvedProvider:  resolvedProvider,
 		toolExec:          toolExec,
 		toolProvider:      toolProvider,
 		stateManager:      stateManager,
@@ -192,6 +198,16 @@ func NewAgentRunner(
 		messageSummarizer: messageSummarizer,
 		rateLimitHandler:  rateLimitHandler,
 	}, nil
+}
+
+// GetResolvedModel returns the model resolved from LLM preferences.
+func (r *AgentRunner) GetResolvedModel() string {
+	return r.resolvedModel
+}
+
+// GetResolvedProvider returns the provider resolved from LLM preferences.
+func (r *AgentRunner) GetResolvedProvider() string {
+	return r.resolvedProvider
 }
 
 // buildSystemBlocks moved to llm/anthropic/client.go
@@ -275,16 +291,27 @@ func (r *AgentRunner) updateAgentStateAfterExecution(executionSuccessful bool, e
 }
 
 // AgentConfig is the per-agent config you already have.
+// LLMPreference represents a single provider/model preference for an agent.
+// Agents can specify multiple preferences in order, and the system will use
+// the first available provider from the preference list.
+type LLMPreference struct {
+	Provider    string   `yaml:"provider" json:"provider"`                           // Required: "anthropic", "ollama", or "openai"
+	Model       string   `yaml:"model,omitempty" json:"model,omitempty"`             // Optional: uses provider default if omitted
+	Temperature *float64 `yaml:"temperature,omitempty" json:"temperature,omitempty"` // Optional temperature override
+	APIKeyRef   string   `yaml:"api_key_ref,omitempty" json:"api_key_ref,omitempty"` // Future: reference to credential store
+}
+
 type AgentConfig struct {
-	ID           string   `yaml:"id" json:"id"`
-	Name         string   `yaml:"name" json:"name"`
-	System       string   `yaml:"system_prompt" json:"system"`
-	Model        string   `yaml:"model" json:"model"`
-	MaxTokens    int64    `yaml:"max_tokens" json:"max_tokens"`
-	Tools        []string `yaml:"tools" json:"tools"`
-	Schedule     string   `yaml:"schedule" json:"schedule"`           // e.g., "15m", "2h", "0 */15 * * * *" (cron)
-	Disabled     bool     `yaml:"disabled" json:"disabled"`           // default: false (agent is enabled by default)
-	StartupDelay string   `yaml:"startup_delay" json:"startup_delay"` // e.g., "5m", "30s", "1h" - one-time delay after app launch
+	ID           string          `yaml:"id" json:"id"`
+	Name         string          `yaml:"name" json:"name"`
+	System       string          `yaml:"system_prompt" json:"system"`
+	Model        string          `yaml:"model" json:"model"` // Legacy: used when LLM preferences not specified
+	MaxTokens    int64           `yaml:"max_tokens" json:"max_tokens"`
+	Tools        []string        `yaml:"tools" json:"tools"`
+	Schedule     string          `yaml:"schedule" json:"schedule"`           // e.g., "15m", "2h", "0 */15 * * * *" (cron)
+	Disabled     bool            `yaml:"disabled" json:"disabled"`           // default: false (agent is enabled by default)
+	StartupDelay string          `yaml:"startup_delay" json:"startup_delay"` // e.g., "5m", "30s", "1h" - one-time delay after app launch
+	LLM          []LLMPreference `yaml:"llm,omitempty" json:"llm,omitempty"` // Ordered list of provider/model preferences
 }
 
 // calculateInputTextLength moved to context_manager.go as GetContextSize
@@ -300,8 +327,8 @@ func (r *AgentRunner) RunAgent(
 	if r.agent == nil {
 		return "", errors.New("agent is nil")
 	}
-	if r.agent.Config.Model == "" {
-		return "", errors.New("agent.Model is required")
+	if r.resolvedModel == "" {
+		return "", errors.New("resolved model is required")
 	}
 
 	// Set state to running at start of execution
@@ -326,7 +353,7 @@ func (r *AgentRunner) RunAgent(
 	llmHistory := convertAnthropicMessagesToLLM(history)
 
 	// Prepare LLM request
-	req := prepareLLMRequest(r.agent, userMsg, llmHistory, r.toolProvider)
+	req := prepareLLMRequest(r.agent, r.resolvedModel, userMsg, llmHistory, r.toolProvider)
 
 	// Execute tool loop
 	result, err := executeToolLoop(
@@ -359,7 +386,6 @@ func (r *AgentRunner) RunAgent(
 // RunAgentStream executes a single turn for an agent with streaming support.
 // It calls the callback function for each text delta received.
 // debugCallback is retrieved from context if available.
-// TODO: Refactor to use llm.Client.Stream() similar to RunAgent()
 func (r *AgentRunner) RunAgentStream(
 	ctx context.Context,
 	threadID string,
@@ -367,9 +393,64 @@ func (r *AgentRunner) RunAgentStream(
 	history []anthropicsdk.MessageParam,
 	callback StreamCallback,
 ) (string, error) {
-	// For now, fall back to non-streaming implementation
-	// TODO: Implement proper streaming using r.llmClient.Stream()
-	return r.RunAgent(ctx, threadID, userMsg, history)
+	if r.agent == nil {
+		return "", errors.New("agent is nil")
+	}
+	if r.resolvedModel == "" {
+		return "", errors.New("resolved model is required")
+	}
+
+	// Set state to running at start of execution
+	if err := r.stateManager.SetState(r.agent.ID, StateRunning); err != nil {
+		// Log error but don't fail execution
+		logger.Warn("failed to set agent state to running: %v", err)
+	}
+
+	// Track if execution was successful
+	executionSuccessful := false
+	executionError := ""
+
+	// Ensure state is updated when execution completes (normal or error)
+	defer func() {
+		r.updateAgentStateAfterExecution(executionSuccessful, executionError)
+	}()
+
+	// Get debug callback from context
+	debugCallback, _ := GetDebugCallback(ctx)
+
+	// Convert history from Anthropic types to llm types
+	llmHistory := convertAnthropicMessagesToLLM(history)
+
+	// Prepare LLM request
+	req := prepareLLMRequest(r.agent, r.resolvedModel, userMsg, llmHistory, r.toolProvider)
+
+	// Execute tool loop with streaming
+	result, err := executeToolLoopStream(
+		ctx,
+		r.llmClient,
+		req,
+		r.agent.ID,
+		threadID,
+		r.toolExec,
+		r.messagePersister,
+		r.messageSummarizer,
+		debugCallback,
+		callback,
+	)
+
+	if err != nil {
+		// Check if this is a rate limit error that was scheduled for retry
+		if IsRateLimitError(err) && strings.Contains(err.Error(), "will retry at scheduled time") {
+			// This is expected - agent will retry later via scheduler
+			executionError = err.Error()
+			return "", err
+		}
+		executionError = err.Error()
+		return "", err
+	}
+
+	executionSuccessful = true
+	return result, nil
 }
 
 // GetMessageSummarizer returns the message summarizer for this runner.

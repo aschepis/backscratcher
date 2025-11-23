@@ -91,20 +91,23 @@ func Info(format string, v ...interface{}) {
 
 	// Log to file
 	if fileHandler != nil {
-		fileHandler.Handle(context.Background(), slog.NewRecord(
+		_ = fileHandler.Handle(context.Background(), slog.NewRecord(
 			time.Now(), slog.LevelInfo, msg, 0,
-		))
+		)) //nolint:errcheck // No remedy for log errors
 	}
 
 	// Log to console (unless suppressed)
-	mu.RLock()
-	suppress := suppressConsole
-	mu.RUnlock()
+	var suppress bool
+	func() {
+		mu.RLock()
+		defer mu.RUnlock()
+		suppress = suppressConsole
+	}()
 
 	if !suppress && consoleHandler != nil && slog.LevelInfo >= logLevel {
-		consoleHandler.Handle(context.Background(), slog.NewRecord(
+		_ = consoleHandler.Handle(context.Background(), slog.NewRecord(
 			time.Now(), slog.LevelInfo, msg, 0,
-		))
+		)) //nolint:errcheck // No remedy for log errors
 	}
 }
 

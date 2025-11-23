@@ -3,17 +3,17 @@ package agent
 import (
 	"context"
 
-	"github.com/aschepis/backscratcher/staff/contextkeys"
+	ctxpkg "github.com/aschepis/backscratcher/staff/context"
 )
 
 // WithDebugCallback adds a DebugCallback to the context
 func WithDebugCallback(ctx context.Context, cb DebugCallback) context.Context {
-	return context.WithValue(ctx, contextkeys.DebugCallbackKey{}, cb)
+	return ctxpkg.WithDebugCallback(ctx, cb)
 }
 
 // GetDebugCallback retrieves a DebugCallback from the context.
 // Returns the callback and a bool indicating if it was set.
 func GetDebugCallback(ctx context.Context) (DebugCallback, bool) {
-	cb, ok := ctx.Value(contextkeys.DebugCallbackKey{}).(DebugCallback)
-	return cb, ok
+	cb, ok := ctxpkg.GetDebugCallback(ctx)
+	return DebugCallback(cb), ok
 }

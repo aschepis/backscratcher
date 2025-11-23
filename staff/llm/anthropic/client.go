@@ -113,11 +113,37 @@ func (c *AnthropicClient) Synchronous(ctx context.Context, req *llm.Request) (*l
 }
 
 // Stream implements llm.Client.Stream.
-// TODO: Implement proper streaming support - this is a placeholder
 func (c *AnthropicClient) Stream(ctx context.Context, req *llm.Request) (llm.Stream, error) {
-	// For now, return an error indicating streaming is not yet implemented
-	// This will be implemented in a future phase
-	return nil, fmt.Errorf("streaming not yet implemented for Anthropic client")
+	if req == nil {
+		return nil, fmt.Errorf("request is required")
+	}
+
+	// Convert tools
+	tools := ToToolUnionParams(req.Tools)
+
+	// Convert messages
+	anthropicMsgs, err := ToMessageParams(req.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert messages: %w", err)
+	}
+
+	// Build system blocks with prompt caching
+	systemBlocks := buildSystemBlocks(req.System, tools)
+
+	// Create API params
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(req.Model),
+		MaxTokens: req.MaxTokens,
+		Messages:  anthropicMsgs,
+		System:    systemBlocks,
+		Tools:     tools,
+	}
+
+	// Create streaming request
+	stream := c.client.Messages.NewStreaming(ctx, params)
+
+	// Create and return our stream wrapper
+	return newAnthropicStream(ctx, stream), nil
 }
 
 // buildSystemBlocks creates system text blocks with prompt caching enabled if appropriate.

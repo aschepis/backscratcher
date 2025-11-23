@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/aschepis/backscratcher/staff/agent"
 	"github.com/aschepis/backscratcher/staff/config"
+	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/mcp"
 	"github.com/aschepis/backscratcher/staff/memory"
@@ -530,6 +532,11 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerCon
 				}
 			}
 
+			// Log the raw schema for debugging
+			if schemaBytes, err := json.MarshalIndent(schema, "", "  "); err == nil {
+				logger.Debug("Registering MCP tool schema for %s (original: %s) from server %s:\n%s", safeName, originalName, serverName, string(schemaBytes))
+			}
+
 			crew.ToolProvider.RegisterSchemaWithServer(safeName, agent.ToolSchema{
 				Description: tool.Description,
 				Schema:      schema,
@@ -779,6 +786,7 @@ func main() {
 	registerMCPServers(crew, cfg.MCPServers)
 
 	// Initialize message summarizer if enabled
+	// TODO: configuration of this is broken.
 	if appConfig.MessageSummarization.Enabled {
 		logger.Info("Message summarization is enabled, initializing Ollama summarizer (model: %s)", appConfig.MessageSummarization.Model)
 		// Convert config.MessageSummarization to agent.MessageSummarizationConfig to avoid import cycle
@@ -806,6 +814,7 @@ func main() {
 	// 4. Create Chat Service (must be before InitializeAgents)
 	// ---------------------------
 
+	logger.Info("Creating chat service")
 	// Get chat timeout: env var takes precedence, then config file, then default (60)
 	chatTimeout := 60 // default
 	if envTimeout := os.Getenv("STAFF_CHAT_TIMEOUT"); envTimeout != "" {
@@ -818,14 +827,44 @@ func main() {
 	chatService := ui.NewChatService(crew, db, chatTimeout, appConfig)
 
 	// Initialize AgentRunners (after message persister is set)
-	// Extract provider-specific config values
-	llmProvider := appConfig.LLMProvider
-	if llmProvider == "" {
-		llmProvider = "anthropic" // Default for backward compatibility
+	// Extract enabled providers from config (support both array and legacy string)
+	logger.Info("Extracting enabled providers from config")
+	enabledProviders := appConfig.LLMProviders
+	if len(enabledProviders) == 0 {
+		// TODO: remove default. this should be configured and enforced by the config file.
+		enabledProviders = []string{"anthropic"} // Default
+	}
+
+	// Also check agents.yaml for llm_providers (takes precedence if present)
+	if len(cfg.LLMProviders) > 0 {
+		logger.Info("Using LLM providers from agents.yaml: %v", cfg.LLMProviders)
+		enabledProviders = cfg.LLMProviders
+	}
+
+	// Validate at least one provider is enabled
+	if len(enabledProviders) == 0 {
+		log.Fatalf("No LLM providers enabled. Please configure llm_providers in config file or agents.yaml")
+	}
+
+	// Create provider config from appConfig
+	providerConfig := llm.ProviderConfig{
+		AnthropicAPIKey: config.LoadAnthropicConfig(appConfig),
 	}
 	ollamaHost, ollamaModel := config.LoadOllamaConfig(appConfig)
+	providerConfig.OllamaHost = ollamaHost
+	providerConfig.OllamaModel = ollamaModel
 	openaiAPIKey, openaiBaseURL, openaiModel, openaiOrg := config.LoadOpenAIConfig(appConfig)
-	if err := crew.InitializeAgents(llmProvider, ollamaHost, ollamaModel, openaiAPIKey, openaiBaseURL, openaiModel, openaiOrg); err != nil {
+	providerConfig.OpenAIAPIKey = openaiAPIKey
+	providerConfig.OpenAIBaseURL = openaiBaseURL
+	providerConfig.OpenAIModel = openaiModel
+	providerConfig.OpenAIOrg = openaiOrg
+
+	// Create provider registry
+	logger.Info("Creating provider registry with enabled providers: %v", enabledProviders)
+	registry := llm.NewProviderRegistry(providerConfig, enabledProviders)
+
+	// Initialize agents with registry
+	if err := crew.InitializeAgents(registry); err != nil {
 		logger.Error("Failed to initialize agents: %v", err)
 		log.Fatalf("Failed to initialize agents: %v", err)
 	}

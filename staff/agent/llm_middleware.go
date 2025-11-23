@@ -41,7 +41,7 @@ func (m *RateLimitMiddleware) AfterResponse(ctx context.Context, req *llm.Reques
 // OnError implements llm.Middleware.OnError.
 func (m *RateLimitMiddleware) OnError(ctx context.Context, req *llm.Request, err error) error {
 	if err == nil {
-		return err
+		return nil
 	}
 
 	// Check if this is a rate limit error
@@ -162,7 +162,7 @@ func (m *CompressionMiddleware) AfterResponse(ctx context.Context, req *llm.Requ
 // OnError implements llm.Middleware.OnError.
 func (m *CompressionMiddleware) OnError(ctx context.Context, req *llm.Request, err error) error {
 	if err == nil {
-		return err
+		return nil
 	}
 
 	// Check if this is a 413 error (request too large)

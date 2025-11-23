@@ -103,8 +103,39 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []anthropic.Tool
 		props, _ := schema.Schema["properties"].(map[string]any)
 
 		var required []string
-		if req, ok := schema.Schema["required"].([]string); ok {
-			required = req
+		requiredRaw := schema.Schema["required"]
+		if requiredRaw != nil {
+			switch req := requiredRaw.(type) {
+			case []string:
+				required = req
+				logger.Debug("Extracted required fields ([]string) for tool %s: %v", name, required)
+			case []any:
+				// Handle case where JSON unmarshaling produces []interface{} instead of []string
+				// Note: []any is an alias for []interface{}, so this handles both
+				required = make([]string, 0, len(req))
+				for _, v := range req {
+					if str, ok := v.(string); ok {
+						required = append(required, str)
+					}
+				}
+				logger.Debug("Extracted required fields ([]any/[]interface{}) for tool %s: %v (from raw: %v)", name, required, requiredRaw)
+			default:
+				logger.Warn("Tool %s has 'required' field with unexpected type: %T (value: %v). Attempting to convert...", name, requiredRaw, requiredRaw)
+				// Last resort: try to convert via type assertion to []interface{}
+				if reqSlice, ok := requiredRaw.([]interface{}); ok {
+					required = make([]string, 0, len(reqSlice))
+					for _, v := range reqSlice {
+						if str, ok := v.(string); ok {
+							required = append(required, str)
+						}
+					}
+					logger.Debug("Converted required fields for tool %s: %v", name, required)
+				} else {
+					logger.Error("Failed to extract required fields for tool %s: type %T cannot be converted", name, requiredRaw)
+				}
+			}
+		} else {
+			logger.Debug("Tool %s has no 'required' field in schema", name)
 		}
 
 		// Extra fields (e.g. descriptions) go into ExtraFields
@@ -125,6 +156,8 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []anthropic.Tool
 				ExtraFields: extra,
 			},
 		}
+
+		logger.Debug("Tool schema for %s: required=%v, properties=%v", name, required, getPropertyNames(props))
 
 		out = append(out,
 			anthropic.ToolUnionParam{OfTool: &tp},
@@ -253,4 +286,16 @@ func getMapKeys(m map[string][]string) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// getPropertyNames returns the names of properties in a schema properties map
+func getPropertyNames(props map[string]any) []string {
+	if props == nil {
+		return nil
+	}
+	names := make([]string, 0, len(props))
+	for k := range props {
+		names = append(names, k)
+	}
+	return names
 }

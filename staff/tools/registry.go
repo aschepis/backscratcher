@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/aschepis/backscratcher/staff/contextkeys"
+	ctxpkg "github.com/aschepis/backscratcher/staff/context"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/memory"
 )
@@ -38,10 +38,7 @@ func (r *Registry) Register(name string, h ToolHandler) {
 func (r *Registry) Handle(ctx context.Context, toolName, agentID string, argsStr []byte) (any, error) {
 	logger.Info("Handling tool call: tool=%s agentID=%s", toolName, agentID)
 	// Get debug callback from context using the shared context key
-	var dbg func(string)
-	if cb, ok := ctx.Value(contextkeys.DebugCallbackKey{}).(func(string)); ok {
-		dbg = cb
-	}
+	dbg, _ := ctxpkg.GetDebugCallback(ctx)
 	args := json.RawMessage(argsStr)
 	h, ok := r.handlers[toolName]
 	if !ok {

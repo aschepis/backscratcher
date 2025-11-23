@@ -1,13 +1,18 @@
 # Ollama configuration
 ollama:
   host: "http://localhost:11434"
-  model: "gpt-oss:20b"
+  model: "llama3.2:3b"
   timeout: 60
 openai:
   api_key: "OPENAI_API_KEY"
 anthropic:
   api_key: "ANTHROPIC_API_KEY"
-llm_provider: "anthropic"
+# LLM providers enabled for use (agents can specify preferences or use first enabled provider)
+llm_providers:
+#  - anthropic
+  - ollama
+  # - openai
+chat_timeout: 6000 # 100 minutes
 # MCP server configuration
 mcp_servers:
   # domain_lookup:
@@ -160,7 +165,11 @@ agents:
       When you receive a "continue" message, you should post a notification to the user
       asking if they'd like to chat, using the send_user_notification tool. Set requires_response
       to false as this is just an invitation - no response is required.
-    model: claude-sonnet-4-20250514
+    llm:
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
+      - provider: ollama
+        model: llama3.2:3b
     max_tokens: 2048
     startup_delay: 10s
     schedule: "24h"
@@ -179,7 +188,11 @@ agents:
   chief_of_staff:
     id: chief_of_staff
     name: Chief of Staff
-    model: claude-sonnet-4-20250514
+    llm:
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
+      - provider: ollama
+        model: llama3.2:3b
     description: >
       A strategic oversight agent responsible for monitoring all agents,
       evaluating performance, analyzing tool usage, recommending new agents ("hires"),
@@ -212,7 +225,7 @@ agents:
 
       # MCP related tools
       - github:*
-      - "google-workspace:*"
+      - "claude_google-workspace:*"
 
     system_prompt: |
       You are the Chief of Staff for the user's Staff system.
@@ -279,7 +292,11 @@ agents:
   config_agent:
     id: config_agent
     name: Config Agent
-    model: claude-haiku-4-5
+    llm:
+      - provider: anthropic
+        model: claude-haiku-4-5
+      - provider: ollama
+        model: llama3.2:3b
     description: >
       An advisory-only configuration analysis agent that inspects MCP servers,
       evaluates their configuration, identifies missing required fields,
@@ -398,7 +415,11 @@ agents:
   email_digest:
     id: email_digest
     name: Email Digest Agent
-    model: claude-sonnet-4-20250514
+    llm:
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
+      - provider: ollama
+        model: llama3.2:3b
     description: >
       An intelligent email digest agent that processes Gmail messages using stored filters
       to create multiple categorized digests. Runs daily to provide organized summaries
@@ -411,7 +432,7 @@ agents:
 
     tools:
       # Gmail access
-      - "google-workspace:*"
+      - "claude_google-workspace:*"
       - "*gmail*"
 
       # Memory management for filters and preferences
