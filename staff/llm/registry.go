@@ -151,12 +151,8 @@ func (r *ProviderRegistry) ResolveAgentLLMConfig(agentID string, agentCfg AgentL
 func (r *ProviderRegistry) isProviderConfiguredUnlocked(provider string) bool {
 	switch provider {
 	case providerAnthropic:
-		// Check config first, then environment
-		apiKey := r.config.AnthropicAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("ANTHROPIC_API_KEY")
-		}
-		return apiKey != ""
+		// Check config only
+		return r.config.AnthropicAPIKey != ""
 	case providerOllama:
 		// Ollama doesn't require API key, just needs host (which has a default)
 		return true
@@ -181,15 +177,11 @@ func (r *ProviderRegistry) resolveProviderConfig(provider, modelOverride string)
 
 	switch provider {
 	case providerAnthropic:
-		// Get API key from config or environment
-		apiKey := r.config.AnthropicAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("ANTHROPIC_API_KEY")
-		}
-		if apiKey == "" {
+		// Get API key from config
+		if r.config.AnthropicAPIKey == "" {
 			return nil, fmt.Errorf("anthropic API key not configured")
 		}
-		key.APIKey = apiKey
+		key.APIKey = r.config.AnthropicAPIKey
 		// If model not specified, use a default (will be overridden by agent's model field if present)
 		if key.Model == "" {
 			key.Model = "claude-haiku-4-5" // Default Anthropic model

@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/aschepis/backscratcher/staff/agent"
 	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
@@ -435,7 +433,7 @@ func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, works
 }
 
 // registerMCPServers discovers and registers tools from MCP servers.
-func registerMCPServers(crew *agent.Crew, servers map[string]*agent.MCPServerConfig) {
+func registerMCPServers(crew *agent.Crew, servers map[string]*config.MCPServerConfig) {
 	logger.Info("registerMCPServers: starting registration for %d MCP server(s)", len(servers))
 	if len(servers) == 0 {
 		logger.Info("No MCP servers configured")
@@ -561,25 +559,22 @@ func main() {
 
 	logger.Info("Starting Staff application")
 
-	// Load configuration file
+	// Load unified configuration (includes defaults, agents.yaml, and user config)
 	configPath := config.GetConfigPath()
 	appConfig, err := config.LoadConfig(configPath)
 	if err != nil {
-		logger.Warn("Failed to load config file %q: %v (using environment variables)", configPath, err)
-		appConfig = &config.Config{MCPServers: make(map[string]config.MCPServerSecrets)}
-	} else {
-		logger.Info("Loaded configuration from %q", configPath)
+		logger.Error("Failed to load configuration: %v", err)
+		_ = logger.Close()                                  //nolint:errcheck // Closing before fatal exit
+		log.Fatalf("Failed to load configuration: %v", err) //nolint:gocritic // Fatal exit
 	}
+	logger.Info("Loaded unified configuration (defaults + agents.yaml + user config)")
 
-	// Get Anthropic API key: env var takes precedence, then config file
-	anthropicAPIKey := os.Getenv("ANTHROPIC_API_KEY")
+	// Get Anthropic API key from config file
+	anthropicAPIKey := appConfig.Anthropic.APIKey
 	if anthropicAPIKey == "" {
-		anthropicAPIKey = appConfig.Anthropic.APIKey
-	}
-	if anthropicAPIKey == "" {
-		logger.Error("Missing ANTHROPIC_API_KEY (not found in environment or config file)")
-		_ = logger.Close()                      //nolint:errcheck // Closing before fatal exit
-		log.Fatalf("Missing ANTHROPIC_API_KEY") //nolint:gocritic // Fatal exit
+		logger.Error("Missing anthropic.api_key in config file")
+		_ = logger.Close()                                     //nolint:errcheck // Closing before fatal exit
+		log.Fatalf("Missing anthropic.api_key in config file") //nolint:gocritic // Fatal exit
 	}
 
 	// ---------------------------
@@ -633,57 +628,9 @@ func main() {
 	// Register all tools (handlers and schemas)
 	registerAllTools(crew, memoryRouter, workspacePath, db, crew.StateManager(), anthropicAPIKey)
 
-	// ---------------------------
-	// 3. Load Agents from YAML
-	// ---------------------------
-
-	logger.Info("Loading agent configuration")
-	agentsConfigPath := "agents.yaml"
-	if envPath := os.Getenv("AGENTS_CONFIG"); envPath != "" {
-		agentsConfigPath = envPath
-	}
-
-	// Read agents.yaml as bytes for merging
-	agentsYAML, err := os.ReadFile(agentsConfigPath)
-	if err != nil {
-		logger.Error("Failed to read agent config from %q: %v", agentsConfigPath, err)
-		log.Fatalf("Failed to read agent config from %q: %v", agentsConfigPath, err)
-	}
-
-	// Merge MCP server configs from config file with agents.yaml
-	mergedYAML, err := config.MergeMCPServerConfigs(agentsYAML, appConfig.MCPServers)
-	if err != nil {
-		logger.Warn("Failed to merge MCP server configs: %v (using agents.yaml as-is)", err)
-		mergedYAML = agentsYAML
-	} else {
-		logger.Info("Merged MCP server configurations from config file with agents.yaml")
-	}
-
-	// Parse the merged YAML
-	var cfg agent.CrewConfig
-	if err := yaml.Unmarshal(mergedYAML, &cfg); err != nil {
-		logger.Error("Failed to parse merged agent config: %v", err)
-		log.Fatalf("Failed to parse merged agent config: %v", err)
-	}
-
-	// Ensure IDs are set if missing (use map key) and apply smart defaults
-	for id, agentCfg := range cfg.Agents {
-		if agentCfg.ID == "" {
-			agentCfg.ID = id
-		}
-		// Set smart defaults for agent values
-		if agentCfg.Name == "" {
-			agentCfg.Name = agentCfg.ID
-		}
-		if agentCfg.MaxTokens == 0 {
-			agentCfg.MaxTokens = 2048
-		}
-		if agentCfg.Model == "" {
-			agentCfg.Model = "claude-haiku-4-5"
-		}
-	}
-
-	if err := crew.LoadCrewConfig(cfg); err != nil {
+	// Load crew config from unified config
+	// Note: Smart defaults for agents are already applied in LoadConfig
+	if err := crew.LoadCrewConfig(appConfig); err != nil {
 		logger.Error("Failed to load crew config: %v", err)
 		log.Fatalf("Failed to load crew config: %v", err)
 	}
@@ -730,8 +677,8 @@ func main() {
 					addedCount := 0
 					skippedCount := 0
 					for name, serverCfg := range mappedServers {
-						if _, exists := cfg.MCPServers[name]; !exists {
-							cfg.MCPServers[name] = serverCfg
+						if _, exists := appConfig.MCPServers[name]; !exists {
+							appConfig.MCPServers[name] = serverCfg
 							logger.Info("Added Claude MCP server: %s (from project config)", name)
 							addedCount++
 						} else {
@@ -777,8 +724,8 @@ func main() {
 	}
 
 	// Register MCP servers and their tools
-	logger.Info("Starting MCP server registration for %d total server(s) (from agents.yaml and Claude config)", len(cfg.MCPServers))
-	registerMCPServers(crew, cfg.MCPServers)
+	logger.Info("Starting MCP server registration for %d total server(s) (from agents.yaml and Claude config)", len(appConfig.MCPServers))
+	registerMCPServers(crew, appConfig.MCPServers)
 
 	// Initialize message summarizer if enabled
 	if !appConfig.MessageSummarization.Disabled {
@@ -820,18 +767,12 @@ func main() {
 	chatService := ui.NewChatService(crew, db, chatTimeout, appConfig)
 
 	// Initialize AgentRunners (after message persister is set)
-	// Extract enabled providers from config (support both array and legacy string)
+	// Extract enabled providers from config
 	logger.Info("Extracting enabled providers from config")
 	enabledProviders := appConfig.LLMProviders
 	if len(enabledProviders) == 0 {
 		// TODO: remove default. this should be configured and enforced by the config file.
 		enabledProviders = []string{"anthropic"} // Default
-	}
-
-	// Also check agents.yaml for llm_providers (takes precedence if present)
-	if len(cfg.LLMProviders) > 0 {
-		logger.Info("Using LLM providers from agents.yaml: %v", cfg.LLMProviders)
-		enabledProviders = cfg.LLMProviders
 	}
 
 	// Validate at least one provider is enabled

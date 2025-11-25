@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aschepis/backscratcher/staff/agent"
 	"github.com/aschepis/backscratcher/staff/logger"
 )
 
@@ -108,9 +107,9 @@ func LoadClaudeConfig(path string) (*ClaudeConfig, error) {
 
 // MapClaudeToMCPServerConfig converts Claude MCP server configurations to our MCPServerConfig format.
 // Takes a map of Claude MCP servers and returns a map of MCPServerConfig with "claude_" prefix.
-func MapClaudeToMCPServerConfig(claudeServers map[string]ClaudeMCPServer) map[string]*agent.MCPServerConfig {
+func MapClaudeToMCPServerConfig(claudeServers map[string]ClaudeMCPServer) map[string]*MCPServerConfig {
 	logger.Info("MapClaudeToMCPServerConfig: converting %d Claude MCP server(s) to MCPServerConfig format", len(claudeServers))
-	result := make(map[string]*agent.MCPServerConfig)
+	result := make(map[string]*MCPServerConfig)
 
 	for serverName, claudeServer := range claudeServers {
 		// Prefix with "claude_" to avoid conflicts with agents.yaml servers
@@ -126,7 +125,7 @@ func MapClaudeToMCPServerConfig(claudeServers map[string]ClaudeMCPServer) map[st
 		logger.Info("MapClaudeToMCPServerConfig: mapping server %q -> %q (command=%s, args=%v, env=%d vars, configFile=%s)",
 			serverName, safeName, claudeServer.Command, claudeServer.Args, len(envStrings), configFile)
 
-		result[safeName] = &agent.MCPServerConfig{
+		result[safeName] = &MCPServerConfig{
 			Name:       serverName,
 			Command:    claudeServer.Command,
 			Args:       claudeServer.Args,

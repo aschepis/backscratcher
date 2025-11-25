@@ -9,6 +9,7 @@ import (
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 
+	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
 	llmanthropic "github.com/aschepis/backscratcher/staff/llm/anthropic"
 	llmollama "github.com/aschepis/backscratcher/staff/llm/ollama"
@@ -19,7 +20,7 @@ import (
 )
 
 type Crew struct {
-	Agents            map[string]*AgentConfig
+	Agents            map[string]*config.AgentConfig
 	Runners           map[string]*AgentRunner
 	ToolRegistry      *tools.Registry
 	ToolProvider      *ToolProviderFromRegistry
@@ -28,18 +29,12 @@ type Crew struct {
 	messagePersister  MessagePersister   // Optional message persister
 	messageSummarizer *MessageSummarizer // Optional message summarizer
 
-	MCPServers map[string]*MCPServerConfig
+	MCPServers map[string]*config.MCPServerConfig
 	MCPClients map[string]mcp.MCPClient
 
 	apiKey      string
 	clientCache map[string]llm.Client // Cache for LLM clients by ClientKey
 	mu          sync.RWMutex
-}
-
-type CrewConfig struct {
-	LLMProviders []string                    `yaml:"llm_providers,omitempty" json:"llm_providers,omitempty"` // Array of enabled providers
-	Agents       map[string]*AgentConfig     `yaml:"agents" json:"agents"`
-	MCPServers   map[string]*MCPServerConfig `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
 }
 
 func NewCrew(apiKey string, db *sql.DB) *Crew {
@@ -52,7 +47,7 @@ func NewCrew(apiKey string, db *sql.DB) *Crew {
 	statsManager := NewStatsManager(db)
 
 	return &Crew{
-		Agents:       make(map[string]*AgentConfig),
+		Agents:       make(map[string]*config.AgentConfig),
 		Runners:      make(map[string]*AgentRunner),
 		ToolRegistry: reg,
 		ToolProvider: provider,
@@ -60,7 +55,7 @@ func NewCrew(apiKey string, db *sql.DB) *Crew {
 		statsManager: statsManager,
 		apiKey:       apiKey,
 		clientCache:  make(map[string]llm.Client),
-		MCPServers:   make(map[string]*MCPServerConfig),
+		MCPServers:   make(map[string]*config.MCPServerConfig),
 		MCPClients:   make(map[string]mcp.MCPClient),
 	}
 }
@@ -104,13 +99,17 @@ func (c *Crew) SetMessageSummarizer(summarizer *MessageSummarizer) {
 	}
 }
 
-func (c *Crew) LoadCrewConfig(cfg CrewConfig) error {
+// LoadCrewConfig loads crew configuration from the unified config.
+func (c *Crew) LoadCrewConfig(cfg *config.Config) error {
+	// Load agents
 	for id, agentCfg := range cfg.Agents {
 		if agentCfg.ID == "" {
 			agentCfg.ID = id
 		}
+		// AgentConfig is now a type alias to config.AgentConfig, so we can use it directly
 		c.Agents[id] = agentCfg
 	}
+
 	// Store MCP server configs
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -125,7 +124,7 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 
 	// Get a copy of agents to iterate over (to avoid holding lock during client creation)
 	c.mu.RLock()
-	agentsCopy := make(map[string]*AgentConfig)
+	agentsCopy := make(map[string]*config.AgentConfig)
 	for id, cfg := range c.Agents {
 		agentsCopy[id] = cfg
 	}
@@ -357,11 +356,11 @@ func (c *Crew) IsAgentDisabled(agentID string) bool {
 }
 
 // GetAgents returns a copy of all agent configs
-func (c *Crew) GetAgents() map[string]*AgentConfig {
+func (c *Crew) GetAgents() map[string]*config.AgentConfig {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	result := make(map[string]*AgentConfig)
+	result := make(map[string]*config.AgentConfig)
 	for id, cfg := range c.Agents {
 		result[id] = cfg
 	}
@@ -369,11 +368,11 @@ func (c *Crew) GetAgents() map[string]*AgentConfig {
 }
 
 // GetMCPServers returns a copy of all MCP server configs
-func (c *Crew) GetMCPServers() map[string]*MCPServerConfig {
+func (c *Crew) GetMCPServers() map[string]*config.MCPServerConfig {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	result := make(map[string]*MCPServerConfig)
+	result := make(map[string]*config.MCPServerConfig)
 	for name, cfg := range c.MCPServers {
 		result[name] = cfg
 	}
@@ -401,7 +400,7 @@ func (c *Crew) GetRunner(agentID string) *AgentRunner {
 
 // getOrCreateClient gets or creates an LLM client for the given ClientKey with caching.
 // Clients are cached by ClientKey string representation to avoid creating duplicate clients.
-func (c *Crew) getOrCreateClient(key *llm.ClientKey, agentID string, agentConfig *AgentConfig) (llm.Client, error) {
+func (c *Crew) getOrCreateClient(key *llm.ClientKey, agentID string, agentConfig *config.AgentConfig) (llm.Client, error) {
 	// Create cache key from ClientKey
 	keyStr := fmt.Sprintf("%s:%s:%s:%s:%s:%s", key.Provider, key.Model, key.APIKey, key.Host, key.BaseURL, key.Organization)
 
@@ -464,7 +463,7 @@ func (c *Crew) getOrCreateClient(key *llm.ClientKey, agentID string, agentConfig
 }
 
 // wrapClientWithMiddleware wraps a base client with agent-specific middleware.
-func (c *Crew) wrapClientWithMiddleware(baseClient llm.Client, agentID string, agentConfig *AgentConfig) llm.Client {
+func (c *Crew) wrapClientWithMiddleware(baseClient llm.Client, agentID string, agentConfig *config.AgentConfig) llm.Client {
 	// Create middleware
 	var middleware []llm.Middleware
 

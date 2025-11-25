@@ -9,6 +9,7 @@ import (
 	"time"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
 )
@@ -166,28 +167,10 @@ func (r *AgentRunner) updateAgentStateAfterExecution(executionSuccessful bool, e
 }
 
 // AgentConfig is the per-agent config you already have.
-// LLMPreference represents a single provider/model preference for an agent.
-// Agents can specify multiple preferences in order, and the system will use
-// the first available provider from the preference list.
-type LLMPreference struct {
-	Provider    string   `yaml:"provider" json:"provider"`                           // Required: "anthropic", "ollama", or "openai"
-	Model       string   `yaml:"model,omitempty" json:"model,omitempty"`             // Optional: uses provider default if omitted
-	Temperature *float64 `yaml:"temperature,omitempty" json:"temperature,omitempty"` // Optional temperature override
-	APIKeyRef   string   `yaml:"api_key_ref,omitempty" json:"api_key_ref,omitempty"` // Future: reference to credential store
-}
-
-type AgentConfig struct {
-	ID           string          `yaml:"id" json:"id"`
-	Name         string          `yaml:"name" json:"name"`
-	System       string          `yaml:"system_prompt" json:"system"`
-	Model        string          `yaml:"model" json:"model"` // Legacy: used when LLM preferences not specified
-	MaxTokens    int64           `yaml:"max_tokens" json:"max_tokens"`
-	Tools        []string        `yaml:"tools" json:"tools"`
-	Schedule     string          `yaml:"schedule" json:"schedule"`           // e.g., "15m", "2h", "0 */15 * * * *" (cron)
-	Disabled     bool            `yaml:"disabled" json:"disabled"`           // default: false (agent is enabled by default)
-	StartupDelay string          `yaml:"startup_delay" json:"startup_delay"` // e.g., "5m", "30s", "1h" - one-time delay after app launch
-	LLM          []LLMPreference `yaml:"llm,omitempty" json:"llm,omitempty"` // Ordered list of provider/model preferences
-}
+// AgentConfig and LLMPreference are now in the config package
+// These type aliases are kept for backward compatibility
+type AgentConfig = config.AgentConfig
+type LLMPreference = config.LLMPreference
 
 // calculateInputTextLength moved to context_manager.go as GetContextSize
 

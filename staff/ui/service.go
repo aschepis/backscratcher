@@ -1203,7 +1203,7 @@ func (s *chatService) CompressContext(ctx context.Context, agentID, threadID str
 
 	// Get the agent to access system prompt
 	agents := s.crew.ListAgents()
-	var agentConfig *agent.AgentConfig
+	var agentConfig *config.AgentConfig
 	for _, ag := range agents {
 		if ag.ID == agentID {
 			agentConfig = ag.Config

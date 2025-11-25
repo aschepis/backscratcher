@@ -105,7 +105,7 @@ func (r *Registry) Handle(ctx context.Context, toolName, agentID string, argsStr
 
 // RegisterMemoryTools registers memory-related tools backed by a MemoryRouter.
 // Note: Tool names must match pattern ^[a-zA-Z0-9_-]{1,128}$ (no dots allowed)
-// apiKey is used for the normalizer; if empty, falls back to ANTHROPIC_API_KEY environment variable.
+// apiKey is used for the normalizer and must be provided from config.
 func (r *Registry) RegisterMemoryTools(router *memory.MemoryRouter, apiKey string) {
 	logger.Info("Registering memory tools in registry")
 

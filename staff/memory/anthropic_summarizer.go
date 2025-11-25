@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -25,9 +24,6 @@ type AnthropicSummarizer struct {
 
 // NewAnthropicSummarizer returns a configured summarizer.
 func NewAnthropicSummarizer(model, apiKey string, maxTokens int) *AnthropicSummarizer {
-	if apiKey == "" {
-		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-	}
 	if maxTokens <= 0 {
 		maxTokens = 256
 	}

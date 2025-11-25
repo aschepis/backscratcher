@@ -3,8 +3,8 @@ module github.com/aschepis/backscratcher/staff
 go 1.25.3
 
 require (
+	dario.cat/mergo v1.0.2
 	github.com/Masterminds/squirrel v1.5.4
-	github.com/TwiN/deepmerge v0.2.2
 	github.com/anthropics/anthropic-sdk-go v1.18.0
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/gdamore/tcell/v2 v2.8.1

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -26,9 +25,6 @@ type Normalizer struct {
 
 // NewNormalizer constructs a Normalizer configured for the Anthropic Messages API.
 func NewNormalizer(model, apiKey string, maxTokens int) *Normalizer {
-	if apiKey == "" {
-		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-	}
 	if maxTokens <= 0 {
 		maxTokens = 256
 	}
@@ -54,7 +50,7 @@ func (n *Normalizer) Normalize(ctx context.Context, rawText string) (string, str
 		return "", "", nil, fmt.Errorf("normalizer: raw text is empty")
 	}
 	if n.APIKey == "" {
-		return "", "", nil, fmt.Errorf("normalizer: missing ANTHROPIC_API_KEY")
+		return "", "", nil, fmt.Errorf("normalizer: missing API key")
 	}
 	if n.Model == "" {
 		return "", "", nil, fmt.Errorf("normalizer: model name is required")
