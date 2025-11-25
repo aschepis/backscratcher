@@ -10,7 +10,6 @@ require (
 	github.com/gdamore/tcell/v2 v2.8.1
 	github.com/gen2brain/beeep v0.11.1
 	github.com/golang-migrate/migrate/v4 v4.19.0
-	github.com/joho/godotenv v1.5.1
 	github.com/mark3labs/mcp-go v0.43.0
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/ollama/ollama v0.12.11

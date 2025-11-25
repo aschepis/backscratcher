@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
 
 	"github.com/aschepis/backscratcher/staff/agent"
@@ -561,10 +560,6 @@ func main() {
 	defer logger.Close() //nolint:errcheck // No remedy for logger close errors
 
 	logger.Info("Starting Staff application")
-
-	// Load dotenv
-	_ = godotenv.Load("../.env")
-	_ = godotenv.Load()
 
 	// Load configuration file
 	configPath := config.GetConfigPath()
