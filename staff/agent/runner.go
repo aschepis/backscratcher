@@ -48,12 +48,6 @@ type AgentRunner struct {
 	rateLimitHandler  *RateLimitHandler  // Rate limit handler
 }
 
-// toolResultData holds the result data for a tool call
-type toolResultData struct {
-	result  any
-	isError bool
-}
-
 // NewAgentRunner creates a new AgentRunner with all required dependencies.
 func NewAgentRunner(
 	llmClient llm.Client,

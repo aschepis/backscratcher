@@ -62,7 +62,7 @@ func NewStdioMCPClient(command, configFile string, args, env []string) (*StdioMC
 
 // Start initializes the MCP client connection.
 func (c *StdioMCPClient) Start(ctx context.Context) error {
-	logger.Info("StdioMCPClient.Start: beginning initialization for command=%s", c.command)
+	logger.Debug("StdioMCPClient.Start: beginning initialization for command=%s", c.command)
 
 	// Initialize the client
 	initReq := mcp.InitializeRequest{
@@ -76,7 +76,7 @@ func (c *StdioMCPClient) Start(ctx context.Context) error {
 		},
 	}
 
-	logger.Info("StdioMCPClient.Start: calling Initialize with protocolVersion=%s", mcp.LATEST_PROTOCOL_VERSION)
+	logger.Debug("StdioMCPClient.Start: calling Initialize with protocolVersion=%s", mcp.LATEST_PROTOCOL_VERSION)
 
 	// Check if context is already cancelled before calling Initialize
 	select {
@@ -88,7 +88,7 @@ func (c *StdioMCPClient) Start(ctx context.Context) error {
 
 	// Call Initialize in a goroutine to detect hangs
 	// This allows us to detect if the call hangs indefinitely
-	logger.Info("StdioMCPClient.Start: about to call c.client.Initialize (this may take a moment if the server is starting)")
+	logger.Debug("StdioMCPClient.Start: about to call c.client.Initialize (this may take a moment if the server is starting)")
 	initDone := make(chan error, 1)
 	go func() {
 		_, initErr := c.client.Initialize(ctx, initReq)
@@ -109,7 +109,7 @@ func (c *StdioMCPClient) Start(ctx context.Context) error {
 	}
 
 	// Start the client
-	logger.Info("StdioMCPClient.Start: calling client.Start")
+	logger.Debug("StdioMCPClient.Start: calling client.Start")
 
 	// Check if context is already cancelled before calling Start
 	select {
@@ -120,7 +120,7 @@ func (c *StdioMCPClient) Start(ctx context.Context) error {
 	}
 
 	// Call Start in a goroutine to detect hangs
-	logger.Info("StdioMCPClient.Start: about to call c.client.Start")
+	logger.Debug("StdioMCPClient.Start: about to call c.client.Start")
 	startDone := make(chan error, 1)
 	go func() {
 		startDone <- c.client.Start(ctx)
@@ -133,7 +133,7 @@ func (c *StdioMCPClient) Start(ctx context.Context) error {
 			logger.Error("StdioMCPClient.Start: client.Start failed: %v", err)
 			return fmt.Errorf("failed to start MCP client: %w", err)
 		}
-		logger.Info("StdioMCPClient.Start: client.Start completed successfully")
+		logger.Debug("StdioMCPClient.Start: client.Start completed successfully")
 	case <-ctx.Done():
 		logger.Error("StdioMCPClient.Start: context cancelled/timeout during Start: %v", ctx.Err())
 		return fmt.Errorf("context cancelled during start: %w", ctx.Err())
