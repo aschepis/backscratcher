@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"strings"
 
-	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/ui/tui/debug"
 )
 
 // prepareLLMRequest converts agent config, history, and tools to an llm.Request.
+// Uses provider-neutral llm types throughout.
 func prepareLLMRequest(
 	agent *Agent,
 	resolvedModel string, // Model resolved from LLM preferences
@@ -20,9 +20,8 @@ func prepareLLMRequest(
 	history []llm.Message,
 	toolProvider ToolProvider,
 ) *llm.Request {
-	// Convert tool specs
+	// Get tool specs directly from provider (already in llm.ToolSpec format)
 	toolSpecs := toolProvider.SpecsFor(agent.Config)
-	tools := convertAnthropicToolsToLLM(toolSpecs)
 
 	// Build messages list
 	messages := make([]llm.Message, 0, len(history)+1)
@@ -33,7 +32,7 @@ func prepareLLMRequest(
 		Model:     resolvedModel, // Use resolved model, not legacy agent.Config.Model
 		Messages:  messages,
 		System:    agent.Config.System,
-		Tools:     tools,
+		Tools:     toolSpecs,
 		MaxTokens: agent.Config.MaxTokens,
 	}
 }
@@ -819,51 +818,4 @@ func summarizeToolResult(ctx context.Context, messageSummarizer *MessageSummariz
 		// For other types, return as string
 		return summary, nil
 	}
-}
-
-// convertAnthropicToolsToLLM converts Anthropic ToolUnionParams to llm.ToolSpecs.
-// This is a local conversion to avoid import cycles.
-func convertAnthropicToolsToLLM(tools []anthropic.ToolUnionParam) []llm.ToolSpec {
-	result := make([]llm.ToolSpec, 0, len(tools))
-	for _, tool := range tools {
-		if tool.OfTool == nil {
-			continue
-		}
-
-		t := tool.OfTool
-		schema := llm.ToolSchema{
-			Type:        "object",
-			Properties:  make(map[string]interface{}),
-			Required:    t.InputSchema.Required,
-			ExtraFields: make(map[string]interface{}),
-		}
-
-		// Copy properties
-		if t.InputSchema.Properties != nil {
-			if propsMap, ok := t.InputSchema.Properties.(map[string]interface{}); ok {
-				for k, v := range propsMap {
-					schema.Properties[k] = v
-				}
-			}
-		}
-
-		// Copy extra fields
-		if t.InputSchema.ExtraFields != nil {
-			for k, v := range t.InputSchema.ExtraFields {
-				schema.ExtraFields[k] = v
-			}
-		}
-
-		description := ""
-		if t.Description.Value != "" {
-			description = t.Description.Value
-		}
-
-		result = append(result, llm.ToolSpec{
-			Name:        t.Name,
-			Description: description,
-			Schema:      schema,
-		})
-	}
-	return result
 }

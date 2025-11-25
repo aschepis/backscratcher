@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	anthropic "github.com/anthropics/anthropic-sdk-go"
+	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
 )
 
@@ -24,30 +24,31 @@ func NewContextManager(messagePersister MessagePersister) *ContextManager {
 
 // GetContextSize calculates the total character count of the conversation context.
 // This includes the system prompt and all message content (text blocks, tool use blocks, and tool result blocks).
-func GetContextSize(systemPrompt string, messages []anthropic.MessageParam) int {
+// Uses provider-neutral llm.Message types.
+func GetContextSize(systemPrompt string, messages []llm.Message) int {
 	totalLength := len(systemPrompt)
 
 	for _, msg := range messages {
-		for _, blockUnion := range msg.Content {
-			// Check for text blocks
-			if blockUnion.OfText != nil {
-				totalLength += len(blockUnion.OfText.Text)
-			}
-			// Check for tool use blocks
-			if blockUnion.OfToolUse != nil {
-				// Include tool name
-				totalLength += len(blockUnion.OfToolUse.Name)
-				// Include tool input JSON
-				if blockUnion.OfToolUse.Input != nil {
-					if inputBytes, err := json.Marshal(blockUnion.OfToolUse.Input); err == nil {
-						totalLength += len(inputBytes)
+		for _, block := range msg.Content {
+			switch block.Type {
+			case llm.ContentBlockTypeText:
+				totalLength += len(block.Text)
+			case llm.ContentBlockTypeToolUse:
+				if block.ToolUse != nil {
+					// Include tool name
+					totalLength += len(block.ToolUse.Name)
+					// Include tool input JSON
+					if block.ToolUse.Input != nil {
+						if inputBytes, err := json.Marshal(block.ToolUse.Input); err == nil {
+							totalLength += len(inputBytes)
+						}
 					}
 				}
-			}
-			// Check for tool result blocks
-			if blockUnion.OfToolResult != nil {
-				// Include tool result content
-				totalLength += len(blockUnion.OfToolResult.Content)
+			case llm.ContentBlockTypeToolResult:
+				if block.ToolResult != nil {
+					// Include tool result content
+					totalLength += len(block.ToolResult.Content)
+				}
 			}
 		}
 	}
@@ -56,7 +57,8 @@ func GetContextSize(systemPrompt string, messages []anthropic.MessageParam) int 
 }
 
 // ShouldAutoCompress checks if the context size exceeds 1,000,000 characters.
-func ShouldAutoCompress(systemPrompt string, messages []anthropic.MessageParam) bool {
+// Uses provider-neutral llm.Message types.
+func ShouldAutoCompress(systemPrompt string, messages []llm.Message) bool {
 	size := GetContextSize(systemPrompt, messages)
 	return size >= 1000000
 }
@@ -93,11 +95,12 @@ func (cm *ContextManager) ResetContext(ctx context.Context, agentID, threadID st
 }
 
 // CompressContext summarizes the entire context and inserts a system message marking the compression.
+// Uses provider-neutral llm.Message types.
 func (cm *ContextManager) CompressContext(
 	ctx context.Context,
 	agentID, threadID string,
 	systemPrompt string,
-	messages []anthropic.MessageParam,
+	messages []llm.Message,
 	summarizer *MessageSummarizer,
 ) (string, error) {
 	// Calculate original size

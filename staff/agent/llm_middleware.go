@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
 )
@@ -130,25 +129,19 @@ func NewCompressionMiddleware(
 
 // BeforeRequest implements llm.Middleware.BeforeRequest.
 func (m *CompressionMiddleware) BeforeRequest(ctx context.Context, req *llm.Request) (*llm.Request, error) {
-	// Convert messages to Anthropic format to check size
-	anthropicMsgs := convertLLMMessagesToAnthropic(req.Messages)
-
-	// Check if compression is needed
-	if shouldAutoCompress(m.systemPrompt, anthropicMsgs) {
+	// Check if compression is needed using llm.Message types directly
+	if shouldAutoCompress(m.systemPrompt, req.Messages) {
 		logger.Info("Automatic compression triggered for agent %s: context size exceeds 1,000,000 characters", m.agentID)
 
 		// Compress context
-		compressedMsgs, compressErr := m.compressContext(ctx, anthropicMsgs)
+		compressedMsgs, compressErr := m.compressContext(ctx, req.Messages)
 		if compressErr != nil {
 			logger.Warn("Failed to compress context automatically: %v", compressErr)
 			return req, nil // Continue with original if compression fails
 		}
 
-		// Convert back to llm.Messages
-		compressedLLMMsgs := convertAnthropicMessagesToLLM(compressedMsgs)
-
 		// Update request with compressed messages
-		req.Messages = compressedLLMMsgs
+		req.Messages = compressedMsgs
 	}
 
 	return req, nil
@@ -172,28 +165,23 @@ func (m *CompressionMiddleware) OnError(ctx context.Context, req *llm.Request, e
 
 	logger.Info("Automatic compression triggered for agent %s: API returned 413 request_too_large", m.agentID)
 
-	// Convert messages to Anthropic format
-	anthropicMsgs := convertLLMMessagesToAnthropic(req.Messages)
-
-	// Compress context
-	compressedMsgs, compressErr := m.compressContext(ctx, anthropicMsgs)
+	// Compress context using llm.Message types directly
+	compressedMsgs, compressErr := m.compressContext(ctx, req.Messages)
 	if compressErr != nil {
 		return fmt.Errorf("compression after 413 error failed: %w", compressErr)
 	}
 
-	// Convert back to llm.Messages
-	compressedLLMMsgs := convertAnthropicMessagesToLLM(compressedMsgs)
-
 	// Update request with compressed messages
-	req.Messages = compressedLLMMsgs
+	req.Messages = compressedMsgs
 
 	// Return error to trigger retry with compressed context
 	return fmt.Errorf("request too large, retrying with compressed context: %w", err)
 }
 
 // compressContext compresses the context by summarizing it.
+// Uses provider-neutral llm.Message types.
 // TODO: threadID should be passed through request context or metadata
-func (m *CompressionMiddleware) compressContext(ctx context.Context, msgs []anthropic.MessageParam) ([]anthropic.MessageParam, error) {
+func (m *CompressionMiddleware) compressContext(ctx context.Context, msgs []llm.Message) ([]llm.Message, error) {
 	if m.messageSummarizer == nil {
 		return nil, fmt.Errorf("summarizer not available")
 	}
@@ -215,8 +203,8 @@ func (m *CompressionMiddleware) compressContext(ctx context.Context, msgs []anth
 
 	// Return a new message list with just the summary as a user message
 	// This effectively replaces all previous messages with the summary
-	summaryMsg := anthropic.NewUserMessage(anthropic.NewTextBlock(fmt.Sprintf("Previous conversation summary: %s", summary)))
-	return []anthropic.MessageParam{summaryMsg}, nil
+	summaryMsg := llm.NewTextMessage(llm.RoleUser, fmt.Sprintf("Previous conversation summary: %s", summary))
+	return []llm.Message{summaryMsg}, nil
 }
 
 // Helper functions
@@ -262,80 +250,41 @@ func extractRetryAfterFromError(err error) time.Duration {
 }
 
 // shouldAutoCompress checks if the context size exceeds 1,000,000 characters.
-func shouldAutoCompress(systemPrompt string, messages []anthropic.MessageParam) bool {
+// Uses provider-neutral llm.Message types.
+func shouldAutoCompress(systemPrompt string, messages []llm.Message) bool {
 	size := getContextSize(systemPrompt, messages)
 	return size >= 1000000
 }
 
 // getContextSize calculates the total character count of the conversation context.
-func getContextSize(systemPrompt string, messages []anthropic.MessageParam) int {
+// Uses provider-neutral llm.Message types.
+func getContextSize(systemPrompt string, messages []llm.Message) int {
 	totalLength := len(systemPrompt)
 
 	for _, msg := range messages {
-		for _, blockUnion := range msg.Content {
-			// Check for text blocks
-			if blockUnion.OfText != nil {
-				totalLength += len(blockUnion.OfText.Text)
-			}
-			// Check for tool use blocks
-			if blockUnion.OfToolUse != nil {
-				// Include tool name
-				totalLength += len(blockUnion.OfToolUse.Name)
-				// Include tool input JSON
-				if blockUnion.OfToolUse.Input != nil {
-					if inputBytes, err := json.Marshal(blockUnion.OfToolUse.Input); err == nil {
-						totalLength += len(inputBytes)
+		for _, block := range msg.Content {
+			switch block.Type {
+			case llm.ContentBlockTypeText:
+				totalLength += len(block.Text)
+			case llm.ContentBlockTypeToolUse:
+				if block.ToolUse != nil {
+					// Include tool name
+					totalLength += len(block.ToolUse.Name)
+					// Include tool input JSON
+					if block.ToolUse.Input != nil {
+						if inputBytes, err := json.Marshal(block.ToolUse.Input); err == nil {
+							totalLength += len(inputBytes)
+						}
 					}
 				}
-			}
-			// Check for tool result blocks
-			if blockUnion.OfToolResult != nil {
-				// Include tool result content
-				totalLength += len(blockUnion.OfToolResult.Content)
+			case llm.ContentBlockTypeToolResult:
+				if block.ToolResult != nil {
+					// Include tool result content
+					totalLength += len(block.ToolResult.Content)
+				}
 			}
 		}
 	}
 
 	return totalLength
-}
-
-// convertLLMMessagesToAnthropic converts llm.Messages to Anthropic MessageParams.
-// This is a local conversion to avoid import cycles.
-func convertLLMMessagesToAnthropic(msgs []llm.Message) []anthropic.MessageParam {
-	result := make([]anthropic.MessageParam, 0, len(msgs))
-	for _, msg := range msgs {
-		contentBlocks := make([]anthropic.ContentBlockParamUnion, 0, len(msg.Content))
-		for _, block := range msg.Content {
-			switch block.Type {
-			case llm.ContentBlockTypeText:
-				contentBlocks = append(contentBlocks, anthropic.NewTextBlock(block.Text))
-			case llm.ContentBlockTypeToolUse:
-				if block.ToolUse != nil {
-					contentBlocks = append(contentBlocks, anthropic.NewToolUseBlock(
-						block.ToolUse.ID,
-						block.ToolUse.Input,
-						block.ToolUse.Name,
-					))
-				}
-			case llm.ContentBlockTypeToolResult:
-				if block.ToolResult != nil {
-					contentBlocks = append(contentBlocks, anthropic.NewToolResultBlock(
-						block.ToolResult.ID,
-						block.ToolResult.Content,
-						block.ToolResult.IsError,
-					))
-				}
-			}
-		}
-
-		switch msg.Role {
-		case llm.RoleUser:
-			result = append(result, anthropic.NewUserMessage(contentBlocks...))
-		case llm.RoleAssistant:
-			result = append(result, anthropic.NewAssistantMessage(contentBlocks...))
-		default:
-			result = append(result, anthropic.NewUserMessage(contentBlocks...))
-		}
-	}
-	return result
 }

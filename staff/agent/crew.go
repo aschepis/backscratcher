@@ -7,8 +7,6 @@ import (
 	"sync"
 	"time"
 
-	anthropic "github.com/anthropics/anthropic-sdk-go"
-
 	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
 	llmanthropic "github.com/aschepis/backscratcher/staff/llm/anthropic"
@@ -277,12 +275,14 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 	return nil
 }
 
+// Run executes a single turn for an agent with the given history.
+// History is provided as provider-neutral llm.Message types to avoid leaking SDK types.
 func (c *Crew) Run(
 	ctx context.Context,
 	agentID string,
 	threadID string,
 	userMessage string,
-	history []anthropic.MessageParam,
+	history []llm.Message,
 ) (string, error) {
 	c.mu.RLock()
 	agent := c.Agents[agentID]
@@ -309,7 +309,7 @@ func (c *Crew) RunStream(
 	agentID string,
 	threadID string,
 	userMessage string,
-	history []anthropic.MessageParam,
+	history []llm.Message,
 	callback StreamCallback,
 ) (string, error) {
 	c.mu.RLock()

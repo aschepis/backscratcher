@@ -4,8 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	anthropic "github.com/anthropics/anthropic-sdk-go"
-
+	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/tools"
 )
@@ -16,8 +15,10 @@ type ToolSchema struct {
 	ServerName  string // MCP server name if this tool comes from an MCP server, empty for native tools
 }
 
+// ToolProvider provides tool specifications for agents.
+// This interface uses llm.ToolSpec to avoid leaking provider-specific types.
 type ToolProvider interface {
-	SpecsFor(agent *AgentConfig) []anthropic.ToolUnionParam
+	SpecsFor(agent *AgentConfig) []llm.ToolSpec
 }
 
 type ToolProviderFromRegistry struct {
@@ -42,7 +43,7 @@ func (p *ToolProviderFromRegistry) RegisterSchemaWithServer(name string, ts Tool
 	p.schemas[name] = ts
 }
 
-func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []anthropic.ToolUnionParam {
+func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []llm.ToolSpec {
 	if agent == nil {
 		return nil
 	}
@@ -89,7 +90,7 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []anthropic.Tool
 	}
 
 	// Build tool specs for all matched tools
-	var out []anthropic.ToolUnionParam
+	var out []llm.ToolSpec
 	var missingTools []string
 
 	for _, name := range expandedTools {
@@ -146,10 +147,10 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []anthropic.Tool
 			}
 		}
 
-		tp := anthropic.ToolParam{
+		toolSpec := llm.ToolSpec{
 			Name:        name,
-			Description: anthropic.String(schema.Description),
-			InputSchema: anthropic.ToolInputSchemaParam{
+			Description: schema.Description,
+			Schema: llm.ToolSchema{
 				Type:        "object",
 				Properties:  props,
 				Required:    required,
@@ -159,9 +160,7 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []anthropic.Tool
 
 		logger.Debug("Tool schema for %s: required=%v, properties=%v", name, required, getPropertyNames(props))
 
-		out = append(out,
-			anthropic.ToolUnionParam{OfTool: &tp},
-		)
+		out = append(out, toolSpec)
 	}
 
 	// Log warnings for missing tools but don't fail (allow partial matches)

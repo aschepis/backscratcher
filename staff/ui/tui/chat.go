@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/aschepis/backscratcher/staff/agent"
+	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -68,7 +68,7 @@ func (a *App) showChat(agentID string) {
 	history, err := a.chatService.LoadConversationHistory(ctx, agentID, threadID)
 	if err != nil {
 		// Log error but continue with empty history
-		history = []anthropic.MessageParam{}
+		history = []llm.Message{}
 	}
 
 	// Initialize chat history in memory from database
@@ -254,7 +254,7 @@ func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName,
 	// Load conversation history
 	history, err := a.chatService.LoadConversationHistory(ctx, agentID, threadID)
 	if err != nil {
-		history = []anthropic.MessageParam{}
+		history = []llm.Message{}
 	}
 
 	// Load system messages (context breaks)
@@ -271,7 +271,7 @@ func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName,
 		type messageItem struct {
 			timestamp int64
 			isSystem  bool
-			msg       anthropic.MessageParam
+			msg       llm.Message
 			sysMsg    map[string]interface{}
 		}
 
@@ -357,10 +357,10 @@ func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName,
 				var textBuilder strings.Builder
 
 				// Extract text from message content blocks
-				for _, blockUnion := range item.msg.Content {
+				for _, block := range item.msg.Content {
 					// Check if this is a text block
-					if blockUnion.OfText != nil {
-						textBuilder.WriteString(blockUnion.OfText.Text)
+					if block.Type == llm.ContentBlockTypeText {
+						textBuilder.WriteString(block.Text)
 					}
 				}
 
@@ -372,9 +372,9 @@ func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName,
 				// Display based on role - format URLs as clickable hyperlinks
 				formattedText := formatURLsAsHyperlinks(text)
 				switch item.msg.Role {
-				case "user":
+				case llm.RoleUser:
 					_, _ = fmt.Fprintf(chatDisplay, "[cyan]You[white]: %s\n\n", formattedText)
-				case "assistant":
+				case llm.RoleAssistant:
 					_, _ = fmt.Fprintf(chatDisplay, "[green]%s[white]: %s\n\n", agentName, formattedText)
 				default:
 					_, _ = fmt.Fprintf(chatDisplay, "[gray]%s[white]: %s\n\n", item.msg.Role, formattedText)
@@ -530,8 +530,8 @@ func (a *App) handleChatMessage(agentID, agentName, message string, chatDisplay 
 			// Update history in memory
 			a.chatMutex.Lock()
 			a.chatHistory[agentID] = append(a.chatHistory[agentID],
-				anthropic.NewUserMessage(anthropic.NewTextBlock(message)),
-				anthropic.NewAssistantMessage(anthropic.NewTextBlock(response)),
+				llm.NewTextMessage(llm.RoleUser, message),
+				llm.NewTextMessage(llm.RoleAssistant, response),
 			)
 			a.chatMutex.Unlock()
 

@@ -2,13 +2,11 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
@@ -176,11 +174,12 @@ type LLMPreference = config.LLMPreference
 
 // RunAgent executes a single turn for an agent, with optional history.
 // debugCallback is retrieved from context if available.
+// History is provided as provider-neutral llm.Message types.
 func (r *AgentRunner) RunAgent(
 	ctx context.Context,
 	threadID string,
 	userMsg string,
-	history []anthropicsdk.MessageParam,
+	history []llm.Message,
 ) (string, error) {
 	if r.agent == nil {
 		return "", errors.New("agent is nil")
@@ -204,11 +203,8 @@ func (r *AgentRunner) RunAgent(
 		r.updateAgentStateAfterExecution(executionSuccessful, executionError)
 	}()
 
-	// Convert history from Anthropic types to llm types
-	llmHistory := convertAnthropicMessagesToLLM(history)
-
-	// Prepare LLM request
-	req := prepareLLMRequest(r.agent, r.resolvedModel, userMsg, llmHistory, r.toolProvider)
+	// Prepare LLM request (history is already in llm.Message format)
+	req := prepareLLMRequest(r.agent, r.resolvedModel, userMsg, history, r.toolProvider)
 
 	// Execute tool loop
 	result, err := executeToolLoop(
@@ -244,7 +240,7 @@ func (r *AgentRunner) RunAgentStream(
 	ctx context.Context,
 	threadID string,
 	userMsg string,
-	history []anthropicsdk.MessageParam,
+	history []llm.Message,
 	callback StreamCallback,
 ) (string, error) {
 	if r.agent == nil {
@@ -269,11 +265,8 @@ func (r *AgentRunner) RunAgentStream(
 		r.updateAgentStateAfterExecution(executionSuccessful, executionError)
 	}()
 
-	// Convert history from Anthropic types to llm types
-	llmHistory := convertAnthropicMessagesToLLM(history)
-
-	// Prepare LLM request
-	req := prepareLLMRequest(r.agent, r.resolvedModel, userMsg, llmHistory, r.toolProvider)
+	// Prepare LLM request (history is already in llm.Message format)
+	req := prepareLLMRequest(r.agent, r.resolvedModel, userMsg, history, r.toolProvider)
 
 	// Execute tool loop with streaming
 	result, err := executeToolLoopStream(
@@ -306,80 +299,4 @@ func (r *AgentRunner) RunAgentStream(
 // GetMessageSummarizer returns the message summarizer for this runner.
 func (r *AgentRunner) GetMessageSummarizer() *MessageSummarizer {
 	return r.messageSummarizer
-}
-
-// convertAnthropicMessagesToLLM converts Anthropic MessageParams to llm.Messages.
-// This is a local conversion to avoid import cycles.
-func convertAnthropicMessagesToLLM(msgs []anthropicsdk.MessageParam) []llm.Message {
-	result := make([]llm.Message, 0, len(msgs))
-	for _, msg := range msgs {
-		var role llm.MessageRole
-		switch string(msg.Role) {
-		case "user":
-			role = llm.RoleUser
-		case "assistant":
-			role = llm.RoleAssistant
-		default:
-			role = llm.RoleUser
-		}
-
-		content := make([]llm.ContentBlock, 0, len(msg.Content))
-		for _, blockUnion := range msg.Content {
-			if blockUnion.OfText != nil {
-				content = append(content, llm.ContentBlock{
-					Type: llm.ContentBlockTypeText,
-					Text: blockUnion.OfText.Text,
-				})
-			}
-			if blockUnion.OfToolUse != nil {
-				var input map[string]interface{}
-				if blockUnion.OfToolUse.Input != nil {
-					if inputBytes, err := json.Marshal(blockUnion.OfToolUse.Input); err == nil {
-						if err := json.Unmarshal(inputBytes, &input); err != nil {
-							input = make(map[string]interface{})
-						}
-					} else {
-						input = make(map[string]interface{})
-					}
-				} else {
-					input = make(map[string]interface{})
-				}
-				content = append(content, llm.ContentBlock{
-					Type: llm.ContentBlockTypeToolUse,
-					ToolUse: &llm.ToolUseBlock{
-						ID:    blockUnion.OfToolUse.ID,
-						Name:  blockUnion.OfToolUse.Name,
-						Input: input,
-					},
-				})
-			}
-			if blockUnion.OfToolResult != nil {
-				var contentStr string
-				for _, contentUnion := range blockUnion.OfToolResult.Content {
-					if contentUnion.OfText != nil {
-						contentStr += contentUnion.OfText.Text
-					}
-				}
-				isError := false
-				// IsError is a param.Opt[bool], access Value directly
-				if blockUnion.OfToolResult.IsError.Value {
-					isError = true
-				}
-				content = append(content, llm.ContentBlock{
-					Type: llm.ContentBlockTypeToolResult,
-					ToolResult: &llm.ToolResultBlock{
-						ID:      blockUnion.OfToolResult.ToolUseID,
-						Content: contentStr,
-						IsError: isError,
-					},
-				})
-			}
-		}
-
-		result = append(result, llm.Message{
-			Role:    role,
-			Content: content,
-		})
-	}
-	return result
 }

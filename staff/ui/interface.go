@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	anthropic "github.com/anthropics/anthropic-sdk-go"
+	"github.com/aschepis/backscratcher/staff/llm"
 )
 
 // StreamCallback is called for each text delta received from the streaming API
@@ -15,14 +15,15 @@ type DebugCallback func(message string)
 
 // ChatService provides an interface for UI components to interact with agents
 // without directly coupling to the agent implementation.
+// All message types use the provider-neutral llm.Message type.
 type ChatService interface {
 	// SendMessage sends a message to an agent and returns the response.
 	// This is a non-streaming call.
-	SendMessage(ctx context.Context, agentID, threadID, message string, history []anthropic.MessageParam) (string, error)
+	SendMessage(ctx context.Context, agentID, threadID, message string, history []llm.Message) (string, error)
 
 	// SendMessageStream sends a message to an agent with streaming support.
 	// The streamCallback is called for each text delta received.
-	SendMessageStream(ctx context.Context, agentID, threadID, message string, history []anthropic.MessageParam, streamCallback StreamCallback) (string, error)
+	SendMessageStream(ctx context.Context, agentID, threadID, message string, history []llm.Message, streamCallback StreamCallback) (string, error)
 
 	// GetChatTimeout returns the timeout duration for chat operations.
 	GetChatTimeout() time.Duration
@@ -40,11 +41,11 @@ type ChatService interface {
 	GetOrCreateThreadID(ctx context.Context, agentID string) (string, error)
 
 	// LoadConversationHistory loads conversation history for a given agent and thread ID.
-	LoadConversationHistory(ctx context.Context, agentID, threadID string) ([]anthropic.MessageParam, error)
+	LoadConversationHistory(ctx context.Context, agentID, threadID string) ([]llm.Message, error)
 
 	// LoadThread loads conversation history for a given agent and thread ID.
-	// Reconstructs proper Anthropic message structures from database rows.
-	LoadThread(ctx context.Context, agentID, threadID string) ([]anthropic.MessageParam, error)
+	// Reconstructs proper message structures from database rows.
+	LoadThread(ctx context.Context, agentID, threadID string) ([]llm.Message, error)
 
 	// SaveMessage saves a user or assistant message to the conversation history.
 	SaveMessage(ctx context.Context, agentID, threadID, role, content string) error
@@ -91,8 +92,9 @@ type ChatService interface {
 }
 
 // MessageWithTimestamp represents a message with its database timestamp.
+// Uses the provider-neutral llm.Message type.
 type MessageWithTimestamp struct {
-	Message   anthropic.MessageParam
+	Message   llm.Message
 	Timestamp int64
 }
 

@@ -7,10 +7,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/ui"
 	"github.com/aschepis/backscratcher/staff/ui/themes"
@@ -28,8 +28,8 @@ type App struct {
 	chatService ui.ChatService
 
 	// Chat-related fields
-	chatHistory map[string][]anthropic.MessageParam // agentID -> conversation history
-	chatMutex   sync.RWMutex                        // protects chatHistory
+	chatHistory map[string][]llm.Message // agentID -> conversation history
+	chatMutex   sync.RWMutex             // protects chatHistory
 
 	// Config-related fields
 	configPath string
@@ -60,7 +60,7 @@ func NewAppWithTheme(chatService ui.ChatService, themeName string) *App {
 		app:         tviewApp,
 		pages:       tview.NewPages(),
 		chatService: chatService,
-		chatHistory: make(map[string][]anthropic.MessageParam),
+		chatHistory: make(map[string][]llm.Message),
 	}
 }
 

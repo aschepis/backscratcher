@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	anthropic "github.com/anthropics/anthropic-sdk-go"
+	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/memory/ollama"
 )
@@ -83,10 +83,11 @@ func (m *MessageSummarizer) Summarize(ctx context.Context, text string) (string,
 
 // SummarizeContext summarizes an entire conversation context, including system prompt and message history.
 // It preserves both the information and the flow of the conversation.
+// Uses provider-neutral llm.Message types.
 func (m *MessageSummarizer) SummarizeContext(
 	ctx context.Context,
 	systemPrompt string,
-	messages []anthropic.MessageParam,
+	messages []llm.Message,
 ) (string, error) {
 	// Convert conversation to text format for summarization
 	var conversationText strings.Builder
@@ -101,39 +102,39 @@ func (m *MessageSummarizer) SummarizeContext(
 	// Add messages
 	for _, msg := range messages {
 		switch msg.Role {
-		case "user":
+		case llm.RoleUser:
 			conversationText.WriteString("User: ")
-			for _, blockUnion := range msg.Content {
-				if blockUnion.OfText != nil {
-					conversationText.WriteString(blockUnion.OfText.Text)
+			for _, block := range msg.Content {
+				if block.Type == llm.ContentBlockTypeText {
+					conversationText.WriteString(block.Text)
+				} else if block.Type == llm.ContentBlockTypeToolResult && block.ToolResult != nil {
+					conversationText.WriteString(block.ToolResult.Content)
 				}
 			}
 			conversationText.WriteString("\n\n")
-		case "assistant":
+		case llm.RoleAssistant:
 			conversationText.WriteString("Assistant: ")
-			for _, blockUnion := range msg.Content {
-				if blockUnion.OfText != nil {
-					conversationText.WriteString(blockUnion.OfText.Text)
-				} else if blockUnion.OfToolUse != nil {
-					conversationText.WriteString(fmt.Sprintf("[Tool: %s]", blockUnion.OfToolUse.Name))
-					if blockUnion.OfToolUse.Input != nil {
-						if inputBytes, err := json.Marshal(blockUnion.OfToolUse.Input); err == nil {
+			for _, block := range msg.Content {
+				if block.Type == llm.ContentBlockTypeText {
+					conversationText.WriteString(block.Text)
+				} else if block.Type == llm.ContentBlockTypeToolUse && block.ToolUse != nil {
+					conversationText.WriteString(fmt.Sprintf("[Tool: %s]", block.ToolUse.Name))
+					if block.ToolUse.Input != nil {
+						if inputBytes, err := json.Marshal(block.ToolUse.Input); err == nil {
 							conversationText.WriteString(fmt.Sprintf(" %s", string(inputBytes)))
 						}
 					}
 				}
 			}
 			conversationText.WriteString("\n\n")
-		case "tool":
-			conversationText.WriteString("Tool Result: ")
-			for _, blockUnion := range msg.Content {
-				if blockUnion.OfToolResult != nil {
-					// Content is a slice of ToolResultBlockParamContentUnion
-					for _, contentUnion := range blockUnion.OfToolResult.Content {
-						if contentUnion.OfText != nil {
-							conversationText.WriteString(contentUnion.OfText.Text)
-						}
-					}
+		default:
+			// Handle any other roles (e.g., tool results sent as separate messages)
+			for _, block := range msg.Content {
+				if block.Type == llm.ContentBlockTypeText {
+					conversationText.WriteString(block.Text)
+				} else if block.Type == llm.ContentBlockTypeToolResult && block.ToolResult != nil {
+					conversationText.WriteString("Tool Result: ")
+					conversationText.WriteString(block.ToolResult.Content)
 				}
 			}
 			conversationText.WriteString("\n\n")

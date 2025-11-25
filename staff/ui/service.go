@@ -9,10 +9,10 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
-	anthropic "github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/aschepis/backscratcher/staff/agent"
 	"github.com/aschepis/backscratcher/staff/config"
+	"github.com/aschepis/backscratcher/staff/llm"
 )
 
 const (
@@ -51,12 +51,14 @@ func NewChatService(crew *agent.Crew, db *sql.DB, timeoutSeconds int, appConfig 
 }
 
 // SendMessage sends a message to an agent and returns the response.
-func (s *chatService) SendMessage(ctx context.Context, agentID, threadID, message string, history []anthropic.MessageParam) (string, error) {
+// History is provided as provider-neutral llm.Message types.
+func (s *chatService) SendMessage(ctx context.Context, agentID, threadID, message string, history []llm.Message) (string, error) {
 	return s.crew.Run(ctx, agentID, threadID, message, history)
 }
 
 // SendMessageStream sends a message to an agent with streaming support.
-func (s *chatService) SendMessageStream(ctx context.Context, agentID, threadID, message string, history []anthropic.MessageParam, streamCallback StreamCallback) (string, error) {
+// History is provided as provider-neutral llm.Message types.
+func (s *chatService) SendMessageStream(ctx context.Context, agentID, threadID, message string, history []llm.Message, streamCallback StreamCallback) (string, error) {
 	return s.crew.RunStream(ctx, agentID, threadID, message, history, agent.StreamCallback(streamCallback))
 }
 
@@ -232,12 +234,14 @@ func (s *chatService) GetOrCreateThreadID(ctx context.Context, agentID string) (
 
 // LoadConversationHistory loads conversation history for a given agent and thread ID.
 // Also available as LoadThread for API consistency.
-func (s *chatService) LoadConversationHistory(ctx context.Context, agentID, threadID string) ([]anthropic.MessageParam, error) {
+// Returns provider-neutral llm.Message types.
+func (s *chatService) LoadConversationHistory(ctx context.Context, agentID, threadID string) ([]llm.Message, error) {
 	return s.LoadThread(ctx, agentID, threadID)
 }
 
 // LoadAllMessagesWithTimestamps loads ALL regular (non-system) messages with their timestamps.
 // This is used for display purposes to show the full conversation history.
+// Returns provider-neutral llm.Message types.
 func (s *chatService) LoadAllMessagesWithTimestamps(ctx context.Context, agentID, threadID string) ([]MessageWithTimestamp, error) {
 	query := sq.Select("role", "content", "tool_name", "created_at").
 		From("conversations").
@@ -260,8 +264,8 @@ func (s *chatService) LoadAllMessagesWithTimestamps(ctx context.Context, agentID
 	var messages []MessageWithTimestamp
 	var currentUserTextBlocks []string
 	var currentAssistantTextBlocks []string
-	var currentAssistantToolBlocks []anthropic.ContentBlockParamUnion
-	var currentToolResultBlocks []anthropic.ContentBlockParamUnion
+	var currentAssistantToolBlocks []llm.ContentBlock
+	var currentToolResultBlocks []llm.ContentBlock
 	var lastRole string
 	var currentUserTimestamp int64
 	var currentAssistantTimestamp int64
@@ -319,13 +323,20 @@ func (s *chatService) LoadAllMessagesWithTimestamps(ctx context.Context, agentID
 				}
 				seenToolUseIDs[toolID] = true
 
-				toolInput := toolUseData["input"]
-				if _, ok := toolInput.(map[string]any); !ok {
-					toolInput = map[string]any{}
+				toolInput, _ := toolUseData["input"].(map[string]interface{})
+				if toolInput == nil {
+					toolInput = make(map[string]interface{})
 				}
 				toolNameStr := toolName.String
 
-				toolUseBlock := anthropic.NewToolUseBlock(toolID, toolInput, toolNameStr)
+				toolUseBlock := llm.ContentBlock{
+					Type: llm.ContentBlockTypeToolUse,
+					ToolUse: &llm.ToolUseBlock{
+						ID:    toolID,
+						Name:  toolNameStr,
+						Input: toolInput,
+					},
+				}
 				currentAssistantToolBlocks = append(currentAssistantToolBlocks, toolUseBlock)
 				// Keep the earliest timestamp for this message group
 				if currentAssistantTimestamp == 0 || createdAt < currentAssistantTimestamp {
@@ -392,7 +403,14 @@ func (s *chatService) LoadAllMessagesWithTimestamps(ctx context.Context, agentID
 				}
 
 				// Create tool result block
-				toolResultBlock := anthropic.NewToolResultBlock(toolID, resultStr, isError)
+				toolResultBlock := llm.ContentBlock{
+					Type: llm.ContentBlockTypeToolResult,
+					ToolResult: &llm.ToolResultBlock{
+						ID:      toolID,
+						Content: resultStr,
+						IsError: isError,
+					},
+				}
 				currentToolResultBlocks = append(currentToolResultBlocks, toolResultBlock)
 
 				// Keep the earliest timestamp for this message group
@@ -434,6 +452,7 @@ func (s *chatService) LoadAllMessagesWithTimestamps(ctx context.Context, agentID
 // LoadMessagesWithTimestamps loads regular (non-system) messages with their timestamps.
 // Only loads messages after the most recent reset or compression break (if any).
 // This is used for LLM context - only messages after the break are sent to the model.
+// Returns provider-neutral llm.Message types.
 func (s *chatService) LoadMessagesWithTimestamps(ctx context.Context, agentID, threadID string) ([]MessageWithTimestamp, error) {
 	// First, find the most recent context break (system message with type="reset" or "compress")
 	var breakTimestamp sql.NullInt64
@@ -493,8 +512,8 @@ func (s *chatService) LoadMessagesWithTimestamps(ctx context.Context, agentID, t
 	var messages []MessageWithTimestamp
 	var currentUserTextBlocks []string
 	var currentAssistantTextBlocks []string
-	var currentAssistantToolBlocks []anthropic.ContentBlockParamUnion
-	var currentToolResultBlocks []anthropic.ContentBlockParamUnion
+	var currentAssistantToolBlocks []llm.ContentBlock
+	var currentToolResultBlocks []llm.ContentBlock
 	var lastRole string
 	var currentUserTimestamp int64
 	var currentAssistantTimestamp int64
@@ -552,13 +571,20 @@ func (s *chatService) LoadMessagesWithTimestamps(ctx context.Context, agentID, t
 				}
 				seenToolUseIDs[toolID] = true
 
-				toolInput := toolUseData["input"]
-				if _, ok := toolInput.(map[string]any); !ok {
-					toolInput = map[string]any{}
+				toolInput, _ := toolUseData["input"].(map[string]interface{})
+				if toolInput == nil {
+					toolInput = make(map[string]interface{})
 				}
 				toolNameStr := toolName.String
 
-				toolUseBlock := anthropic.NewToolUseBlock(toolID, toolInput, toolNameStr)
+				toolUseBlock := llm.ContentBlock{
+					Type: llm.ContentBlockTypeToolUse,
+					ToolUse: &llm.ToolUseBlock{
+						ID:    toolID,
+						Name:  toolNameStr,
+						Input: toolInput,
+					},
+				}
 				currentAssistantToolBlocks = append(currentAssistantToolBlocks, toolUseBlock)
 				// Keep the earliest timestamp for this message group
 				if currentAssistantTimestamp == 0 || createdAt < currentAssistantTimestamp {
@@ -623,7 +649,14 @@ func (s *chatService) LoadMessagesWithTimestamps(ctx context.Context, agentID, t
 					}
 				}
 
-				toolResultBlock := anthropic.NewToolResultBlock(toolID, resultStr, isError)
+				toolResultBlock := llm.ContentBlock{
+					Type: llm.ContentBlockTypeToolResult,
+					ToolResult: &llm.ToolResultBlock{
+						ID:      toolID,
+						Content: resultStr,
+						IsError: isError,
+					},
+				}
 				currentToolResultBlocks = append(currentToolResultBlocks, toolResultBlock)
 				// Keep the earliest timestamp for this message group
 				if currentToolTimestamp == 0 || createdAt < currentToolTimestamp {
@@ -661,12 +694,13 @@ func (s *chatService) LoadMessagesWithTimestamps(ctx context.Context, agentID, t
 }
 
 // commitPendingMessagesWithTimestamp commits pending messages with their respective timestamps.
+// Uses provider-neutral llm.Message types.
 func (s *chatService) commitPendingMessagesWithTimestamp(
 	messages *[]MessageWithTimestamp,
 	userTextBlocks []string,
 	assistantTextBlocks []string,
-	assistantToolBlocks []anthropic.ContentBlockParamUnion,
-	toolResultBlocks []anthropic.ContentBlockParamUnion,
+	assistantToolBlocks []llm.ContentBlock,
+	toolResultBlocks []llm.ContentBlock,
 	userTimestamp int64,
 	assistantTimestamp int64,
 	toolTimestamp int64,
@@ -674,7 +708,7 @@ func (s *chatService) commitPendingMessagesWithTimestamp(
 	// Commit user text messages
 	if len(userTextBlocks) > 0 && userTimestamp > 0 {
 		*messages = append(*messages, MessageWithTimestamp{
-			Message:   anthropic.NewUserMessage(anthropic.NewTextBlock(strings.Join(userTextBlocks, "\n"))),
+			Message:   llm.NewTextMessage(llm.RoleUser, strings.Join(userTextBlocks, "\n")),
 			Timestamp: userTimestamp,
 		})
 	}
@@ -682,13 +716,16 @@ func (s *chatService) commitPendingMessagesWithTimestamp(
 	// Commit assistant messages (text or tool calls)
 	if len(assistantTextBlocks) > 0 && assistantTimestamp > 0 {
 		*messages = append(*messages, MessageWithTimestamp{
-			Message:   anthropic.NewAssistantMessage(anthropic.NewTextBlock(strings.Join(assistantTextBlocks, "\n"))),
+			Message:   llm.NewTextMessage(llm.RoleAssistant, strings.Join(assistantTextBlocks, "\n")),
 			Timestamp: assistantTimestamp,
 		})
 	}
 	if len(assistantToolBlocks) > 0 && assistantTimestamp > 0 {
 		*messages = append(*messages, MessageWithTimestamp{
-			Message:   anthropic.NewAssistantMessage(assistantToolBlocks...),
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: assistantToolBlocks,
+			},
 			Timestamp: assistantTimestamp,
 		})
 	}
@@ -696,16 +733,20 @@ func (s *chatService) commitPendingMessagesWithTimestamp(
 	// Commit tool result messages as user messages
 	if len(toolResultBlocks) > 0 && toolTimestamp > 0 {
 		*messages = append(*messages, MessageWithTimestamp{
-			Message:   anthropic.NewUserMessage(toolResultBlocks...),
+			Message: llm.Message{
+				Role:    llm.RoleUser,
+				Content: toolResultBlocks,
+			},
 			Timestamp: toolTimestamp,
 		})
 	}
 }
 
 // LoadThread loads conversation history for a given agent and thread ID.
-// Reconstructs proper Anthropic message structures from database rows.
+// Reconstructs proper message structures from database rows.
 // Only loads messages after the most recent reset or compression break (if any).
-func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) ([]anthropic.MessageParam, error) {
+// Returns provider-neutral llm.Message types.
+func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) ([]llm.Message, error) {
 	// First, find the most recent context break (system message with type="reset" or "compress")
 	var breakTimestamp sql.NullInt64
 	breakQuery := sq.Select("content", "created_at").
@@ -760,11 +801,11 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 	}
 	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
 
-	var messages []anthropic.MessageParam
+	var messages []llm.Message
 	var currentUserTextBlocks []string
 	var currentAssistantTextBlocks []string
-	var currentAssistantToolBlocks []anthropic.ContentBlockParamUnion
-	var currentToolResultBlocks []anthropic.ContentBlockParamUnion
+	var currentAssistantToolBlocks []llm.ContentBlock
+	var currentToolResultBlocks []llm.ContentBlock
 	var lastRole string
 	// Track tool_use IDs to prevent duplicates within the same message
 	seenToolUseIDs := make(map[string]bool)
@@ -824,16 +865,21 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 				}
 				seenToolUseIDs[toolID] = true
 
-				toolInput := toolUseData["input"]
-				// Ensure toolInput is always a map (dictionary) for the API
-				if _, ok := toolInput.(map[string]any); !ok {
-					// If it's not a map, use empty map to ensure it's always a dictionary
-					toolInput = map[string]any{}
+				toolInput, _ := toolUseData["input"].(map[string]interface{})
+				if toolInput == nil {
+					toolInput = make(map[string]interface{})
 				}
 				toolNameStr := toolName.String
 
 				// Create tool use block
-				toolUseBlock := anthropic.NewToolUseBlock(toolID, toolInput, toolNameStr)
+				toolUseBlock := llm.ContentBlock{
+					Type: llm.ContentBlockTypeToolUse,
+					ToolUse: &llm.ToolUseBlock{
+						ID:    toolID,
+						Name:  toolNameStr,
+						Input: toolInput,
+					},
+				}
 				currentAssistantToolBlocks = append(currentAssistantToolBlocks, toolUseBlock)
 
 				// Commit if role changed
@@ -868,7 +914,7 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 			}
 
 		case roleSystem:
-			// System messages (context breaks) are not sent to Anthropic API
+			// System messages (context breaks) are not sent to LLM API
 			// They are stored for UI display purposes only
 			// Skip them in the message list for API calls
 			continue
@@ -908,7 +954,14 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 				}
 
 				// Create tool result block
-				toolResultBlock := anthropic.NewToolResultBlock(toolID, resultStr, isError)
+				toolResultBlock := llm.ContentBlock{
+					Type: llm.ContentBlockTypeToolResult,
+					ToolResult: &llm.ToolResultBlock{
+						ID:      toolID,
+						Content: resultStr,
+						IsError: isError,
+					},
+				}
 				currentToolResultBlocks = append(currentToolResultBlocks, toolResultBlock)
 
 				// Commit if role changed
@@ -941,33 +994,36 @@ func (s *chatService) LoadThread(ctx context.Context, agentID, threadID string) 
 }
 
 // commitPendingMessages commits any pending message groups to the messages slice.
+// Uses provider-neutral llm.Message types.
 func (s *chatService) commitPendingMessages(
-	messages *[]anthropic.MessageParam,
+	messages *[]llm.Message,
 	userTextBlocks []string,
 	assistantTextBlocks []string,
-	assistantToolBlocks []anthropic.ContentBlockParamUnion,
-	toolResultBlocks []anthropic.ContentBlockParamUnion,
+	assistantToolBlocks []llm.ContentBlock,
+	toolResultBlocks []llm.ContentBlock,
 ) {
 	// Commit user text messages
 	if len(userTextBlocks) > 0 {
-		*messages = append(*messages, anthropic.NewUserMessage(
-			anthropic.NewTextBlock(strings.Join(userTextBlocks, "\n")),
-		))
+		*messages = append(*messages, llm.NewTextMessage(llm.RoleUser, strings.Join(userTextBlocks, "\n")))
 	}
 
 	// Commit assistant messages (text or tool calls)
 	if len(assistantTextBlocks) > 0 {
-		*messages = append(*messages, anthropic.NewAssistantMessage(
-			anthropic.NewTextBlock(strings.Join(assistantTextBlocks, "\n")),
-		))
+		*messages = append(*messages, llm.NewTextMessage(llm.RoleAssistant, strings.Join(assistantTextBlocks, "\n")))
 	}
 	if len(assistantToolBlocks) > 0 {
-		*messages = append(*messages, anthropic.NewAssistantMessage(assistantToolBlocks...))
+		*messages = append(*messages, llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: assistantToolBlocks,
+		})
 	}
 
 	// Commit tool result messages as user messages
 	if len(toolResultBlocks) > 0 {
-		*messages = append(*messages, anthropic.NewUserMessage(toolResultBlocks...))
+		*messages = append(*messages, llm.Message{
+			Role:    llm.RoleUser,
+			Content: toolResultBlocks,
+		})
 	}
 }
 
