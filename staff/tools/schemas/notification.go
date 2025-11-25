@@ -30,4 +30,3 @@ func NotificationSchemas() map[string]ToolSchema {
 		},
 	}
 }
-

@@ -158,7 +158,7 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 		}
 
 		// Get or create LLM client (with caching) - this may take time, so don't hold lock
-		logger.Info("Getting or creating LLM client for agent %s", id)
+		logger.Debug("Getting or creating LLM client for agent %s", id)
 		llmClient, err := c.getOrCreateClient(clientKey, id, cfg)
 		if err != nil {
 			return fmt.Errorf("failed to create LLM client for agent %s: %w", id, err)
@@ -179,7 +179,7 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 		if err != nil {
 			return fmt.Errorf("failed to check agent state for %s: %w", id, err)
 		}
-		logger.Info("Agent %s: state exists=%v, startup_delay=%v", id, exists, cfg.StartupDelay)
+		logger.Debug("Agent %s: state exists=%v, startup_delay=%v", id, exists, cfg.StartupDelay)
 		if !exists {
 			now := time.Now()
 			var nextWake *time.Time
@@ -194,7 +194,7 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 				wakeTime := now.Add(delay)
 				nextWake = &wakeTime
 				hasWakeTime = true
-				logger.Info("Agent %s: configured with startup_delay of %v, will wake at %d (%s)", id, delay, wakeTime.Unix(), wakeTime.Format("2006-01-02 15:04:05"))
+				logger.Debug("Agent %s: configured with startup_delay of %v, will wake at %d (%s)", id, delay, wakeTime.Unix(), wakeTime.Format("2006-01-02 15:04:05"))
 			}
 
 			// Check if agent has a schedule and is not disabled
@@ -268,7 +268,7 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 				} else {
 					nextWakeStr = "nil"
 				}
-				logger.Info("Agent %s: state exists, skipping startup_delay (state=%s, next_wake=%s)", id, currentState, nextWakeStr)
+				logger.Debug("Agent %s: state exists, skipping startup_delay (state=%s, next_wake=%s)", id, currentState, nextWakeStr)
 			}
 		}
 	}

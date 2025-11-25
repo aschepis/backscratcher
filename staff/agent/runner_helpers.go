@@ -364,7 +364,9 @@ func executeToolLoopStream(
 
 		// Collect streaming results
 		var finalText strings.Builder
-		toolUses := make(map[string]*llm.ToolUseBlock) // Deduplicated by ID
+		toolUses := make(map[string]*llm.ToolUseBlock)         // Deduplicated by ID
+		toolInputBuilders := make(map[string]*strings.Builder) // Accumulate JSON input per tool ID
+		var currentToolID string                               // Track which tool is currently receiving input
 
 		// Process stream events
 		for stream.Next() {
@@ -391,24 +393,24 @@ func executeToolLoopStream(
 					}
 				case llm.StreamDeltaTypeToolUse:
 					if tu := event.Delta.ToolUse; tu != nil {
-						if existing, ok := toolUses[tu.ID]; ok {
-							// Merge input
-							for k, v := range tu.Input {
-								existing.Input[k] = v
-							}
-						} else {
-							// Copy and store
-							copy := *tu
-							copy.Input = make(map[string]interface{})
-							for k, v := range tu.Input {
-								copy.Input[k] = v
-							}
-							toolUses[tu.ID] = &copy
+						if _, ok := toolUses[tu.ID]; !ok {
+							// Copy and store (Input will be populated later from accumulated JSON)
+							toolCopy := *tu
+							toolCopy.Input = make(map[string]interface{})
+							toolUses[tu.ID] = &toolCopy
+							// Initialize input builder for this tool
+							toolInputBuilders[tu.ID] = &strings.Builder{}
 						}
+						// Track current tool for subsequent input deltas
+						currentToolID = tu.ID
 					}
 				case llm.StreamDeltaTypeToolInput:
-					// Tool input delta - find and update the tool use
-					// This is handled by the adapter, which accumulates input
+					// Accumulate tool input JSON delta
+					if currentToolID != "" {
+						if builder, ok := toolInputBuilders[currentToolID]; ok {
+							builder.WriteString(event.Delta.ToolInput)
+						}
+					}
 				}
 
 			case llm.StreamEventTypeStop:
@@ -416,6 +418,16 @@ func executeToolLoopStream(
 			}
 		}
 	streamDone:
+
+		// Parse accumulated JSON input for each tool
+		for id, builder := range toolInputBuilders {
+			if tu, ok := toolUses[id]; ok && builder.Len() > 0 {
+				var input map[string]interface{}
+				if err := json.Unmarshal([]byte(builder.String()), &input); err == nil {
+					tu.Input = input
+				}
+			}
+		}
 
 		if err := stream.Err(); err != nil {
 			_ = stream.Close()

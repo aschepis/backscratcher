@@ -32,4 +32,3 @@ func All() map[string]ToolSchema {
 
 	return schemas
 }
-

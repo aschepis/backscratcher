@@ -35,4 +35,3 @@ func SystemSchemas() map[string]ToolSchema {
 		},
 	}
 }
-

@@ -26,7 +26,7 @@ func NewStdioMCPClient(command, configFile string, args, env []string) (*StdioMC
 		return nil, fmt.Errorf("command is required for STDIO MCP client")
 	}
 
-	logger.Info("NewStdioMCPClient: parsing command=%s args=%v env=%v configFile=%s", command, args, env, configFile)
+	logger.Debug("NewStdioMCPClient: parsing command=%s args=%v env=%v configFile=%s", command, args, env, configFile)
 
 	// Split command into command and args if it contains spaces
 	parts := strings.Fields(command)
@@ -40,17 +40,17 @@ func NewStdioMCPClient(command, configFile string, args, env []string) (*StdioMC
 		cmdArgs = args
 	}
 
-	logger.Info("NewStdioMCPClient: parsed cmd=%s finalArgs=%v", cmd, cmdArgs)
+	logger.Debug("NewStdioMCPClient: parsed cmd=%s finalArgs=%v", cmd, cmdArgs)
 
 	// Create the stdio client using mcp-go
-	logger.Info("NewStdioMCPClient: creating underlying mcp-go client")
+	logger.Debug("NewStdioMCPClient: creating underlying mcp-go client")
 	mcpClient, err := client.NewStdioMCPClient(cmd, env, cmdArgs...)
 	if err != nil {
 		logger.Error("NewStdioMCPClient: failed to create underlying client: %v", err)
 		return nil, fmt.Errorf("failed to create stdio MCP client: %w", err)
 	}
 
-	logger.Info("NewStdioMCPClient: successfully created underlying client")
+	logger.Debug("NewStdioMCPClient: successfully created underlying client")
 	return &StdioMCPClient{
 		client:     mcpClient,
 		command:    cmd,

@@ -164,16 +164,16 @@ func ExtractMCPServersFromProjects(claudeConfig *ClaudeConfig, projectPaths []st
 	for _, path := range filteredProjectPaths {
 		normalized := filepath.Clean(expandPath(path))
 		normalizedPaths[normalized] = path
-		logger.Info("ExtractMCPServersFromProjects: normalized project path %q -> %q", path, normalized)
+		logger.Debug("ExtractMCPServersFromProjects: normalized project path %q -> %q", path, normalized)
 	}
 
 	// If no project paths specified, load from all projects and global
 	loadAll := len(filteredProjectPaths) == 0
 	if loadAll {
-		logger.Info("ExtractMCPServersFromProjects: no project filter specified, loading from all projects and global servers")
+		logger.Debug("ExtractMCPServersFromProjects: no project filter specified, loading from all projects and global servers")
 		includeGlobal = true
 	} else {
-		logger.Info("ExtractMCPServersFromProjects: filtering to %d specified project(s), includeGlobal=%v", len(filteredProjectPaths), includeGlobal)
+		logger.Debug("ExtractMCPServersFromProjects: filtering to %d specified project(s), includeGlobal=%v", len(filteredProjectPaths), includeGlobal)
 	}
 
 	// Extract global MCP servers if requested
@@ -182,12 +182,12 @@ func ExtractMCPServersFromProjects(claudeConfig *ClaudeConfig, projectPaths []st
 		for serverName, server := range claudeConfig.MCPServers {
 			servers[serverName] = server
 			serverNames = append(serverNames, serverName)
-			logger.Info("ExtractMCPServersFromProjects: extracted global server %q (command=%s)", serverName, server.Command)
+			logger.Debug("ExtractMCPServersFromProjects: extracted global server %q (command=%s)", serverName, server.Command)
 		}
 		projectToServers["Global"] = serverNames
-		logger.Info("ExtractMCPServersFromProjects: Global contributed %d MCP server(s)", len(serverNames))
+		logger.Debug("ExtractMCPServersFromProjects: Global contributed %d MCP server(s)", len(serverNames))
 	} else if includeGlobal {
-		logger.Info("ExtractMCPServersFromProjects: Global has no MCP servers")
+		logger.Debug("ExtractMCPServersFromProjects: Global has no MCP servers")
 	}
 
 	// Extract from projects
@@ -218,35 +218,21 @@ func ExtractMCPServersFromProjects(claudeConfig *ClaudeConfig, projectPaths []st
 			for serverName, server := range project.MCPServers {
 				servers[serverName] = server
 				serverNames = append(serverNames, serverName)
-				logger.Info("ExtractMCPServersFromProjects: extracted server %q from project %q (command=%s)", serverName, projectPath, server.Command)
+				logger.Debug("ExtractMCPServersFromProjects: extracted server %q from project %q (command=%s)", serverName, projectPath, server.Command)
 			}
 			projectToServers[projectPath] = serverNames
-			logger.Info("ExtractMCPServersFromProjects: project %q contributed %d MCP server(s)", projectPath, len(serverNames))
+			logger.Debug("ExtractMCPServersFromProjects: project %q contributed %d MCP server(s)", projectPath, len(serverNames))
 			continue
 		}
 
 		if shouldLoad {
-			logger.Info("ExtractMCPServersFromProjects: project %q has no MCP servers", projectPath)
+			logger.Debug("ExtractMCPServersFromProjects: project %q has no MCP servers", projectPath)
 			continue
 		}
 
-		logger.Info("ExtractMCPServersFromProjects: skipping project %q (not in filter list)", projectPath)
+		logger.Debug("ExtractMCPServersFromProjects: skipping project %q (not in filter list)", projectPath)
 	}
 
-	// Count projects vs global
-	projectCount := 0
-	hasGlobal := false
-	for path := range projectToServers {
-		if path == "Global" {
-			hasGlobal = true
-		} else {
-			projectCount++
-		}
-	}
-	if hasGlobal {
-		logger.Info("ExtractMCPServersFromProjects: extracted %d total MCP server(s) from Global and %d project(s)", len(servers), projectCount)
-	} else {
-		logger.Info("ExtractMCPServersFromProjects: extracted %d total MCP server(s) from %d project(s)", len(servers), projectCount)
-	}
+	logger.Info("ExtractMCPServersFromProjects: extracted %d MCP servers from Claude config", len(servers))
 	return servers, projectToServers
 }

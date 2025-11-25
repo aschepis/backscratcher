@@ -226,22 +226,22 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*config.MCPServerCo
 		switch {
 		case serverConfig.Command != "":
 			// STDIO transport
-			logger.Info("Creating STDIO MCP client for %s: command=%s args=%v env=%v", serverName, serverConfig.Command, serverConfig.Args, serverConfig.Env)
+			logger.Debug("Creating STDIO MCP client for %s: command=%s args=%v env=%v", serverName, serverConfig.Command, serverConfig.Args, serverConfig.Env)
 			mcpClient, err = mcp.NewStdioMCPClient(serverConfig.Command, serverConfig.ConfigFile, serverConfig.Args, serverConfig.Env)
 			if err != nil {
 				logger.Error("Failed to create STDIO MCP client for %s: %v", serverName, err)
 				continue
 			}
-			logger.Info("Successfully created STDIO MCP client for %s", serverName)
+			logger.Debug("Successfully created STDIO MCP client for %s", serverName)
 		case serverConfig.URL != "":
 			// HTTP transport
-			logger.Info("Creating HTTP MCP client for %s: url=%s", serverName, serverConfig.URL)
+			logger.Debug("Creating HTTP MCP client for %s: url=%s", serverName, serverConfig.URL)
 			mcpClient, err = mcp.NewHttpMCPClient(serverConfig.URL, serverConfig.ConfigFile)
 			if err != nil {
 				logger.Error("Failed to create HTTP MCP client for %s: %v", serverName, err)
 				continue
 			}
-			logger.Info("Successfully created HTTP MCP client for %s", serverName)
+			logger.Debug("Successfully created HTTP MCP client for %s", serverName)
 		default:
 			logger.Warn("MCP server %s has neither command nor url, skipping", serverName)
 			continue
@@ -441,7 +441,7 @@ func main() {
 							logger.Info("Added Claude MCP server: %s (from project config)", name)
 							addedCount++
 						} else {
-							logger.Info("Skipping Claude MCP server %s (already exists in agents.yaml, agents.yaml takes precedence)", name)
+							logger.Debug("Skipping Claude MCP server %s (already exists in agents.yaml, agents.yaml takes precedence)", name)
 							skippedCount++
 						}
 					}
