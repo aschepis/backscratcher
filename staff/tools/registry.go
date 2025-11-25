@@ -399,7 +399,7 @@ type MCPToolInvoker interface {
 // safeName is the tool name safe for Anthropic API (no dots).
 // originalName is the original MCP tool name (may contain dots).
 func (r *Registry) RegisterMCPTool(safeName, originalName string, invoker MCPToolInvoker) {
-	logger.Info("Registering MCP tool: safeName=%s originalName=%s", safeName, originalName)
+	logger.Debug("Registering MCP tool: safeName=%s originalName=%s", safeName, originalName)
 	r.Register(safeName, func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
 		logger.Info("Calling MCP tool: safeName=%s originalName=%s agent=%s", safeName, originalName, agentID)
 

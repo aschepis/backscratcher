@@ -22,6 +22,7 @@ import (
 	"github.com/aschepis/backscratcher/staff/migrations"
 	"github.com/aschepis/backscratcher/staff/runtime"
 	"github.com/aschepis/backscratcher/staff/tools"
+	"github.com/aschepis/backscratcher/staff/tools/schemas"
 	"github.com/aschepis/backscratcher/staff/ui"
 	"github.com/aschepis/backscratcher/staff/ui/tui"
 	_ "github.com/mattn/go-sqlite3"
@@ -50,7 +51,23 @@ func (a *mcpClientAdapter) ListTools(ctx context.Context) ([]tools.MCPToolDefini
 
 // registerAllTools registers all tool handlers and schemas with the crew.
 // This centralizes all tool registration logic.
-func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, workspacePath string, db *sql.DB, stateManager *agent.StateManager, apiKey string) {
+// registerToolSchemas registers all tool schemas with the ToolProvider.
+// Schemas are defined in the tools/schemas package for better organization.
+func registerToolSchemas(crew *agent.Crew) {
+	allSchemas := schemas.All()
+	for name, schema := range allSchemas {
+		crew.ToolProvider.RegisterSchema(name, agent.ToolSchema{
+			Description: schema.Description,
+			Schema:      schema.Schema,
+		})
+	}
+	logger.Info("Registered %d tool schemas", len(allSchemas))
+}
+
+// registerToolHandlers registers all tool handlers with the ToolRegistry.
+// This is separate from schema registration to maintain a clear separation
+// between handler implementation and API schema definition.
+func registerToolHandlers(crew *agent.Crew, memoryRouter *memory.MemoryRouter, workspacePath string, db *sql.DB, stateManager *agent.StateManager, apiKey string) {
 	// Register tool handlers
 	crew.ToolRegistry.RegisterMemoryTools(memoryRouter, apiKey)
 	crew.ToolRegistry.RegisterFilesystemTools(workspacePath)
@@ -128,9 +145,9 @@ func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, works
 			return crew.StatsManager().GetAllStats()
 		},
 		GetAllToolSchemas: func() map[string]tools.ToolSchemaData {
-			schemas := crew.ToolProvider.GetAllSchemas()
+			toolSchemas := crew.ToolProvider.GetAllSchemas()
 			result := make(map[string]tools.ToolSchemaData)
-			for name, schema := range schemas {
+			for name, schema := range toolSchemas {
 				result[name] = tools.ToolSchemaData{
 					Description: schema.Description,
 				}
@@ -162,274 +179,16 @@ func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, works
 		},
 	}
 	crew.ToolRegistry.RegisterStaffTools(staffData, workspacePath, db)
+}
 
-	// Register schemas for memory tools
-	// Note: Tool names must match pattern ^[a-zA-Z0-9_-]{1,128}$ (no dots allowed)
-	crew.ToolProvider.RegisterSchema("memory_search", agent.ToolSchema{
-		Description: "Search the agent or global memory store.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"query":          map[string]any{"type": "string"},
-				"include_global": map[string]any{"type": "boolean"},
-				"limit":          map[string]any{"type": "number"},
-			},
-			"required": []string{"query"},
-		},
-	})
+// registerAllTools registers all tool handlers and schemas with the crew.
+// This is the main entry point for tool registration, called during startup.
+func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, workspacePath string, db *sql.DB, stateManager *agent.StateManager, apiKey string) {
+	// Register tool handlers (implementation)
+	registerToolHandlers(crew, memoryRouter, workspacePath, db, stateManager, apiKey)
 
-	crew.ToolProvider.RegisterSchema("memory_search_personal", agent.ToolSchema{
-		Description: "Search personal memories (type='profile') for the agent using hybrid retrieval (embeddings, tag matching, and FTS). Returns memories with raw_content, memory_type, and tags.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "Text query to search for in personal memories. Uses hybrid search with embeddings, tags, and FTS.",
-				},
-				"tags": map[string]any{
-					"type":        "array",
-					"description": "Optional tags to match against memory tags (intersection matching).",
-					"items":       map[string]any{"type": "string"},
-				},
-				"limit": map[string]any{
-					"type":        "number",
-					"description": "Maximum number of results to return (default: 10).",
-				},
-				"memory_type": map[string]any{
-					"type":        "string",
-					"description": "Optional filter by normalized memory type (preference, biographical, habit, goal, value, project, other).",
-				},
-			},
-			"required": []string{},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("memory_remember_fact", agent.ToolSchema{
-		Description: "Store a global factual memory about the user.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"fact": map[string]any{"type": "string"},
-			},
-			"required": []string{"fact"},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("memory_normalize", agent.ToolSchema{
-		Description: "Normalize a raw user or agent statement into a structured personal memory triple: normalized text, type, and tags.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"text": map[string]any{"type": "string", "description": "Raw user or agent statement to normalize into a long-term memory."},
-			},
-			"required": []string{"text"},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("memory_store_personal", agent.ToolSchema{
-		Description: "Store a normalized personal memory about the user, using the output from memory_normalize.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"agent_id":   map[string]any{"type": "string", "description": "Optional agent ID on whose behalf the memory is stored (defaults to calling agent)."},
-				"text":       map[string]any{"type": "string", "description": "Original raw statement, if available."},
-				"normalized": map[string]any{"type": "string", "description": "Normalized third-person text from memory_normalize."},
-				"type":       map[string]any{"type": "string", "description": "Normalized memory type from memory_normalize (preference, biographical, habit, goal, value, project, other)."},
-				"tags": map[string]any{
-					"type":        "array",
-					"description": "Tags returned by memory_normalize.",
-					"items":       map[string]any{"type": "string"},
-				},
-				"thread_id":  map[string]any{"type": "string", "description": "Optional thread or conversation identifier."},
-				"importance": map[string]any{"type": "number", "description": "Optional importance score; if omitted, a reasonable default is used."},
-				"metadata":   map[string]any{"type": "object", "description": "Optional additional metadata to associate with this memory."},
-			},
-			"required": []string{"normalized", "type", "tags"},
-		},
-	})
-
-	// Register schemas for filesystem tools
-	crew.ToolProvider.RegisterSchema("read_file", agent.ToolSchema{
-		Description: "Read the contents of a file. Returns the file content, size, and path.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path":      map[string]any{"type": "string", "description": "Path to the file to read (relative to workspace)"},
-				"encoding":  map[string]any{"type": "string", "description": "File encoding (default: utf-8)"},
-				"max_bytes": map[string]any{"type": "number", "description": "Maximum number of bytes to read (0 = read entire file)"},
-			},
-			"required": []string{"path"},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("write_file", agent.ToolSchema{
-		Description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path":        map[string]any{"type": "string", "description": "Path to the file to write (relative to workspace)"},
-				"content":     map[string]any{"type": "string", "description": "Content to write to the file"},
-				"create_dirs": map[string]any{"type": "boolean", "description": "Create parent directories if they don't exist"},
-			},
-			"required": []string{"path", "content"},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("list_directory", agent.ToolSchema{
-		Description: "List files and directories in a path. Can list recursively and optionally include hidden files.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path":           map[string]any{"type": "string", "description": "Path to the directory to list (relative to workspace, default: '.')"},
-				"recursive":      map[string]any{"type": "boolean", "description": "Whether to list recursively"},
-				"include_hidden": map[string]any{"type": "boolean", "description": "Whether to include hidden files (starting with '.')"},
-			},
-			"required": []string{},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("file_search", agent.ToolSchema{
-		Description: "Search for files using glob patterns (e.g., '*.go', '**/*.test.go').",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"pattern": map[string]any{"type": "string", "description": "Glob pattern to match files (e.g., '*.go', '**/*.test.go')"},
-				"root":    map[string]any{"type": "string", "description": "Root directory to search from (relative to workspace, default: '.')"},
-				"limit":   map[string]any{"type": "number", "description": "Maximum number of matches to return (default: 100)"},
-			},
-			"required": []string{"pattern"},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("file_info", agent.ToolSchema{
-		Description: "Get metadata about a file or directory (size, mode, modification time, etc.).",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{"type": "string", "description": "Path to the file or directory (relative to workspace)"},
-			},
-			"required": []string{"path"},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("create_directory", agent.ToolSchema{
-		Description: "Create a directory. Can create parent directories if needed.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path":    map[string]any{"type": "string", "description": "Path to the directory to create (relative to workspace)"},
-				"parents": map[string]any{"type": "boolean", "description": "Whether to create parent directories if they don't exist"},
-			},
-			"required": []string{"path"},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("grep_search", agent.ToolSchema{
-		Description: "Search file contents using regex patterns. Returns matching lines with line numbers and optional context.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"pattern":        map[string]any{"type": "string", "description": "Regex pattern to search for"},
-				"path":           map[string]any{"type": "string", "description": "Path to file or directory to search in (relative to workspace)"},
-				"case_sensitive": map[string]any{"type": "boolean", "description": "Whether the search should be case-sensitive (default: false)"},
-				"context_lines":  map[string]any{"type": "number", "description": "Number of context lines to include around each match (0-5, default: 0)"},
-			},
-			"required": []string{"pattern", "path"},
-		},
-	})
-
-	// Register schemas for system tools
-	crew.ToolProvider.RegisterSchema("execute_command", agent.ToolSchema{
-		Description: "Execute a shell command in the workspace directory. WARNING: This tool blocks dangerous commands that could damage the system, delete files, format disks, or execute arbitrary code from the internet. Please use safe commands only and avoid any operations that could modify or delete files, format storage devices, or download and execute code. Commands that attempt file deletion, disk formatting, or piping from remote sources will be automatically blocked for safety.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"command":     map[string]any{"type": "string", "description": "Command to execute (e.g., 'ls', 'grep', 'git')"},
-				"args":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Command arguments"},
-				"timeout":     map[string]any{"type": "number", "description": "Timeout in seconds (default: 30, max: 300)"},
-				"working_dir": map[string]any{"type": "string", "description": "Working directory relative to workspace (default: workspace root)"},
-				"stdin":       map[string]any{"type": "string", "description": "Standard input to pipe to the command"},
-			},
-			"required": []string{"command"},
-		},
-	})
-
-	// Register schemas for notification tools
-	crew.ToolProvider.RegisterSchema("send_user_notification", agent.ToolSchema{
-		Description: "Send a notification to the user. Inserts the notification into the inbox table and attempts to display a desktop notification. Use this when you need to alert the user about something important, request their attention, or notify them of completed tasks.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"message":           map[string]any{"type": "string", "description": "The notification message to send to the user"},
-				"title":             map[string]any{"type": "string", "description": "Optional title for the notification (default: 'Staff Notification')"},
-				"thread_id":         map[string]any{"type": "string", "description": "Optional thread ID to associate the notification with a conversation"},
-				"requires_response": map[string]any{"type": "boolean", "description": "Whether this notification requires a response from the user"},
-			},
-			"required": []string{"message"},
-		},
-	})
-
-	// Register schemas for staff tools
-	crew.ToolProvider.RegisterSchema("list_agents", agent.ToolSchema{
-		Description: "List all configured agents with their configuration details.",
-		Schema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-			"required":   []string{},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("get_agent_state", agent.ToolSchema{
-		Description: "Get the current state and next_wake time for one or all agents.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"agent_id": map[string]any{"type": "string", "description": "Optional agent ID. If omitted, returns states for all agents."},
-			},
-			"required": []string{},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("get_agent_stats", agent.ToolSchema{
-		Description: "Get execution statistics (execution_count, failure_count, wakeup_count, last_execution, last_failure) for one or all agents.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"agent_id": map[string]any{"type": "string", "description": "Optional agent ID. If omitted, returns stats for all agents."},
-			},
-			"required": []string{},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("list_tools", agent.ToolSchema{
-		Description: "List all registered tools with their descriptions.",
-		Schema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-			"required":   []string{},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("list_mcp_servers", agent.ToolSchema{
-		Description: "List all configured MCP servers with their configuration details.",
-		Schema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-			"required":   []string{},
-		},
-	})
-
-	crew.ToolProvider.RegisterSchema("mcp_tools_discover", agent.ToolSchema{
-		Description: "Discover tools available from MCP servers. Returns tool definitions including name, description, and input schema.",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"server_name": map[string]any{"type": "string", "description": "Optional MCP server name. If omitted, discovers tools from all configured MCP servers."},
-			},
-			"required": []string{},
-		},
-	})
+	// Register tool schemas (API definitions)
+	registerToolSchemas(crew)
 }
 
 // registerMCPServers discovers and registers tools from MCP servers.
@@ -539,7 +298,7 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*config.MCPServerCo
 				Schema:      schema,
 			}, serverName)
 
-			logger.Info("Registered MCP tool: safeName=%s originalName=%s server=%s", safeName, originalName, serverName)
+			logger.Debug("Registered MCP tool: safeName=%s originalName=%s server=%s", safeName, originalName, serverName)
 		}
 
 		// Store MCP server config and client in Crew
