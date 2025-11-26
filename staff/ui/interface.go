@@ -89,6 +89,22 @@ type ChatService interface {
 
 	// GetSystemInfo returns information about the system configuration.
 	GetSystemInfo(ctx context.Context) (*SystemInfo, error)
+
+	// Tool operations for the tools UI page
+	// DumpMemory writes all memory items to a file
+	DumpMemory(ctx context.Context, filePath string) error
+	// ClearMemory deletes all memory items from the database
+	ClearMemory(ctx context.Context) error
+	// DumpConversations writes conversations grouped by agent to files (one file per agent)
+	DumpConversations(ctx context.Context, outputDir string) error
+	// ClearConversations deletes all conversations from the database
+	ClearConversations(ctx context.Context) error
+	// ResetStats resets all agent stats
+	ResetStats(ctx context.Context) error
+	// DumpInbox writes all inbox items to a file
+	DumpInbox(ctx context.Context, filePath string) error
+	// ClearInbox deletes all inbox items from the database
+	ClearInbox(ctx context.Context) error
 }
 
 // MessageWithTimestamp represents a message with its database timestamp.

@@ -428,8 +428,8 @@ agents:
 
     tools:
       # Gmail access
-      - "claude_google-workspace:*"
-      - "*gmail*"
+      - "claude_google-workspace:.*"
+      - ".*gmail.*"
 
       # Memory management for filters and preferences
       - memory_search_personal

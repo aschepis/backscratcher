@@ -9,6 +9,7 @@ import (
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 	"github.com/aschepis/backscratcher/staff/llm"
+	"github.com/aschepis/backscratcher/staff/logger"
 )
 
 // anthropicStream implements the llm.Stream interface for Anthropic streaming responses.
@@ -217,6 +218,21 @@ func (s *anthropicStream) startStream() {
 				OutputTokens:             evt.Usage.OutputTokens,
 				CacheCreationInputTokens: evt.Usage.CacheCreationInputTokens,
 				CacheReadInputTokens:     evt.Usage.CacheReadInputTokens,
+			}
+
+			// Log prompt cache information for tracking efficacy
+			if usage.CacheCreationInputTokens > 0 || usage.CacheReadInputTokens > 0 {
+				cacheEfficiency := float64(0)
+				if usage.InputTokens > 0 {
+					cacheEfficiency = float64(usage.CacheReadInputTokens) / float64(usage.InputTokens) * 100
+				}
+				logger.Debug(
+					"Prompt cache stats (stream): input_tokens=%d, cache_creation_tokens=%d, cache_read_tokens=%d, cache_efficiency=%.2f%%",
+					usage.InputTokens,
+					usage.CacheCreationInputTokens,
+					usage.CacheReadInputTokens,
+					cacheEfficiency,
+				)
 			}
 
 		case anthropic.MessageStopEvent:

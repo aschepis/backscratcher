@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -1361,4 +1363,322 @@ func (s *chatService) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 	}
 
 	return info, nil
+}
+
+// DumpMemory writes all memory items to a file as JSON
+func (s *chatService) DumpMemory(ctx context.Context, filePath string) error {
+	query := sq.Select("id", "agent_id", "thread_id", "scope", "type", "content",
+		"metadata", "created_at", "updated_at", "importance", "raw_content", "memory_type", "tags_json").
+		From("memory_items").
+		OrderBy("created_at ASC")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, queryStr, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
+
+	var items []map[string]interface{}
+	for rows.Next() {
+		var id int64
+		var agentID, threadID sql.NullString
+		var scope, typ, content string
+		var metadata sql.NullString
+		var createdAt, updatedAt int64
+		var importance float64
+		var rawContent, memoryType, tagsJSON sql.NullString
+
+		if err := rows.Scan(&id, &agentID, &threadID, &scope, &typ, &content,
+			&metadata, &createdAt, &updatedAt, &importance, &rawContent, &memoryType, &tagsJSON); err != nil {
+			return err
+		}
+
+		item := map[string]interface{}{
+			"id":         id,
+			"scope":      scope,
+			"type":       typ,
+			"content":    content,
+			"created_at": createdAt,
+			"updated_at": updatedAt,
+			"importance": importance,
+		}
+
+		if agentID.Valid {
+			item["agent_id"] = agentID.String
+		}
+		if threadID.Valid {
+			item["thread_id"] = threadID.String
+		}
+		if metadata.Valid {
+			var meta map[string]interface{}
+			if err := json.Unmarshal([]byte(metadata.String), &meta); err == nil {
+				item["metadata"] = meta
+			} else {
+				item["metadata"] = metadata.String
+			}
+		}
+		if rawContent.Valid {
+			item["raw_content"] = rawContent.String
+		}
+		if memoryType.Valid {
+			item["memory_type"] = memoryType.String
+		}
+		if tagsJSON.Valid {
+			var tags []string
+			if err := json.Unmarshal([]byte(tagsJSON.String), &tags); err == nil {
+				item["tags"] = tags
+			} else {
+				item["tags"] = tagsJSON.String
+			}
+		}
+
+		items = append(items, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Write to file as JSON
+	data, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal memory items: %w", err)
+	}
+
+	return os.WriteFile(filePath, data, 0644)
+}
+
+// ClearMemory deletes all memory items from the database
+func (s *chatService) ClearMemory(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // No remedy for rollback errors
+
+	// Delete from FTS table first (if it exists)
+	_, err = tx.ExecContext(ctx, "DELETE FROM memory_items_fts")
+	if err != nil {
+		// FTS table might not exist, continue
+	}
+
+	// Delete from main table
+	_, err = tx.ExecContext(ctx, "DELETE FROM memory_items")
+	if err != nil {
+		return fmt.Errorf("delete memory items: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// DumpConversations writes conversations grouped by agent to files (one file per agent)
+func (s *chatService) DumpConversations(ctx context.Context, outputDir string) error {
+	// Get all unique agent IDs
+	query := sq.Select("DISTINCT agent_id").From("conversations")
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, queryStr, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
+
+	var agentIDs []string
+	for rows.Next() {
+		var agentID string
+		if err := rows.Scan(&agentID); err != nil {
+			return err
+		}
+		agentIDs = append(agentIDs, agentID)
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Create output directory if it doesn't exist
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
+	}
+
+	// For each agent, dump their conversations
+	for _, agentID := range agentIDs {
+		convQuery := sq.Select("id", "agent_id", "thread_id", "role", "content", "tool_name", "tool_id", "created_at").
+			From("conversations").
+			Where(sq.Eq{"agent_id": agentID}).
+			OrderBy("created_at ASC")
+
+		convQueryStr, convArgs, err := convQuery.ToSql()
+		if err != nil {
+			return fmt.Errorf("build query for agent %s: %w", agentID, err)
+		}
+
+		convRows, err := s.db.QueryContext(ctx, convQueryStr, convArgs...)
+		if err != nil {
+			return fmt.Errorf("query conversations for agent %s: %w", agentID, err)
+		}
+
+		var conversations []map[string]interface{}
+		for convRows.Next() {
+			var id int64
+			var agentID, threadID, role, content string
+			var toolName, toolID sql.NullString
+			var createdAt int64
+
+			if err := convRows.Scan(&id, &agentID, &threadID, &role, &content, &toolName, &toolID, &createdAt); err != nil {
+				convRows.Close()
+				return err
+			}
+
+			conv := map[string]interface{}{
+				"id":         id,
+				"agent_id":   agentID,
+				"thread_id":  threadID,
+				"role":       role,
+				"content":    content,
+				"created_at": createdAt,
+			}
+
+			if toolName.Valid {
+				conv["tool_name"] = toolName.String
+			}
+			if toolID.Valid {
+				conv["tool_id"] = toolID.String
+			}
+
+			conversations = append(conversations, conv)
+		}
+		convRows.Close()
+
+		if err := convRows.Err(); err != nil {
+			return fmt.Errorf("scan conversations for agent %s: %w", agentID, err)
+		}
+
+		// Write to file
+		// Sanitize agentID for filename
+		safeAgentID := strings.ReplaceAll(agentID, "/", "_")
+		safeAgentID = strings.ReplaceAll(safeAgentID, "\\", "_")
+		filePath := filepath.Join(outputDir, fmt.Sprintf("conversations_%s.json", safeAgentID))
+
+		data, err := json.MarshalIndent(conversations, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal conversations for agent %s: %w", agentID, err)
+		}
+
+		if err := os.WriteFile(filePath, data, 0644); err != nil {
+			return fmt.Errorf("write conversations for agent %s: %w", agentID, err)
+		}
+	}
+
+	return nil
+}
+
+// ClearConversations deletes all conversations from the database
+func (s *chatService) ClearConversations(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM conversations")
+	return err
+}
+
+// ResetStats resets all agent stats
+func (s *chatService) ResetStats(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agent_stats 
+		SET execution_count = 0, 
+		    failure_count = 0, 
+		    wakeup_count = 0, 
+		    last_execution = NULL, 
+		    last_failure = NULL, 
+		    last_failure_message = NULL
+	`)
+	return err
+}
+
+// DumpInbox writes all inbox items to a file as JSON
+func (s *chatService) DumpInbox(ctx context.Context, filePath string) error {
+	query := sq.Select("id", "agent_id", "thread_id", "message", "requires_response",
+		"response", "response_at", "archived_at", "created_at", "updated_at").
+		From("inbox").
+		OrderBy("created_at ASC")
+
+	queryStr, args, err := query.ToSql()
+	if err != nil {
+		return fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, queryStr, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
+
+	var items []map[string]interface{}
+	for rows.Next() {
+		var id int64
+		var agentID, threadID sql.NullString
+		var message string
+		var requiresResponse bool
+		var response sql.NullString
+		var responseAt, archivedAt, createdAt, updatedAt sql.NullInt64
+
+		if err := rows.Scan(&id, &agentID, &threadID, &message, &requiresResponse,
+			&response, &responseAt, &archivedAt, &createdAt, &updatedAt); err != nil {
+			return err
+		}
+
+		item := map[string]interface{}{
+			"id":                id,
+			"message":           message,
+			"requires_response": requiresResponse,
+		}
+
+		if agentID.Valid {
+			item["agent_id"] = agentID.String
+		}
+		if threadID.Valid {
+			item["thread_id"] = threadID.String
+		}
+		if response.Valid {
+			item["response"] = response.String
+		}
+		if responseAt.Valid {
+			item["response_at"] = responseAt.Int64
+		}
+		if archivedAt.Valid {
+			item["archived_at"] = archivedAt.Int64
+		}
+		if createdAt.Valid {
+			item["created_at"] = createdAt.Int64
+		}
+		if updatedAt.Valid {
+			item["updated_at"] = updatedAt.Int64
+		}
+
+		items = append(items, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Write to file as JSON
+	data, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal inbox items: %w", err)
+	}
+
+	return os.WriteFile(filePath, data, 0644)
+}
+
+// ClearInbox deletes all inbox items from the database
+func (s *chatService) ClearInbox(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM inbox")
+	return err
 }

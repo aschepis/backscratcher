@@ -89,6 +89,9 @@ func (a *App) setupUI() {
 		AddItem("Settings", "Configure settings", '3', func() {
 			a.showSettings()
 		}).
+		AddItem("Tools", "Tools", '4', func() {
+			a.showTools()
+		}).
 		AddItem("About", "About this application", '4', func() {
 			a.showAbout()
 			// Set focus to content view for scrolling

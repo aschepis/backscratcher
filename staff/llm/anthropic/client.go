@@ -8,6 +8,7 @@ import (
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/aschepis/backscratcher/staff/llm"
+	"github.com/aschepis/backscratcher/staff/logger"
 )
 
 // AnthropicClient implements the llm.Client interface for Anthropic's API.
@@ -102,6 +103,21 @@ func (c *AnthropicClient) Synchronous(ctx context.Context, req *llm.Request) (*l
 		CacheReadInputTokens:     message.Usage.CacheReadInputTokens,
 	}
 
+	// Log prompt cache information for tracking efficacy
+	if usage.CacheCreationInputTokens > 0 || usage.CacheReadInputTokens > 0 {
+		cacheEfficiency := float64(0)
+		if usage.InputTokens > 0 {
+			cacheEfficiency = float64(usage.CacheReadInputTokens) / float64(usage.InputTokens) * 100
+		}
+		logger.Debug(
+			"Prompt cache stats: input_tokens=%d, cache_creation_tokens=%d, cache_read_tokens=%d, cache_efficiency=%.2f%%",
+			usage.InputTokens,
+			usage.CacheCreationInputTokens,
+			usage.CacheReadInputTokens,
+			cacheEfficiency,
+		)
+	}
+
 	// Extract stop reason
 	stopReason := string(message.StopReason)
 
@@ -155,32 +171,8 @@ func (c *AnthropicClient) Stream(ctx context.Context, req *llm.Request) (llm.Str
 // (roughly equivalent to ~1000 tokens, meeting Anthropic's 1024 token minimum requirement).
 // This helps reduce costs and latency for repeated requests with the same tools and system prompt.
 func buildSystemBlocks(systemPrompt string, tools []anthropic.ToolUnionParam) []anthropic.TextBlockParam {
-	// Anthropic requires minimum 1,024 tokens for caching, which is roughly 4,000 characters
-	// (using a rough estimate of 1 token ≈ 4 characters). We use 4000 characters as a safe
-	// threshold to ensure we meet the minimum token requirement across different tokenization methods.
-	const minCacheableLength = 4000
-
 	blocks := []anthropic.TextBlockParam{
-		{Text: systemPrompt},
-	}
-
-	// Calculate approximate size of tools by marshaling to JSON
-	toolsSize := 0
-	if len(tools) > 0 {
-		if toolsJSON, err := json.Marshal(tools); err == nil {
-			toolsSize = len(toolsJSON)
-		}
-	}
-
-	// Combined size of tools + system prompt
-	combinedSize := toolsSize + len(systemPrompt)
-
-	// Enable ephemeral caching if the combined static content (tools + system) is large enough
-	// When cache_control is placed on the system block, it caches both tools and system together
-	if combinedSize >= minCacheableLength {
-		// Create cache control with default 5-minute TTL
-		cacheControl := anthropic.NewCacheControlEphemeralParam()
-		blocks[0].CacheControl = cacheControl
+		{Text: systemPrompt, CacheControl: anthropic.NewCacheControlEphemeralParam()},
 	}
 
 	return blocks

@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/aschepis/backscratcher/staff/llm"
@@ -48,7 +48,7 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []llm.ToolSpec {
 		return nil
 	}
 
-	// Expand wildcard patterns and collect all matched tool names
+	// Expand regexp patterns and collect all matched tool names
 	seen := make(map[string]bool)
 	var expandedTools []string
 
@@ -58,34 +58,24 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []llm.ToolSpec {
 			continue
 		}
 
-		// Check if pattern contains wildcards or is an MCP server pattern
-		hasWildcard := strings.Contains(pattern, "*") || strings.Contains(pattern, "?") || strings.Contains(pattern, "[")
+		// Check if pattern is an MCP server pattern or needs regexp matching
 		hasServerPrefix := strings.Contains(pattern, ":")
 
-		if hasWildcard || hasServerPrefix {
-			// Expand the pattern
-			matched := p.expandToolPattern(pattern)
-			if len(matched) == 0 {
-				// Only warn if this is not a server prefix pattern (those warn inside expandToolPattern)
-				if !hasServerPrefix {
-					logger.Warn("Tool pattern %q matched no tools", pattern)
-				}
-			} else {
-				logger.Debug("Tool pattern %q matched %d tools: %v", pattern, len(matched), matched)
+		// Try to match as regexp pattern (or exact match if no special characters)
+		matched := p.expandToolPattern(pattern)
+		if len(matched) == 0 {
+			// Only warn if this is not a server prefix pattern (those warn inside expandToolPattern)
+			if !hasServerPrefix {
+				logger.Warn("Tool pattern %q matched no tools", pattern)
 			}
-			for _, toolName := range matched {
-				if !seen[toolName] {
-					seen[toolName] = true
-					expandedTools = append(expandedTools, toolName)
-				}
-			}
-			continue
+		} else {
+			logger.Debug("Tool pattern %q matched %d tools: %v", pattern, len(matched), matched)
 		}
-
-		// Exact tool name (no wildcards) - use as-is
-		if !seen[pattern] {
-			seen[pattern] = true
-			expandedTools = append(expandedTools, pattern)
+		for _, toolName := range matched {
+			if !seen[toolName] {
+				seen[toolName] = true
+				expandedTools = append(expandedTools, toolName)
+			}
 		}
 	}
 
@@ -109,7 +99,6 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []llm.ToolSpec {
 			switch req := requiredRaw.(type) {
 			case []string:
 				required = req
-				logger.Debug("Extracted required fields ([]string) for tool %s: %v", name, required)
 			case []any:
 				// Handle case where JSON unmarshaling produces []interface{} instead of []string
 				// Note: []any is an alias for []interface{}, so this handles both
@@ -119,7 +108,6 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []llm.ToolSpec {
 						required = append(required, str)
 					}
 				}
-				logger.Debug("Extracted required fields ([]any/[]interface{}) for tool %s: %v (from raw: %v)", name, required, requiredRaw)
 			default:
 				logger.Warn("Tool %s has 'required' field with unexpected type: %T (value: %v). Attempting to convert...", name, requiredRaw, requiredRaw)
 				// Last resort: try to convert via type assertion to []interface{}
@@ -130,7 +118,6 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []llm.ToolSpec {
 							required = append(required, str)
 						}
 					}
-					logger.Debug("Converted required fields for tool %s: %v", name, required)
 				} else {
 					logger.Error("Failed to extract required fields for tool %s: type %T cannot be converted", name, requiredRaw)
 				}
@@ -189,102 +176,50 @@ func (p *ToolProviderFromRegistry) getAllToolNames() []string {
 	return names
 }
 
-// expandToolPattern expands a tool pattern (with optional MCP server prefix) into matching tool names
+// expandToolPattern expands a tool pattern (with optional MCP server prefix) into matching tool names using regexp
 func (p *ToolProviderFromRegistry) expandToolPattern(pattern string) []string {
 	if pattern == "" {
 		return nil
 	}
 
-	// Special case: `*` matches all tools
-	if pattern == "*" {
-		return p.getAllToolNames()
+	allTools := p.getAllToolNames()
+
+	var serverFilter string
+	toolPattern := pattern
+
+	// Check for MCP server prefix (format: "server:pattern")
+	if idx := strings.Index(pattern, ":"); idx != -1 {
+		serverFilter = pattern[:idx]
+		toolPattern = pattern[idx+1:]
+	}
+
+	// Compile the regexp pattern
+	re, err := regexp.Compile(toolPattern)
+	if err != nil {
+		logger.Warn("Invalid regexp pattern %q: %v", pattern, err)
+		return nil
 	}
 
 	var matched []string
-	allTools := p.getAllToolNames()
-
-	// Check if pattern has MCP server prefix (format: "server:pattern")
-	if strings.Contains(pattern, ":") {
-		parts := strings.SplitN(pattern, ":", 2)
-		if len(parts) == 2 {
-			serverName := parts[0]
-			toolPattern := parts[1]
-
-			// Special case: server:* matches all tools from that server
-			if toolPattern == "*" {
-				// Debug: log available servers and tools for diagnosis
-				serverTools := make(map[string][]string)
-				for _, toolName := range allTools {
-					if schema, ok := p.schemas[toolName]; ok {
-						if schema.ServerName != "" {
-							serverTools[schema.ServerName] = append(serverTools[schema.ServerName], toolName)
-						}
-					}
-				}
-				logger.Debug("Matching pattern %q: looking for server %q. Available servers: %v", pattern, serverName, getMapKeys(serverTools))
-
-				for _, toolName := range allTools {
-					if schema, ok := p.schemas[toolName]; ok && schema.ServerName == serverName {
-						matched = append(matched, toolName)
-					}
-				}
-				// Warn if server prefix was used but no tools matched (server might not exist)
-				if len(matched) == 0 {
-					logger.Warn("Tool pattern %q with server prefix %q matched no tools (server may not exist or have no tools). Available servers: %v", pattern, serverName, getMapKeys(serverTools))
-				}
-				return matched
-			}
-
-			// Match tools from the specific server
-			for _, toolName := range allTools {
-				schema, ok := p.schemas[toolName]
-				if !ok {
-					continue
-				}
-				// Only match tools from the specified server
-				if schema.ServerName != serverName {
-					continue
-				}
-				// Use filepath.Match to match the tool name against the pattern
-				matchedPattern, err := filepath.Match(toolPattern, toolName)
-				if err != nil {
-					logger.Warn("Invalid wildcard pattern %q: %v", toolPattern, err)
-					continue
-				}
-				if matchedPattern {
-					matched = append(matched, toolName)
-				}
-			}
-			// Warn if server prefix was used but no tools matched (server might not exist or have no matching tools)
-			if len(matched) == 0 {
-				logger.Warn("Tool pattern %q with server prefix %q matched no tools (server may not exist or have no matching tools)", pattern, serverName)
-			}
-			return matched
-		}
-	}
-
-	// Plain pattern (no server prefix) - match across all tools
 	for _, toolName := range allTools {
-		matchedPattern, err := filepath.Match(pattern, toolName)
-		if err != nil {
-			logger.Warn("Invalid wildcard pattern %q: %v", pattern, err)
-			continue
+		// If server filter is specified, only match tools from that server
+		if serverFilter != "" {
+			schema, ok := p.schemas[toolName]
+			if !ok || schema.ServerName != serverFilter {
+				continue
+			}
 		}
-		if matchedPattern {
+
+		if re.MatchString(toolName) {
 			matched = append(matched, toolName)
 		}
 	}
 
-	return matched
-}
-
-// getMapKeys returns the keys of a map as a slice of strings
-func getMapKeys(m map[string][]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+	if len(matched) == 0 && serverFilter != "" {
+		logger.Warn("Tool pattern %q matched no tools (server %q may not exist)", pattern, serverFilter)
 	}
-	return keys
+
+	return matched
 }
 
 // getPropertyNames returns the names of properties in a schema properties map
