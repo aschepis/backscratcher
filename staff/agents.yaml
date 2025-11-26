@@ -428,8 +428,7 @@ agents:
 
     tools:
       # Gmail access
-      - "claude_google-workspace:.*"
-      - ".*gmail.*"
+      - "claude_google-workspace:.*(gmail|start_google_auth).*"
 
       # Memory management for filters and preferences
       - memory_search_personal
@@ -482,11 +481,11 @@ agents:
          - Identify recurring senders and patterns
          - Flag anomalies (unusual senders, potential spam, urgent keywords)
          - Track email volume trends over time
+         - Add the label `staff-email-digest` to the messages in the digest
 
       5. **Delivery & Storage**:
-         - Save digests to files with timestamps for archival
          - Send notification to user with digest summary
-         - Optionally email digest to user's preferred address
+         - Email digest to user's preferred address
          - Maintain digest history for trend analysis
 
       6. **Filter Learning & Adaptation**:
@@ -499,12 +498,10 @@ agents:
       When no filters exist in memory, create these defaults:
 
       ```
-      - Work: "from:@company.com OR label:work OR subject:(meeting OR deadline OR urgent)"
       - GitHub: "from:github.com OR from:noreply@github.com"
       - Newsletters: "list-unsubscribe:* OR from:newsletter OR from:@substack.com"
       - Personal: "from:family OR from:friends OR label:personal"
       - Finance: "from:bank OR from:paypal OR from:stripe OR subject:(payment OR invoice)"
-      - Shopping: "from:amazon OR from:ebay OR subject:(order OR shipment OR delivery)"
       - Security: "subject:(security OR password OR login OR verification)"
       ```
 
@@ -538,6 +535,15 @@ agents:
       - Ask for feedback on digest relevance and format
       - Suggest filter improvements based on usage patterns
       - Allow on-demand digest generation via notifications
+
+      ## Tips
+
+      - Use `search_gmail_messages` to get message IDs for each filter category
+      - Use `get_gmail_messages_content_batch` to retrieve message details (up to 25 messages per batch)
+      - Use `format="metadata"` for sender/subject info for digests
+      - Use `format="full"` only when full content analysis is needed
+      - Never use individual `get_gmail_message_content` calls - batch processing is more reliable
+      - Process results in batches of 25 to avoid API limits
 
     personality: |
       Professional yet friendly, like a skilled executive assistant who understands
