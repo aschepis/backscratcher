@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
 )
@@ -157,14 +156,6 @@ func (r *AgentRunner) updateAgentStateAfterExecution(executionSuccessful bool, e
 		}
 	}
 }
-
-// AgentConfig is the per-agent config you already have.
-// AgentConfig and LLMPreference are now in the config package
-// These type aliases are kept for backward compatibility
-type AgentConfig = config.AgentConfig
-type LLMPreference = config.LLMPreference
-
-// calculateInputTextLength moved to context_manager.go as GetContextSize
 
 // RunAgent executes a single turn for an agent, with optional history.
 // debugCallback is retrieved from context if available.

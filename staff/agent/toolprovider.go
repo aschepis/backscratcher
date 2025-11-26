@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/tools"
@@ -18,7 +19,7 @@ type ToolSchema struct {
 // ToolProvider provides tool specifications for agents.
 // This interface uses llm.ToolSpec to avoid leaking provider-specific types.
 type ToolProvider interface {
-	SpecsFor(agent *AgentConfig) []llm.ToolSpec
+	SpecsFor(agent *config.AgentConfig) []llm.ToolSpec
 }
 
 type ToolProviderFromRegistry struct {
@@ -43,7 +44,7 @@ func (p *ToolProviderFromRegistry) RegisterSchemaWithServer(name string, ts Tool
 	p.schemas[name] = ts
 }
 
-func (p *ToolProviderFromRegistry) SpecsFor(agent *AgentConfig) []llm.ToolSpec {
+func (p *ToolProviderFromRegistry) SpecsFor(agent *config.AgentConfig) []llm.ToolSpec {
 	if agent == nil {
 		return nil
 	}

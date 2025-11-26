@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
 )
@@ -15,11 +16,11 @@ import (
 type RateLimitMiddleware struct {
 	rateLimitHandler *RateLimitHandler
 	agentID          string
-	agentConfig      *AgentConfig
+	agentConfig      *config.AgentConfig
 }
 
 // NewRateLimitMiddleware creates a new RateLimitMiddleware.
-func NewRateLimitMiddleware(rateLimitHandler *RateLimitHandler, agentID string, agentConfig *AgentConfig) *RateLimitMiddleware {
+func NewRateLimitMiddleware(rateLimitHandler *RateLimitHandler, agentID string, agentConfig *config.AgentConfig) *RateLimitMiddleware {
 	return &RateLimitMiddleware{
 		rateLimitHandler: rateLimitHandler,
 		agentID:          agentID,

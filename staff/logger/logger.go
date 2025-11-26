@@ -1,26 +1,18 @@
 package logger
 
 import (
-	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"time"
+
+	"github.com/rs/zerolog"
 )
 
 var (
-	logFile         *os.File
-	suppressConsole bool // When true, don't write to stdout/stderr (for TUI mode)
-	logLevel        slog.Level
-	mu              sync.RWMutex
-
-	// Handlers for different outputs
-	fileHandler    slog.Handler
-	consoleHandler slog.Handler
+	logFile *os.File
+	log     zerolog.Logger
 )
 
 // Init initializes the file logger, writing to staff.log in the current directory.
@@ -36,35 +28,17 @@ func Init() error {
 	}
 
 	// Get log level from environment variable
-	logLevel = parseLogLevel(os.Getenv("LOG_LEVEL"))
+	level := parseLogLevel(os.Getenv("LOG_LEVEL"))
 
-	// Create file handler - always logs at debug level to capture everything
-	fileHandler = slog.NewTextHandler(logFile, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			// Customize time format and level display
-			if a.Key == slog.LevelKey {
-				level := a.Value.Any().(slog.Level)
-				a.Value = slog.StringValue(levelToString(level))
-			}
-			return a
-		},
-	})
-
-	// Create console handler - respects configured log level
-	consoleHandler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: logLevel,
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			if a.Key == slog.LevelKey {
-				level := a.Value.Any().(slog.Level)
-				a.Value = slog.StringValue(levelToString(level))
-			}
-			return a
-		},
-	})
+	// Create file logger - JSON structured logs
+	log = zerolog.New(logFile).
+		Level(level).
+		With().
+		Timestamp().
+		Logger()
 
 	// Log initialization
-	Info("Logger initialized, writing to %s (level: %s)", logPath, logLevel.String())
+	log.Info().Str("path", logPath).Str("level", level.String()).Msg("Logger initialized")
 
 	return nil
 }
@@ -77,106 +51,33 @@ func Close() error {
 	return nil
 }
 
-// SetSuppressConsole sets whether console output (stdout/stderr) should be suppressed.
-// Set to true when using a TUI to avoid interfering with terminal rendering.
-func SetSuppressConsole(suppress bool) {
-	mu.Lock()
-	defer mu.Unlock()
-	suppressConsole = suppress
-}
+// SetSuppressConsole is a no-op kept for API compatibility.
+// Console output has been removed in favor of file-only logging.
+func SetSuppressConsole(_ bool) {}
 
-// Info logs an informational message with timestamp.
+// Info logs an informational message.
 func Info(format string, v ...interface{}) {
-	msg := fmt.Sprintf(format, v...)
-
-	// Log to file
-	if fileHandler != nil {
-		_ = fileHandler.Handle(context.Background(), slog.NewRecord(
-			time.Now(), slog.LevelInfo, msg, 0,
-		)) //nolint:errcheck // No remedy for log errors
-	}
-
-	// Log to console (unless suppressed)
-	var suppress bool
-	func() {
-		mu.RLock()
-		defer mu.RUnlock()
-		suppress = suppressConsole
-	}()
-
-	if !suppress && consoleHandler != nil && slog.LevelInfo >= logLevel {
-		_ = consoleHandler.Handle(context.Background(), slog.NewRecord(
-			time.Now(), slog.LevelInfo, msg, 0,
-		)) //nolint:errcheck // No remedy for log errors
-	}
+	log.Info().Msg(fmt.Sprintf(format, v...))
 }
 
-// Error logs an error message with timestamp.
+// Error logs an error message.
 func Error(format string, v ...interface{}) {
-	msg := fmt.Sprintf(format, v...)
-
-	// Log to file
-	if fileHandler != nil {
-		_ = fileHandler.Handle(context.Background(), slog.NewRecord(
-			time.Now(), slog.LevelError, msg, 0,
-		))
-	}
-
-	// Log to console (unless suppressed)
-	mu.RLock()
-	suppress := suppressConsole
-	mu.RUnlock()
-
-	if !suppress && consoleHandler != nil && slog.LevelError >= logLevel {
-		_ = consoleHandler.Handle(context.Background(), slog.NewRecord(
-			time.Now(), slog.LevelError, msg, 0,
-		))
-	}
+	log.Error().Msg(fmt.Sprintf(format, v...))
 }
 
-// Debug logs a debug message with timestamp.
-// Debug messages only go to file, not console.
+// Debug logs a debug message.
 func Debug(format string, v ...interface{}) {
-	msg := fmt.Sprintf(format, v...)
-
-	// Log to file only
-	if fileHandler != nil {
-		_ = fileHandler.Handle(context.Background(), slog.NewRecord(
-			time.Now(), slog.LevelDebug, msg, 0,
-		))
-	}
+	log.Debug().Msg(fmt.Sprintf(format, v...))
 }
 
-// Warn logs a warning message with timestamp.
+// Warn logs a warning message.
 func Warn(format string, v ...interface{}) {
-	msg := fmt.Sprintf(format, v...)
-
-	// Log to file
-	if fileHandler != nil {
-		_ = fileHandler.Handle(context.Background(), slog.NewRecord(
-			time.Now(), slog.LevelWarn, msg, 0,
-		))
-	}
-
-	// Log to console (unless suppressed)
-	mu.RLock()
-	suppress := suppressConsole
-	mu.RUnlock()
-
-	if !suppress && consoleHandler != nil && slog.LevelWarn >= logLevel {
-		_ = consoleHandler.Handle(context.Background(), slog.NewRecord(
-			time.Now(), slog.LevelWarn, msg, 0,
-		))
-	}
+	log.Warn().Msg(fmt.Sprintf(format, v...))
 }
 
-// GetLogger returns a standard library logger that writes to the log file.
-// This is provided for backward compatibility with code that needs a *log.Logger.
-func GetLogger() *slog.Logger {
-	if fileHandler != nil {
-		return slog.New(fileHandler)
-	}
-	return slog.Default()
+// GetLogger returns the zerolog.Logger for structured logging.
+func GetLogger() *zerolog.Logger {
+	return &log
 }
 
 // LogFile returns the path to the log file.
@@ -187,127 +88,14 @@ func LogFile() string {
 	return filepath.Join(".", "staff.log")
 }
 
-// GetLevel returns the current log level.
-func GetLevel() slog.Level {
-	return logLevel
+// GetLevel returns the current log level as a string.
+func GetLevel() string {
+	return log.GetLevel().String()
 }
 
-// SetLevel sets the log level for console output.
-func SetLevel(level slog.Level) {
-	mu.Lock()
-	defer mu.Unlock()
-	logLevel = level
-
-	// Recreate console handler with new level
-	consoleHandler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: level,
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			if a.Key == slog.LevelKey {
-				lvl := a.Value.Any().(slog.Level)
-				a.Value = slog.StringValue(levelToString(lvl))
-			}
-			return a
-		},
-	})
-}
-
-// WithAttrs returns a new slog.Logger with the given attributes for structured logging.
-func WithAttrs(attrs ...slog.Attr) *slog.Logger {
-	if fileHandler == nil {
-		return slog.Default()
-	}
-
-	// Create a multi-handler that writes to both file and console
-	return slog.New(&multiHandler{
-		file:    fileHandler,
-		console: consoleHandler,
-	}).With(attrsToAny(attrs)...)
-}
-
-// Helper functions
-
-func parseLogLevel(level string) slog.Level {
-	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "debug":
-		return slog.LevelDebug
-	case "info", "":
-		return slog.LevelInfo
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
-}
-
-func levelToString(level slog.Level) string {
-	switch level {
-	case slog.LevelDebug:
-		return "DEBUG"
-	case slog.LevelInfo:
-		return "INFO"
-	case slog.LevelWarn:
-		return "WARN"
-	case slog.LevelError:
-		return "ERROR"
-	default:
-		return level.String()
-	}
-}
-
-func attrsToAny(attrs []slog.Attr) []any {
-	result := make([]any, len(attrs))
-	for i, attr := range attrs {
-		result[i] = attr
-	}
-	return result
-}
-
-// multiHandler implements slog.Handler and writes to multiple handlers
-type multiHandler struct {
-	file    slog.Handler
-	console slog.Handler
-}
-
-func (h *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.file.Enabled(ctx, level) || h.console.Enabled(ctx, level)
-}
-
-func (h *multiHandler) Handle(ctx context.Context, r slog.Record) error { //nolint:gocritic // hugeParam is justified here
-	// Always write to file
-	if h.file != nil {
-		if err := h.file.Handle(ctx, r); err != nil {
-			return err
-		}
-	}
-
-	// Write to console unless suppressed or it's a debug message
-	mu.RLock()
-	suppress := suppressConsole
-	mu.RUnlock()
-
-	if !suppress && h.console != nil && r.Level >= slog.LevelInfo {
-		if err := h.console.Handle(ctx, r); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (h *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &multiHandler{
-		file:    h.file.WithAttrs(attrs),
-		console: h.console.WithAttrs(attrs),
-	}
-}
-
-func (h *multiHandler) WithGroup(name string) slog.Handler {
-	return &multiHandler{
-		file:    h.file.WithGroup(name),
-		console: h.console.WithGroup(name),
-	}
+// SetLevel sets the log level.
+func SetLevel(level string) {
+	log = log.Level(parseLogLevel(level))
 }
 
 // Writer returns an io.Writer that writes to the log file.
@@ -317,4 +105,23 @@ func Writer() io.Writer {
 		return logFile
 	}
 	return io.Discard
+}
+
+// Helper functions
+
+func parseLogLevel(level string) zerolog.Level {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "debug":
+		return zerolog.DebugLevel
+	case "info", "":
+		return zerolog.InfoLevel
+	case "warn", "warning":
+		return zerolog.WarnLevel
+	case "error":
+		return zerolog.ErrorLevel
+	case "trace":
+		return zerolog.TraceLevel
+	default:
+		return zerolog.InfoLevel
+	}
 }

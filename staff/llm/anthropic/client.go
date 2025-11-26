@@ -44,7 +44,7 @@ func (c *AnthropicClient) Synchronous(ctx context.Context, req *llm.Request) (*l
 	}
 
 	// Build system blocks with prompt caching
-	systemBlocks := buildSystemBlocks(req.System, tools)
+	systemBlocks := buildSystemBlocks(req.System)
 
 	// Create API params
 	params := anthropic.MessageNewParams{
@@ -144,7 +144,7 @@ func (c *AnthropicClient) Stream(ctx context.Context, req *llm.Request) (llm.Str
 	}
 
 	// Build system blocks with prompt caching
-	systemBlocks := buildSystemBlocks(req.System, tools)
+	systemBlocks := buildSystemBlocks(req.System)
 
 	// Create API params
 	params := anthropic.MessageNewParams{
@@ -170,7 +170,7 @@ func (c *AnthropicClient) Stream(ctx context.Context, req *llm.Request) (llm.Str
 // Prompt caching is enabled when the combined size of tools + system is at least 4000 characters
 // (roughly equivalent to ~1000 tokens, meeting Anthropic's 1024 token minimum requirement).
 // This helps reduce costs and latency for repeated requests with the same tools and system prompt.
-func buildSystemBlocks(systemPrompt string, tools []anthropic.ToolUnionParam) []anthropic.TextBlockParam {
+func buildSystemBlocks(systemPrompt string) []anthropic.TextBlockParam {
 	blocks := []anthropic.TextBlockParam{
 		{Text: systemPrompt, CacheControl: anthropic.NewCacheControlEphemeralParam()},
 	}
