@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/aschepis/backscratcher/staff/llm"
-	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // ToolExecutor is whatever you already had for running tools.
@@ -45,10 +45,12 @@ type AgentRunner struct {
 	messagePersister  MessagePersister   // Optional message persister
 	messageSummarizer *MessageSummarizer // Optional message summarizer
 	rateLimitHandler  *RateLimitHandler  // Rate limit handler
+	logger            zerolog.Logger
 }
 
 // NewAgentRunner creates a new AgentRunner with all required dependencies.
 func NewAgentRunner(
+	logger zerolog.Logger,
 	llmClient llm.Client,
 	agent *Agent,
 	resolvedModel string, // Model resolved from LLM preferences
@@ -79,7 +81,7 @@ func NewAgentRunner(
 
 	// Set callback to notify users about rate limits
 	rateLimitHandler.SetOnRateLimitCallback(func(agentID string, retryAfter time.Duration, attempt int) error {
-		logger.Info("Rate limit callback: agent %s will retry after %v (attempt %d)", agentID, retryAfter, attempt)
+		logger.Info().Msgf("Rate limit callback: agent %s will retry after %v (attempt %d)", agentID, retryAfter, attempt)
 		return nil
 	})
 
@@ -95,6 +97,7 @@ func NewAgentRunner(
 		messagePersister:  messagePersister,
 		messageSummarizer: messageSummarizer,
 		rateLimitHandler:  rateLimitHandler,
+		logger:            logger.With().Str("component", "agentRunner").Logger(),
 	}, nil
 }
 
@@ -114,13 +117,13 @@ func (r *AgentRunner) trackExecutionStats(successful bool, errorMsg string) {
 		// Track failure if execution was not successful
 		if errorMsg != "" {
 			if updateErr := r.statsManager.IncrementFailureCount(r.agent.ID, errorMsg); updateErr != nil {
-				logger.Warn("failed to update failure stats: %v", updateErr)
+				r.logger.Warn().Err(updateErr).Msgf("failed to update failure stats for agent %s", r.agent.ID)
 			}
 		}
 	} else {
 		// Track successful execution
 		if updateErr := r.statsManager.IncrementExecutionCount(r.agent.ID); updateErr != nil {
-			logger.Warn("failed to update execution stats: %v", updateErr)
+			r.logger.Warn().Err(updateErr).Msgf("failed to update execution stats for agent %s", r.agent.ID)
 		}
 	}
 }
@@ -138,21 +141,21 @@ func (r *AgentRunner) updateAgentStateAfterExecution(executionSuccessful bool, e
 		now := time.Now()
 		nextWake, err := ComputeNextWake(r.agent.Config.Schedule, now)
 		if err != nil {
-			logger.Warn("failed to compute next wake for agent %s: %v", r.agent.ID, err)
+			r.logger.Warn().Err(err).Msgf("failed to compute next wake for agent %s", r.agent.ID)
 			// Fall back to idle on error
 			if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
-				logger.Warn("failed to set agent state to idle: %v", err)
+				r.logger.Warn().Err(err).Msgf("failed to set agent state to idle for agent %s", r.agent.ID)
 			}
 			return
 		}
 		// Set state to waiting_external with next_wake
 		if err := r.stateManager.SetStateWithNextWake(r.agent.ID, StateWaitingExternal, &nextWake); err != nil {
-			logger.Warn("failed to set agent state to waiting_external: %v", err)
+			r.logger.Warn().Err(err).Msgf("failed to set agent state to waiting_external for agent %s", r.agent.ID)
 		}
 	} else {
 		// Agent is not scheduled, set to idle
 		if err := r.stateManager.SetState(r.agent.ID, StateIdle); err != nil {
-			logger.Warn("failed to set agent state to idle: %v", err)
+			r.logger.Warn().Err(err).Msgf("failed to set agent state to idle for agent %s", r.agent.ID)
 		}
 	}
 }
@@ -176,7 +179,7 @@ func (r *AgentRunner) RunAgent(
 	// Set state to running at start of execution
 	if err := r.stateManager.SetState(r.agent.ID, StateRunning); err != nil {
 		// Log error but don't fail execution
-		logger.Warn("failed to set agent state to running: %v", err)
+		r.logger.Warn().Err(err).Msgf("failed to set agent state to running for agent %s", r.agent.ID)
 	}
 
 	// Track if execution was successful
@@ -238,7 +241,7 @@ func (r *AgentRunner) RunAgentStream(
 	// Set state to running at start of execution
 	if err := r.stateManager.SetState(r.agent.ID, StateRunning); err != nil {
 		// Log error but don't fail execution
-		logger.Warn("failed to set agent state to running: %v", err)
+		r.logger.Warn().Err(err).Msgf("failed to set agent state to running for agent %s", r.agent.ID)
 	}
 
 	// Track if execution was successful

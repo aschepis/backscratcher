@@ -1288,7 +1288,7 @@ func (s *chatService) CompressContext(ctx context.Context, agentID, threadID str
 	}
 
 	// Use ContextManager to compress context
-	cm := agent.NewContextManager(s)
+	cm := agent.NewContextManager(s.logger, s)
 	_, err = cm.CompressContext(ctx, agentID, threadID, agentConfig.System, history, summarizer)
 	return err
 }

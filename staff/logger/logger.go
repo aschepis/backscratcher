@@ -61,8 +61,8 @@ func Warn(format string, v ...interface{}) {
 }
 
 // GetLogger returns the zerolog.Logger for structured logging.
-func GetLogger() *zerolog.Logger {
-	return &log
+func GetLogger() zerolog.Logger {
+	return log
 }
 
 // GetLevel returns the current log level as a string.

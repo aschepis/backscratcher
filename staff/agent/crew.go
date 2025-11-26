@@ -43,8 +43,8 @@ func NewCrew(logger zerolog.Logger, apiKey string, db *sql.DB) *Crew {
 	}
 	reg := tools.NewRegistry()
 	provider := NewToolProvider(reg)
-	stateManager := NewStateManager(db)
-	statsManager := NewStatsManager(db)
+	stateManager := NewStateManager(logger, db)
+	statsManager := NewStatsManager(logger, db)
 
 	return &Crew{
 		Agents:       make(map[string]*config.AgentConfig),
@@ -158,7 +158,7 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 		}
 
 		c.logger.Info().Msgf("Creating agent runner for agent %s", id)
-		runner, err := NewAgentRunner(llmClient, NewAgent(id, cfg), clientKey.Model, clientKey.Provider, c.ToolRegistry, c.ToolProvider, c.StateManager, c.StatsManager, c.messagePersister, c.messageSummarizer)
+		runner, err := NewAgentRunner(c.logger, llmClient, NewAgent(id, cfg), clientKey.Model, clientKey.Provider, c.ToolRegistry, c.ToolProvider, c.StateManager, c.StatsManager, c.messagePersister, c.messageSummarizer)
 		if err != nil {
 			return fmt.Errorf("failed to create runner for agent %s: %w", id, err)
 		}
@@ -466,12 +466,13 @@ func (c *Crew) wrapClientWithMiddleware(baseClient llm.Client, agentID string, a
 		c.logger.Info().Msgf("Rate limit callback: agent %s will retry after %v (attempt %d)", agentID, retryAfter, attempt)
 		return nil
 	})
-	rateLimitMw := NewRateLimitMiddleware(rateLimitHandler, agentID, agentConfig)
+	rateLimitMw := NewRateLimitMiddleware(c.logger, rateLimitHandler, agentID, agentConfig)
 	middleware = append(middleware, rateLimitMw)
 
 	// Add compression middleware if dependencies are provided
 	if c.messagePersister != nil && c.messageSummarizer != nil {
 		compressionMw := NewCompressionMiddleware(
+			c.logger,
 			c.messagePersister,
 			c.messageSummarizer,
 			agentID,

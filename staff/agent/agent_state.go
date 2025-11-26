@@ -6,7 +6,7 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // State represents the current state of an agent
@@ -29,12 +29,13 @@ type AgentState struct {
 
 // StateManager manages agent state persistence
 type StateManager struct {
-	db *sql.DB
+	db     *sql.DB
+	logger zerolog.Logger
 }
 
 // NewStateManager creates a new StateManager
-func NewStateManager(db *sql.DB) *StateManager {
-	return &StateManager{db: db}
+func NewStateManager(logger zerolog.Logger, db *sql.DB) *StateManager {
+	return &StateManager{db: db, logger: logger.With().Str("component", "stateManager").Logger()}
 }
 
 // StateExists checks if an agent has a persisted state
@@ -118,24 +119,39 @@ func (sm *StateManager) SetStateWithNextWake(agentID string, state State, nextWa
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
-		logger.Error("Failed to build query: agentID=%s state=%s error=%v", agentID, state, err)
+		sm.logger.Error().
+			Err(err).
+			Str("agentID", agentID).
+			Str("state", string(state)).
+			Msg("Failed to build query for agent state update")
 		return fmt.Errorf("build query: %w", err)
 	}
 
 	_, err = sm.db.Exec(queryStr, args...)
 	if err != nil {
-		logger.Error("Failed to set agent state: agentID=%s state=%s error=%v", agentID, state, err)
+		sm.logger.Error().
+			Err(err).
+			Str("agentID", agentID).
+			Str("state", string(state)).
+			Msg("Failed to set agent state")
 		return fmt.Errorf("failed to set agent state: %w", err)
 	}
 
 	// Format next_wake for logging: show both Unix timestamp and human-readable time in local timezone
+	var nextWakeUnixVal int64
 	var nextWakeStr string
 	if nextWake != nil {
-		nextWakeStr = fmt.Sprintf("%d (%s)", nextWakeUnix, nextWake.Format("2006-01-02 15:04:05"))
+		nextWakeUnixVal = nextWake.Unix()
+		nextWakeStr = nextWake.Format("2006-01-02 15:04:05")
 	} else {
 		nextWakeStr = "nil"
 	}
-	logger.Info("Agent state updated: agentID=%s state=%s next_wake=%s", agentID, state, nextWakeStr)
+	sm.logger.Info().
+		Str("agentID", agentID).
+		Str("state", string(state)).
+		Int64("next_wake_unix", nextWakeUnixVal).
+		Str("next_wake_human", nextWakeStr).
+		Msg("Agent state updated")
 	return nil
 }
 
@@ -214,17 +230,29 @@ func (sm *StateManager) SetNextWake(agentID string, nextWake time.Time) error {
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
-		logger.Error("Failed to build query: agentID=%s nextWake=%d error=%v", agentID, nextWakeUnix, err)
+		sm.logger.Error().
+			Err(err).
+			Str("agentID", agentID).
+			Int64("next_wake_unix", nextWakeUnix).
+			Msg("Failed to build query for next wake update")
 		return fmt.Errorf("build query: %w", err)
 	}
 
 	_, err = sm.db.Exec(queryStr, args...)
 	if err != nil {
-		logger.Error("Failed to set next wake: agentID=%s nextWake=%d error=%v", agentID, nextWakeUnix, err)
+		sm.logger.Error().
+			Err(err).
+			Str("agentID", agentID).
+			Int64("next_wake_unix", nextWakeUnix).
+			Msg("Failed to set next wake")
 		return fmt.Errorf("failed to set next wake: %w", err)
 	}
 
-	logger.Info("Agent next wake updated: agentID=%s nextWake=%d (%s)", agentID, nextWakeUnix, nextWake.Format("2006-01-02 15:04:05"))
+	sm.logger.Info().
+		Str("agentID", agentID).
+		Int64("next_wake_unix", nextWakeUnix).
+		Str("next_wake_human", nextWake.Format("2006-01-02 15:04:05")).
+		Msg("Agent next wake updated")
 	return nil
 }
 
@@ -296,12 +324,13 @@ func (sm *StateManager) GetAgentsReadyToWake() ([]string, error) {
 
 // StatsManager manages agent statistics persistence
 type StatsManager struct {
-	db *sql.DB
+	db     *sql.DB
+	logger zerolog.Logger
 }
 
 // NewStatsManager creates a new StatsManager
-func NewStatsManager(db *sql.DB) *StatsManager {
-	return &StatsManager{db: db}
+func NewStatsManager(logger zerolog.Logger, db *sql.DB) *StatsManager {
+	return &StatsManager{db: db, logger: logger.With().Str("component", "statsManager").Logger()}
 }
 
 // IncrementExecutionCount increments the execution count and updates last_execution timestamp

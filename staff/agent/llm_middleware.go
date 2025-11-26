@@ -10,18 +10,21 @@ import (
 	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // RateLimitMiddleware handles rate limit errors and retries.
 type RateLimitMiddleware struct {
+	logger           zerolog.Logger
 	rateLimitHandler *RateLimitHandler
 	agentID          string
 	agentConfig      *config.AgentConfig
 }
 
 // NewRateLimitMiddleware creates a new RateLimitMiddleware.
-func NewRateLimitMiddleware(rateLimitHandler *RateLimitHandler, agentID string, agentConfig *config.AgentConfig) *RateLimitMiddleware {
+func NewRateLimitMiddleware(logger zerolog.Logger, rateLimitHandler *RateLimitHandler, agentID string, agentConfig *config.AgentConfig) *RateLimitMiddleware {
 	return &RateLimitMiddleware{
+		logger:           logger.With().Str("component", "rateLimitMiddleware").Logger(),
 		rateLimitHandler: rateLimitHandler,
 		agentID:          agentID,
 		agentConfig:      agentConfig,
@@ -72,9 +75,9 @@ func (m *RateLimitMiddleware) OnError(ctx context.Context, req *llm.Request, err
 				retryAfter = 60 // Default 60 seconds
 			}
 			if scheduleErr := m.rateLimitHandler.ScheduleRetryWithNextWake(m.agentID, retryAfter); scheduleErr != nil {
-				logger.Warn("Failed to schedule retry via next_wake: %v", scheduleErr)
+				m.logger.Warn().Err(scheduleErr).Msg("Failed to schedule retry via next_wake")
 			} else {
-				logger.Info("Rate limit exceeded for agent %s. Scheduled retry via next_wake in %v", m.agentID, retryAfter)
+				m.logger.Info().Str("agentID", m.agentID).Int64("retryAfter", retryAfter.Milliseconds()).Msg("Rate limit exceeded for agent. Scheduled retry via next_wake")
 				return fmt.Errorf("rate limit exceeded: agent will retry at scheduled time: %w", err)
 			}
 		}
@@ -107,6 +110,7 @@ func (m *RateLimitMiddleware) OnStreamError(ctx context.Context, req *llm.Reques
 
 // CompressionMiddleware handles automatic context compression.
 type CompressionMiddleware struct {
+	logger            zerolog.Logger
 	messagePersister  MessagePersister
 	messageSummarizer *MessageSummarizer
 	agentID           string
@@ -115,12 +119,14 @@ type CompressionMiddleware struct {
 
 // NewCompressionMiddleware creates a new CompressionMiddleware.
 func NewCompressionMiddleware(
+	logger zerolog.Logger,
 	messagePersister MessagePersister,
 	messageSummarizer *MessageSummarizer,
 	agentID string,
 	systemPrompt string,
 ) *CompressionMiddleware {
 	return &CompressionMiddleware{
+		logger:            logger.With().Str("component", "compressionMiddleware").Logger(),
 		messagePersister:  messagePersister,
 		messageSummarizer: messageSummarizer,
 		agentID:           agentID,
@@ -132,12 +138,12 @@ func NewCompressionMiddleware(
 func (m *CompressionMiddleware) BeforeRequest(ctx context.Context, req *llm.Request) (*llm.Request, error) {
 	// Check if compression is needed using llm.Message types directly
 	if shouldAutoCompress(m.systemPrompt, req.Messages) {
-		logger.Info("Automatic compression triggered for agent %s: context size exceeds 1,000,000 characters", m.agentID)
+		m.logger.Info().Str("agentID", m.agentID).Msg("Automatic compression triggered for agent: context size exceeds 1,000,000 characters")
 
 		// Compress context
 		compressedMsgs, compressErr := m.compressContext(ctx, req.Messages)
 		if compressErr != nil {
-			logger.Warn("Failed to compress context automatically: %v", compressErr)
+			m.logger.Warn().Err(compressErr).Msg("Failed to compress context automatically")
 			return req, nil // Continue with original if compression fails
 		}
 
@@ -164,7 +170,7 @@ func (m *CompressionMiddleware) OnError(ctx context.Context, req *llm.Request, e
 		return err
 	}
 
-	logger.Info("Automatic compression triggered for agent %s: API returned 413 request_too_large", m.agentID)
+	m.logger.Info().Str("agentID", m.agentID).Msg("Automatic compression triggered for agent: API returned 413 request_too_large")
 
 	// Compress context using llm.Message types directly
 	compressedMsgs, compressErr := m.compressContext(ctx, req.Messages)
@@ -196,7 +202,7 @@ func (m *CompressionMiddleware) compressContext(ctx context.Context, msgs []llm.
 	threadID := ""
 
 	// Use ContextManager to compress
-	cm := NewContextManager(m.messagePersister)
+	cm := NewContextManager(logger.GetLogger(), m.messagePersister)
 	summary, err := cm.CompressContext(ctx, m.agentID, threadID, m.systemPrompt, msgs, m.messageSummarizer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compress context: %w", err)

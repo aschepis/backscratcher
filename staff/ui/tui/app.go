@@ -50,6 +50,7 @@ func NewApp(logger zerolog.Logger, configPath string, chatService ui.ChatService
 
 // NewAppWithTheme creates a new App instance with the given chat service and theme
 func NewAppWithTheme(logger zerolog.Logger, configPath string, chatService ui.ChatService, themeName string) *App {
+	logger = logger.With().Str("component", "tui").Logger()
 	// Apply theme based on provided theme name
 	logger.Info().Str("themeName", themeName).Msg("NewAppWithTheme: themeName")
 	tviewApp := tview.NewApplication()
@@ -63,7 +64,7 @@ func NewAppWithTheme(logger zerolog.Logger, configPath string, chatService ui.Ch
 		pages:       tview.NewPages(),
 		chatService: chatService,
 		chatHistory: make(map[string][]llm.Message),
-		logger:      logger.With().Str("component", "tui").Logger(),
+		logger:      logger,
 		configPath:  configPath,
 	}
 }

@@ -8,17 +8,20 @@ import (
 
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // ContextManager handles context management operations like reset and compression.
 type ContextManager struct {
 	messagePersister MessagePersister
+	logger           zerolog.Logger
 }
 
 // NewContextManager creates a new ContextManager.
-func NewContextManager(messagePersister MessagePersister) *ContextManager {
+func NewContextManager(logger zerolog.Logger, messagePersister MessagePersister) *ContextManager {
 	return &ContextManager{
 		messagePersister: messagePersister,
+		logger:           logger.With().Str("component", "contextManager").Logger(),
 	}
 }
 
