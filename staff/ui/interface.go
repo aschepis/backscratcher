@@ -105,6 +105,11 @@ type ChatService interface {
 	DumpInbox(ctx context.Context, filePath string) error
 	// ClearInbox deletes all inbox items from the database
 	ClearInbox(ctx context.Context) error
+	// ListAllTools returns all registered tools with formatted names
+	// MCP tools are formatted as "<mcp-server>:<tool-name>", others as "<tool-name>"
+	ListAllTools(ctx context.Context) ([]string, error)
+	// DumpToolSchemas writes all tool schemas to a file as JSON
+	DumpToolSchemas(ctx context.Context, filePath string) error
 }
 
 // MessageWithTimestamp represents a message with its database timestamp.

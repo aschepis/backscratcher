@@ -55,6 +55,15 @@ func (a *App) showTools() {
 		a.showClearInboxDialog()
 	})
 
+	// Agent Tools category
+	toolsList.AddItem("Agent Tools", "Agent tool operations", 'a', nil)
+	toolsList.AddItem("  → List All Tools", "Show all registered tools", 'l', func() {
+		a.showListToolsDialog()
+	})
+	toolsList.AddItem("  → Dump Tool Schemas", "Write all tool schemas to file", 's', func() {
+		a.showDumpToolSchemasDialog()
+	})
+
 	toolsList.AddItem("", "", ' ', nil) // Separator
 	toolsList.AddItem("Back", "Return to main menu", 'b', func() {
 		a.pages.SwitchToPage("main")
@@ -388,6 +397,177 @@ func (a *App) showClearInboxDialog() {
 			}
 		})
 	a.pages.AddPage("clear_inbox_modal", modal, true, true)
+}
+
+// showListToolsDialog shows a dialog listing all registered tools
+func (a *App) showListToolsDialog() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tools, err := a.chatService.ListAllTools(ctx)
+	if err != nil {
+		a.showErrorModal("List Tools", fmt.Sprintf("Failed to list tools: %v", err))
+		return
+	}
+
+	// Create a text view to display the tools
+	textView := tview.NewTextView()
+	textView.SetBorder(true).SetTitle("All Tools (Esc: Close)")
+	textView.SetScrollable(true)
+	textView.SetDynamicColors(true)
+
+	if len(tools) == 0 {
+		textView.SetText("No tools registered.")
+	} else {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Total: %d tools\n\n", len(tools)))
+		for i, tool := range tools {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, tool))
+		}
+		textView.SetText(sb.String())
+	}
+
+	// Add input capture for scrolling and closing
+	textView.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch ev.Key() {
+		case tcell.KeyEsc:
+			a.pages.RemovePage("list_tools_dialog")
+			a.pages.SwitchToPage("tools")
+			return nil
+		case tcell.KeyUp:
+			row, col := textView.GetScrollOffset()
+			if row > 0 {
+				textView.ScrollTo(row-1, col)
+			}
+			return nil
+		case tcell.KeyDown:
+			row, col := textView.GetScrollOffset()
+			textView.ScrollTo(row+1, col)
+			return nil
+		case tcell.KeyPgUp:
+			row, col := textView.GetScrollOffset()
+			if row > 10 {
+				textView.ScrollTo(row-10, col)
+			} else {
+				textView.ScrollTo(0, col)
+			}
+			return nil
+		case tcell.KeyPgDn:
+			row, col := textView.GetScrollOffset()
+			textView.ScrollTo(row+10, col)
+			return nil
+		case tcell.KeyHome:
+			_, col := textView.GetScrollOffset()
+			textView.ScrollTo(0, col)
+			return nil
+		case tcell.KeyEnd:
+			_, col := textView.GetScrollOffset()
+			textView.ScrollTo(9999, col)
+			return nil
+		}
+		return ev
+	})
+
+	// Create a flex container with the text view and a close button
+	closeButton := tview.NewButton("Close (Enter)").SetSelectedFunc(func() {
+		a.pages.RemovePage("list_tools_dialog")
+		a.pages.SwitchToPage("tools")
+	})
+
+	flex := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(textView, 0, 1, true).
+		AddItem(closeButton, 1, 0, false)
+
+	flex.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch ev.Key() {
+		case tcell.KeyEsc:
+			a.pages.RemovePage("list_tools_dialog")
+			a.pages.SwitchToPage("tools")
+			return nil
+		case tcell.KeyTab:
+			// Switch focus between text view and button
+			if a.app.GetFocus() == textView {
+				a.app.SetFocus(closeButton)
+			} else {
+				a.app.SetFocus(textView)
+			}
+			return nil
+		case tcell.KeyEnter:
+			// If button is focused, close the dialog
+			if a.app.GetFocus() == closeButton {
+				a.pages.RemovePage("list_tools_dialog")
+				a.pages.SwitchToPage("tools")
+				return nil
+			}
+		}
+		return ev
+	})
+
+	a.pages.AddPage("list_tools_dialog", flex, true, true)
+	a.app.SetFocus(textView)
+}
+
+// showDumpToolSchemasDialog shows a dialog to get file path and dump tool schemas
+func (a *App) showDumpToolSchemasDialog() {
+	form := tview.NewForm()
+	form.SetBorder(true).SetTitle("Dump Tool Schemas")
+
+	filePath := fmt.Sprintf("tool_schemas_%s.json", time.Now().Format("20060102_150405"))
+	form.AddInputField("File Path", filePath, 50, nil, func(text string) {
+		filePath = text
+	})
+
+	form.AddButton("Dump", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Expand ~ to home directory
+		if strings.HasPrefix(filePath, "~") {
+			homeDir, err := os.UserHomeDir()
+			if err == nil {
+				filePath = filepath.Join(homeDir, filePath[1:])
+			}
+		}
+
+		// Ensure directory exists
+		dir := filepath.Dir(filePath)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			a.showErrorModal("Dump Tool Schemas", fmt.Sprintf("Failed to create directory: %v", err))
+			return
+		}
+
+		err := a.chatService.DumpToolSchemas(ctx, filePath)
+		if err != nil {
+			a.showErrorModal("Dump Tool Schemas", fmt.Sprintf("Failed to dump tool schemas: %v", err))
+			return
+		}
+
+		modal := tview.NewModal().
+			SetText(fmt.Sprintf("Tool schemas dumped successfully to:\n%s", filePath)).
+			AddButtons([]string{"OK"}).
+			SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+				a.pages.RemovePage("dump_tool_schemas_modal")
+				a.pages.SwitchToPage("tools")
+			})
+		a.pages.AddPage("dump_tool_schemas_modal", modal, true, true)
+	})
+
+	form.AddButton("Cancel", func() {
+		a.pages.RemovePage("dump_tool_schemas_form")
+		a.pages.SwitchToPage("tools")
+	})
+
+	form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		if ev.Key() == tcell.KeyEsc {
+			a.pages.RemovePage("dump_tool_schemas_form")
+			a.pages.SwitchToPage("tools")
+			return nil
+		}
+		return ev
+	})
+
+	a.pages.AddPage("dump_tool_schemas_form", form, true, true)
+	a.app.SetFocus(form)
 }
 
 // showErrorModal displays an error message in a modal

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -1685,4 +1686,82 @@ func (s *chatService) DumpInbox(ctx context.Context, filePath string) error {
 func (s *chatService) ClearInbox(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM inbox")
 	return err
+}
+
+// ListAllTools returns all registered tools with formatted names.
+// MCP tools are formatted as "<mcp-server>:<tool-name>", others as "<tool-name>"
+// Tools are returned sorted alphabetically by name.
+func (s *chatService) ListAllTools(ctx context.Context) ([]string, error) {
+	toolProvider := s.crew.GetToolProvider()
+	if toolProvider == nil {
+		return []string{}, nil
+	}
+
+	schemas := toolProvider.GetAllSchemas()
+	tools := make([]string, 0, len(schemas))
+	for toolName, schema := range schemas {
+		if schema.ServerName != "" {
+			// MCP tool: format as "<mcp-server>:<tool-name>"
+			tools = append(tools, fmt.Sprintf("%s:%s", schema.ServerName, toolName))
+		} else {
+			// Native tool: format as "<tool-name>"
+			tools = append(tools, toolName)
+		}
+	}
+
+	// Sort tools alphabetically
+	sort.Strings(tools)
+
+	return tools, nil
+}
+
+// DumpToolSchemas writes all tool schemas to a file as JSON
+// Tools are sorted alphabetically by formatted name.
+func (s *chatService) DumpToolSchemas(ctx context.Context, filePath string) error {
+	toolProvider := s.crew.GetToolProvider()
+	if toolProvider == nil {
+		return fmt.Errorf("tool provider not available")
+	}
+
+	schemas := toolProvider.GetAllSchemas()
+
+	// Build a slice of tool schema entries with formatted names
+	type toolSchemaEntry struct {
+		FormattedName string                 `json:"formatted_name"`
+		Name          string                 `json:"name"`
+		Description   string                 `json:"description"`
+		Server        string                 `json:"server"`
+		Schema        map[string]interface{} `json:"schema"`
+	}
+
+	entries := make([]toolSchemaEntry, 0, len(schemas))
+	for toolName, schema := range schemas {
+		var formattedName string
+		if schema.ServerName != "" {
+			formattedName = fmt.Sprintf("%s:%s", schema.ServerName, toolName)
+		} else {
+			formattedName = toolName
+		}
+
+		entries = append(entries, toolSchemaEntry{
+			FormattedName: formattedName,
+			Name:          toolName,
+			Description:   schema.Description,
+			Server:        schema.ServerName,
+			Schema:        schema.Schema,
+		})
+	}
+
+	// Sort entries by formatted name
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].FormattedName < entries[j].FormattedName
+	})
+
+	// Write to file as JSON
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal tool schemas: %w", err)
+	}
+
+	return os.WriteFile(filePath, data, 0o600)
 }
