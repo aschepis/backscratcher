@@ -11,9 +11,9 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/aschepis/backscratcher/staff/llm"
-	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/ui"
 	"github.com/aschepis/backscratcher/staff/ui/themes"
+	"github.com/rs/zerolog"
 )
 
 // App represents the main terminal UI application structure
@@ -33,27 +33,29 @@ type App struct {
 
 	// Config-related fields
 	configPath string
+
+	logger zerolog.Logger
 }
 
 // NewApp creates a new App instance with the given chat service
 // Uses STAFF_THEME environment variable or defaults to "solarized"
-func NewApp(chatService ui.ChatService) *App {
+func NewApp(logger zerolog.Logger, configPath string, chatService ui.ChatService) *App {
 	// Get theme from environment variable, default to "solarized"
 	themeName := os.Getenv("STAFF_THEME")
 	if themeName == "" {
 		themeName = "solarized"
 	}
-	return NewAppWithTheme(chatService, themeName)
+	return NewAppWithTheme(logger, configPath, chatService, themeName)
 }
 
 // NewAppWithTheme creates a new App instance with the given chat service and theme
-func NewAppWithTheme(chatService ui.ChatService, themeName string) *App {
+func NewAppWithTheme(logger zerolog.Logger, configPath string, chatService ui.ChatService, themeName string) *App {
 	// Apply theme based on provided theme name
-	logger.Info("NewAppWithTheme: themeName=%s", themeName)
+	logger.Info().Str("themeName", themeName).Msg("NewAppWithTheme: themeName")
 	tviewApp := tview.NewApplication()
 	err := themes.ApplyByName(tviewApp, themeName)
 	if err != nil {
-		logger.Error("Failed to apply theme: %v. Continuing with no theme.", err)
+		logger.Error().Err(err).Msg("Failed to apply theme. Continuing with no theme.")
 	}
 
 	return &App{
@@ -61,12 +63,9 @@ func NewAppWithTheme(chatService ui.ChatService, themeName string) *App {
 		pages:       tview.NewPages(),
 		chatService: chatService,
 		chatHistory: make(map[string][]llm.Message),
+		logger:      logger.With().Str("component", "tui").Logger(),
+		configPath:  configPath,
 	}
-}
-
-// SetConfigPath sets the config file path for the app
-func (a *App) SetConfigPath(configPath string) {
-	a.configPath = configPath
 }
 
 // setupUI initializes the UI components and layout

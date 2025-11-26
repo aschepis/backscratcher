@@ -33,6 +33,9 @@ linters-settings:
     disabled-checks:
       - rangeValCopy
       - unnamedResult
+    settings:
+      hugeParam:
+        sizeThreshold: 256
   revive:
     rules:
       - name: var-naming

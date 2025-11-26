@@ -11,6 +11,7 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/rs/zerolog"
 
 	"github.com/aschepis/backscratcher/staff/agent"
 	"github.com/aschepis/backscratcher/staff/config"
@@ -33,11 +34,12 @@ type chatService struct {
 	db      *sql.DB
 	timeout time.Duration // Timeout for chat operations
 	config  *config.Config
+	logger  zerolog.Logger
 }
 
 // NewChatService creates a new ChatService that wraps the given crew and database.
 // timeoutSeconds is the timeout in seconds for chat operations (default: 60 if 0).
-func NewChatService(crew *agent.Crew, db *sql.DB, timeoutSeconds int, appConfig *config.Config) ChatService {
+func NewChatService(logger zerolog.Logger, crew *agent.Crew, db *sql.DB, timeoutSeconds int, appConfig *config.Config) ChatService {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 60 // Default timeout
 	}
@@ -46,9 +48,10 @@ func NewChatService(crew *agent.Crew, db *sql.DB, timeoutSeconds int, appConfig 
 		db:      db,
 		timeout: time.Duration(timeoutSeconds) * time.Second,
 		config:  appConfig,
+		logger:  logger.With().Str("component", "chatService").Logger(),
 	}
 	// Register chatService as the message persister for the crew
-	crew.SetMessagePersister(cs)
+	crew.SetMessagePersister(cs) // TODO: fix this.. it is weird.
 	return cs
 }
 
@@ -1450,7 +1453,7 @@ func (s *chatService) DumpMemory(ctx context.Context, filePath string) error {
 		return fmt.Errorf("marshal memory items: %w", err)
 	}
 
-	return os.WriteFile(filePath, data, 0644)
+	return os.WriteFile(filePath, data, 0o600)
 }
 
 // ClearMemory deletes all memory items from the database
@@ -1465,6 +1468,7 @@ func (s *chatService) ClearMemory(ctx context.Context) error {
 	_, err = tx.ExecContext(ctx, "DELETE FROM memory_items_fts")
 	if err != nil {
 		// FTS table might not exist, continue
+		s.logger.Warn().Err(err).Msg("FTS table might not exist, continuing")
 	}
 
 	// Delete from main table
@@ -1505,7 +1509,7 @@ func (s *chatService) DumpConversations(ctx context.Context, outputDir string) e
 	}
 
 	// Create output directory if it doesn't exist
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := os.MkdirAll(outputDir, 0o750); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
@@ -1534,7 +1538,7 @@ func (s *chatService) DumpConversations(ctx context.Context, outputDir string) e
 			var createdAt int64
 
 			if err := convRows.Scan(&id, &agentID, &threadID, &role, &content, &toolName, &toolID, &createdAt); err != nil {
-				convRows.Close()
+				_ = convRows.Close() //nolint:errcheck // No remedy for rows close errors
 				return err
 			}
 
@@ -1556,7 +1560,7 @@ func (s *chatService) DumpConversations(ctx context.Context, outputDir string) e
 
 			conversations = append(conversations, conv)
 		}
-		convRows.Close()
+		_ = convRows.Close() //nolint:errcheck // No remedy for rows close errors
 
 		if err := convRows.Err(); err != nil {
 			return fmt.Errorf("scan conversations for agent %s: %w", agentID, err)
@@ -1573,7 +1577,7 @@ func (s *chatService) DumpConversations(ctx context.Context, outputDir string) e
 			return fmt.Errorf("marshal conversations for agent %s: %w", agentID, err)
 		}
 
-		if err := os.WriteFile(filePath, data, 0644); err != nil {
+		if err := os.WriteFile(filePath, data, 0o600); err != nil {
 			return fmt.Errorf("write conversations for agent %s: %w", agentID, err)
 		}
 	}
@@ -1674,7 +1678,7 @@ func (s *chatService) DumpInbox(ctx context.Context, filePath string) error {
 		return fmt.Errorf("marshal inbox items: %w", err)
 	}
 
-	return os.WriteFile(filePath, data, 0644)
+	return os.WriteFile(filePath, data, 0o600)
 }
 
 // ClearInbox deletes all inbox items from the database

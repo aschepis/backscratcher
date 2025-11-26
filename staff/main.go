@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,7 +13,7 @@ import (
 	"github.com/aschepis/backscratcher/staff/agent"
 	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
-	"github.com/aschepis/backscratcher/staff/logger"
+	stafflogger "github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/mcp"
 	"github.com/aschepis/backscratcher/staff/memory"
 	"github.com/aschepis/backscratcher/staff/memory/ollama"
@@ -26,6 +24,7 @@ import (
 	"github.com/aschepis/backscratcher/staff/ui"
 	"github.com/aschepis/backscratcher/staff/ui/tui"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/rs/zerolog"
 )
 
 // mcpClientAdapter adapts mcp.MCPClient to tools.MCPClientData
@@ -53,7 +52,7 @@ func (a *mcpClientAdapter) ListTools(ctx context.Context) ([]tools.MCPToolDefini
 // This centralizes all tool registration logic.
 // registerToolSchemas registers all tool schemas with the ToolProvider.
 // Schemas are defined in the tools/schemas package for better organization.
-func registerToolSchemas(crew *agent.Crew) {
+func registerToolSchemas(logger zerolog.Logger, crew *agent.Crew) {
 	allSchemas := schemas.All()
 	for name, schema := range allSchemas {
 		crew.ToolProvider.RegisterSchema(name, agent.ToolSchema{
@@ -61,7 +60,7 @@ func registerToolSchemas(crew *agent.Crew) {
 			Schema:      schema.Schema,
 		})
 	}
-	logger.Info("Registered %d tool schemas", len(allSchemas))
+	logger.Info().Int("count", len(allSchemas)).Msg("Registered tool schemas")
 }
 
 // registerToolHandlers registers all tool handlers with the ToolRegistry.
@@ -101,11 +100,11 @@ func registerToolHandlers(crew *agent.Crew, memoryRouter *memory.MemoryRouter, w
 			return result
 		},
 		GetAgentState: func(agentID string) (string, *int64, error) {
-			state, err := crew.StateManager().GetState(agentID)
+			state, err := crew.StateManager.GetState(agentID)
 			if err != nil {
 				return "", nil, err
 			}
-			nextWake, err := crew.StateManager().GetNextWake(agentID)
+			nextWake, err := crew.StateManager.GetNextWake(agentID)
 			if err != nil {
 				return "", nil, err
 			}
@@ -117,7 +116,7 @@ func registerToolHandlers(crew *agent.Crew, memoryRouter *memory.MemoryRouter, w
 			return string(state), nextWakeUnix, nil
 		},
 		GetAllStates: func() (map[string]string, error) {
-			states, err := crew.StateManager().GetAllStates()
+			states, err := crew.StateManager.GetAllStates()
 			if err != nil {
 				return nil, err
 			}
@@ -128,7 +127,7 @@ func registerToolHandlers(crew *agent.Crew, memoryRouter *memory.MemoryRouter, w
 			return result, nil
 		},
 		GetNextWake: func(agentID string) (*int64, error) {
-			nextWake, err := crew.StateManager().GetNextWake(agentID)
+			nextWake, err := crew.StateManager.GetNextWake(agentID)
 			if err != nil {
 				return nil, err
 			}
@@ -139,10 +138,10 @@ func registerToolHandlers(crew *agent.Crew, memoryRouter *memory.MemoryRouter, w
 			return nil, nil
 		},
 		GetStats: func(agentID string) (map[string]interface{}, error) {
-			return crew.StatsManager().GetStats(agentID)
+			return crew.StatsManager.GetStats(agentID)
 		},
 		GetAllStats: func() ([]map[string]interface{}, error) {
-			return crew.StatsManager().GetAllStats()
+			return crew.StatsManager.GetAllStats()
 		},
 		GetAllToolSchemas: func() map[string]tools.ToolSchemaData {
 			toolSchemas := crew.ToolProvider.GetAllSchemas()
@@ -183,19 +182,19 @@ func registerToolHandlers(crew *agent.Crew, memoryRouter *memory.MemoryRouter, w
 
 // registerAllTools registers all tool handlers and schemas with the crew.
 // This is the main entry point for tool registration, called during startup.
-func registerAllTools(crew *agent.Crew, memoryRouter *memory.MemoryRouter, workspacePath string, db *sql.DB, stateManager *agent.StateManager, apiKey string) {
+func registerAllTools(logger zerolog.Logger, crew *agent.Crew, memoryRouter *memory.MemoryRouter, workspacePath string, db *sql.DB, stateManager *agent.StateManager, apiKey string) {
 	// Register tool handlers (implementation)
 	registerToolHandlers(crew, memoryRouter, workspacePath, db, stateManager, apiKey)
 
 	// Register tool schemas (API definitions)
-	registerToolSchemas(crew)
+	registerToolSchemas(logger, crew)
 }
 
 // registerMCPServers discovers and registers tools from MCP servers.
-func registerMCPServers(crew *agent.Crew, servers map[string]*config.MCPServerConfig) {
-	logger.Info("registerMCPServers: starting registration for %d MCP server(s)", len(servers))
+func registerMCPServers(logger zerolog.Logger, crew *agent.Crew, servers map[string]*config.MCPServerConfig) {
+	logger.Info().Int("count", len(servers)).Msg("registerMCPServers: starting registration for MCP server(s)")
 	if len(servers) == 0 {
-		logger.Info("No MCP servers configured")
+		logger.Info().Msg("No MCP servers configured")
 		return
 	}
 
@@ -204,11 +203,11 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*config.MCPServerCo
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	adapter := mcp.NewNameAdapter()
-	logger.Info("registerMCPServers: created context with 60s timeout and name adapter, beginning server registration loop")
+	logger.Info().Msg("registerMCPServers: created context with 60s timeout and name adapter, beginning server registration loop")
 
 	for serverName, serverConfig := range servers {
 		if serverConfig == nil {
-			logger.Warn("MCP server %s has nil config, skipping", serverName)
+			logger.Warn().Str("name", serverName).Msg("MCP server has nil config, skipping")
 			continue
 		}
 
@@ -217,7 +216,7 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*config.MCPServerCo
 		if strings.HasPrefix(serverName, "claude_") {
 			source = "Claude config"
 		}
-		logger.Info("Registering MCP server: %s (source: %s, command=%s url=%s)", serverName, source, serverConfig.Command, serverConfig.URL)
+		logger.Info().Str("name", serverName).Str("source", source).Str("command", serverConfig.Command).Str("url", serverConfig.URL).Msg("Registering MCP server")
 
 		var mcpClient mcp.MCPClient
 		var err error
@@ -226,46 +225,46 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*config.MCPServerCo
 		switch {
 		case serverConfig.Command != "":
 			// STDIO transport
-			logger.Debug("Creating STDIO MCP client for %s: command=%s args=%v env=%v", serverName, serverConfig.Command, serverConfig.Args, serverConfig.Env)
+			logger.Debug().Str("name", serverName).Str("command", serverConfig.Command).Strs("args", serverConfig.Args).Strs("env", serverConfig.Env).Msg("Creating STDIO MCP client")
 			mcpClient, err = mcp.NewStdioMCPClient(serverConfig.Command, serverConfig.ConfigFile, serverConfig.Args, serverConfig.Env)
 			if err != nil {
-				logger.Error("Failed to create STDIO MCP client for %s: %v", serverName, err)
+				logger.Error().Str("name", serverName).Err(err).Msg("Failed to create STDIO MCP client")
 				continue
 			}
-			logger.Debug("Successfully created STDIO MCP client for %s", serverName)
+			logger.Debug().Str("name", serverName).Msg("Successfully created STDIO MCP client")
 		case serverConfig.URL != "":
 			// HTTP transport
-			logger.Debug("Creating HTTP MCP client for %s: url=%s", serverName, serverConfig.URL)
+			logger.Debug().Str("name", serverName).Str("url", serverConfig.URL).Msg("Creating HTTP MCP client")
 			mcpClient, err = mcp.NewHttpMCPClient(serverConfig.URL, serverConfig.ConfigFile)
 			if err != nil {
-				logger.Error("Failed to create HTTP MCP client for %s: %v", serverName, err)
+				logger.Error().Str("name", serverName).Err(err).Msg("Failed to create HTTP MCP client")
 				continue
 			}
-			logger.Debug("Successfully created HTTP MCP client for %s", serverName)
+			logger.Debug().Str("name", serverName).Msg("Successfully created HTTP MCP client")
 		default:
-			logger.Warn("MCP server %s has neither command nor url, skipping", serverName)
+			logger.Warn().Str("name", serverName).Msg("MCP server has neither command nor url, skipping")
 			continue
 		}
 
 		// Start the client
-		logger.Info("Starting MCP client for %s", serverName)
+		logger.Info().Str("name", serverName).Msg("Starting MCP client")
 		if err := mcpClient.Start(ctx); err != nil {
-			logger.Error("Failed to start MCP client for %s: %v", serverName, err)
+			logger.Error().Str("name", serverName).Err(err).Msg("Failed to start MCP client")
 			_ = mcpClient.Close() //nolint:errcheck // Cleanup on error
 			continue
 		}
-		logger.Info("MCP client started successfully for %s", serverName)
+		logger.Info().Str("name", serverName).Msg("MCP client started successfully")
 
 		// Discover tools
-		logger.Info("Discovering tools from MCP server %s", serverName)
+		logger.Info().Str("name", serverName).Msg("Discovering tools from MCP server")
 		tools, err := mcpClient.ListTools(ctx)
 		if err != nil {
-			logger.Error("Failed to list tools from MCP server %s: %v", serverName, err)
+			logger.Error().Str("name", serverName).Err(err).Msg("Failed to list tools from MCP server")
 			_ = mcpClient.Close() //nolint:errcheck // Cleanup on error
 			continue
 		}
 
-		logger.Info("Discovered %d tools from MCP server %s", len(tools), serverName)
+		logger.Info().Int("count", len(tools)).Str("name", serverName).Msg("Discovered tools from MCP server")
 
 		// Register each tool
 		for _, tool := range tools {
@@ -288,82 +287,75 @@ func registerMCPServers(crew *agent.Crew, servers map[string]*config.MCPServerCo
 				}
 			}
 
-			// Log the raw schema for debugging
-			if schemaBytes, err := json.MarshalIndent(schema, "", "  "); err == nil {
-				logger.Debug("Registering MCP tool schema for %s (original: %s) from server %s:\n%s", safeName, originalName, serverName, string(schemaBytes))
-			}
-
 			crew.ToolProvider.RegisterSchemaWithServer(safeName, agent.ToolSchema{
 				Description: tool.Description,
 				Schema:      schema,
 			}, serverName)
 
-			logger.Debug("Registered MCP tool: safeName=%s originalName=%s server=%s", safeName, originalName, serverName)
+			logger.Debug().Str("safeName", safeName).Str("originalName", originalName).Str("serverName", serverName).Msg("Registered MCP tool")
 		}
 
 		// Store MCP server config and client in Crew
 		crew.MCPServers[serverName] = serverConfig
 		crew.MCPClients[serverName] = mcpClient
-		logger.Info("Completed registration for MCP server: %s", serverName)
+		logger.Info().Str("name", serverName).Msg("Completed registration for MCP server")
 	}
-	logger.Info("registerMCPServers: completed registration for all MCP servers")
+	logger.Info().Msg("registerMCPServers: completed registration for all MCP servers")
 }
 
 func main() {
 	// Initialize logger
-	if err := logger.Init(); err != nil {
-		log.Fatalf("Failed to initialize logger: %v", err)
+	logger, err := stafflogger.Init()
+	if err != nil {
+		panic(err)
 	}
-	defer logger.Close() //nolint:errcheck // No remedy for logger close errors
 
-	logger.Info("Starting Staff application")
+	logger.Info().Msg("Starting Staff application")
 
 	// Load unified configuration (includes defaults, agents.yaml, and user config)
 	configPath := config.GetConfigPath()
 	appConfig, err := config.LoadConfig(configPath)
 	if err != nil {
-		logger.Error("Failed to load configuration: %v", err)
-		_ = logger.Close()                                  //nolint:errcheck // Closing before fatal exit
-		log.Fatalf("Failed to load configuration: %v", err) //nolint:gocritic // Fatal exit
+		logger.Error().Err(err).Msg("Failed to load configuration")
+		panic(err)
 	}
-	logger.Info("Loaded unified configuration (defaults + agents.yaml + user config)")
+	logger.Info().Msg("Loaded unified configuration (defaults + agents.yaml + user config)")
 
 	// Get Anthropic API key from config file
 	anthropicAPIKey := appConfig.Anthropic.APIKey
 	if anthropicAPIKey == "" {
-		logger.Error("Missing anthropic.api_key in config file")
-		_ = logger.Close()                                     //nolint:errcheck // Closing before fatal exit
-		log.Fatalf("Missing anthropic.api_key in config file") //nolint:gocritic // Fatal exit
+		logger.Error().Msg("Missing anthropic.api_key in config file")
+		panic("Missing anthropic.api_key in config file")
 	}
 
 	// ---------------------------
 	// 1. Open SQLite + Memory Store
 	// ---------------------------
 
-	logger.Info("Initializing database and memory store")
+	logger.Info().Msg("Initializing database and memory store")
 	db, err := sql.Open("sqlite3", "staff_memory.db")
 	if err != nil {
-		logger.Error("Failed to open database: %v", err)
-		log.Fatalf("Failed to open database: %v", err)
+		logger.Error().Err(err).Msg("Failed to open database")
+		panic(err)
 	}
 	defer db.Close() //nolint:errcheck // No remedy for db close errors
 
 	// Run database migrations
 	if err := migrations.RunMigrations(db, "./migrations"); err != nil {
-		logger.Error("Failed to run migrations: %v", err)
-		log.Fatalf("Failed to run migrations: %v", err)
+		logger.Error().Err(err).Msg("Failed to run migrations")
+		panic(err)
 	}
 
 	embedder, err := ollama.NewEmbedder(ollama.ModelMXBAI)
 	if err != nil {
-		logger.Error("Failed to create ollama embedder: %v", err)
-		log.Fatalf("Failed to create ollama embedder: %v", err)
+		logger.Error().Err(err).Msg("Failed to create ollama embedder")
+		panic(err)
 	}
 
 	store, err := memory.NewStore(db, embedder)
 	if err != nil {
-		logger.Error("Failed to create memory store: %v", err)
-		log.Fatalf("Failed to create memory store: %v", err)
+		logger.Error().Err(err).Msg("Failed to create memory store")
+		panic(err)
 	}
 
 	memoryRouter := memory.NewMemoryRouter(store, memory.Config{
@@ -374,29 +366,29 @@ func main() {
 	// 2. Create Crew + Shared Tools
 	// ---------------------------
 
-	logger.Info("Creating crew and registering tools")
-	crew := agent.NewCrew(anthropicAPIKey, db)
+	logger.Info().Msg("Creating crew and registering tools")
+	crew := agent.NewCrew(logger, anthropicAPIKey, db)
 
 	// Get workspace path (default to current directory, or staff directory)
 	workspacePath, err := os.Getwd()
 	if err != nil {
 		workspacePath = "."
-		logger.Warn("Failed to get current directory, using '.' as workspace")
+		logger.Warn().Err(err).Msg("Failed to get current directory, using '.' as workspace")
 	}
 
 	// Register all tools (handlers and schemas)
-	registerAllTools(crew, memoryRouter, workspacePath, db, crew.StateManager(), anthropicAPIKey)
+	registerAllTools(logger, crew, memoryRouter, workspacePath, db, crew.StateManager, anthropicAPIKey)
 
 	// Load crew config from unified config
 	// Note: Smart defaults for agents are already applied in LoadConfig
 	if err := crew.LoadCrewConfig(appConfig); err != nil {
-		logger.Error("Failed to load crew config: %v", err)
-		log.Fatalf("Failed to load crew config: %v", err)
+		logger.Error().Err(err).Msg("Failed to load crew config")
+		panic(err)
 	}
 
 	// Load and merge Claude MCP servers if enabled
 	if appConfig.ClaudeMCP.Enabled {
-		logger.Info("Claude MCP integration is enabled, loading Claude MCP servers")
+		logger.Info().Msg("Claude MCP integration is enabled, loading Claude MCP servers")
 
 		// Determine Claude config path
 		claudeConfigPath := appConfig.ClaudeMCP.ConfigPath
@@ -404,7 +396,7 @@ func main() {
 			// Default to ~/.claude.json
 			homeDir, err := os.UserHomeDir()
 			if err != nil {
-				logger.Warn("Failed to get home directory for Claude config, skipping: %v", err)
+				logger.Warn().Err(err).Msg("Failed to get home directory for Claude config, skipping")
 			} else {
 				claudeConfigPath = filepath.Join(homeDir, ".claude.json")
 			}
@@ -418,17 +410,24 @@ func main() {
 			}
 
 			// Load Claude config
-			logger.Info("Loading Claude MCP config from: %q", claudeConfigPath)
+			logger.Info().Str("path", claudeConfigPath).Msg("Loading Claude MCP config")
 			claudeConfig, err := config.LoadClaudeConfig(claudeConfigPath)
 			if err != nil {
-				logger.Warn("Failed to load Claude config from %q: %v (skipping Claude MCP servers)", claudeConfigPath, err)
+				logger.Warn().
+					Str("path", claudeConfigPath).
+					Err(err).
+					Msg("Failed to load Claude config (skipping Claude MCP servers)")
 			} else {
-				logger.Info("Claude config loaded successfully, extracting MCP servers from projects (filter: %v)", appConfig.ClaudeMCP.Projects)
+				logger.Info().
+					Interface("projects", appConfig.ClaudeMCP.Projects).
+					Msg("Claude config loaded successfully, extracting MCP servers from projects")
 				// Extract MCP servers from projects
 				claudeServers, projectToServers := config.ExtractMCPServersFromProjects(claudeConfig, appConfig.ClaudeMCP.Projects)
 
 				if len(claudeServers) > 0 {
-					logger.Info("Found %d Claude MCP server(s) to process", len(claudeServers))
+					logger.Info().
+						Int("count", len(claudeServers)).
+						Msg("Found Claude MCP server(s) to process")
 					// Map to our format
 					mappedServers := config.MapClaudeToMCPServerConfig(claudeServers)
 
@@ -438,14 +437,21 @@ func main() {
 					for name, serverCfg := range mappedServers {
 						if _, exists := appConfig.MCPServers[name]; !exists {
 							appConfig.MCPServers[name] = serverCfg
-							logger.Info("Added Claude MCP server: %s (from project config)", name)
+							logger.Info().
+								Str("name", name).
+								Msg("Added Claude MCP server (from project config)")
 							addedCount++
 						} else {
-							logger.Debug("Skipping Claude MCP server %s (already exists in agents.yaml, agents.yaml takes precedence)", name)
+							logger.Debug().
+								Str("name", name).
+								Msg("Skipping Claude MCP server (already exists in agents.yaml, agents.yaml takes precedence)")
 							skippedCount++
 						}
 					}
-					logger.Info("Claude MCP server merge complete: %d added, %d skipped (already in agents.yaml)", addedCount, skippedCount)
+					logger.Info().
+						Int("added", addedCount).
+						Int("skipped", skippedCount).
+						Msg("Claude MCP server merge complete (already in agents.yaml)")
 
 					// Log summary
 					projectList := make([]string, 0, len(projectToServers))
@@ -460,35 +466,48 @@ func main() {
 						projectList = append(projectList, projectPath)
 					}
 					if hasGlobal {
-						logger.Info("Loaded %d Claude MCP server(s) from Global and %d project(s): %v", addedCount, projectCount, projectList)
+						logger.Info().
+							Int("added", addedCount).
+							Int("projects", projectCount).
+							Strs("project_list", projectList).
+							Msg("Loaded Claude MCP server(s) from Global and project(s)")
 					} else {
-						logger.Info("Loaded %d Claude MCP server(s) from %d project(s): %v", addedCount, projectCount, projectList)
+						logger.Info().
+							Int("added", addedCount).
+							Int("projects", projectCount).
+							Strs("project_list", projectList).
+							Msg("Loaded Claude MCP server(s) from project(s)")
 					}
 
 					// Log restart notification if config was recently modified (within last minute)
 					if !configModified.IsZero() && time.Since(configModified) < time.Minute {
-						logger.Info("Claude MCP configuration file was recently modified. Please restart the application for changes to take effect.")
+						logger.Info().
+							Msg("Claude MCP configuration file was recently modified. Please restart the application for changes to take effect.")
 					}
 				} else {
 					if len(appConfig.ClaudeMCP.Projects) > 0 {
-						logger.Info("No Claude MCP servers found in specified projects")
+						logger.Info().Msg("No Claude MCP servers found in specified projects")
 					} else {
-						logger.Info("No Claude MCP servers found in any projects")
+						logger.Info().Msg("No Claude MCP servers found in any projects")
 					}
 				}
 			}
 		}
 	} else {
-		logger.Info("Claude MCP integration is disabled")
+		logger.Info().Msg("Claude MCP integration is disabled")
 	}
 
 	// Register MCP servers and their tools
-	logger.Info("Starting MCP server registration for %d total server(s) (from agents.yaml and Claude config)", len(appConfig.MCPServers))
-	registerMCPServers(crew, appConfig.MCPServers)
+	logger.Info().
+		Int("count", len(appConfig.MCPServers)).
+		Msg("Starting MCP server registration for total server(s) (from agents.yaml and Claude config)")
+	registerMCPServers(logger, crew, appConfig.MCPServers)
 
 	// Initialize message summarizer if enabled
 	if !appConfig.MessageSummarization.Disabled {
-		logger.Info("Message summarization is enabled, initializing Ollama summarizer (model: %s)", appConfig.MessageSummarization.Model)
+		logger.Info().
+			Str("model", appConfig.MessageSummarization.Model).
+			Msg("Message summarization is enabled, initializing Ollama summarizer")
 		// Convert config.MessageSummarization to agent.MessageSummarizationConfig to avoid import cycle
 		summarizerConfig := agent.MessageSummarizerConfig{
 			Model:         appConfig.MessageSummarization.Model,
@@ -498,22 +517,22 @@ func main() {
 		}
 		messageSummarizer, err := agent.NewMessageSummarizer(summarizerConfig)
 		if err != nil {
-			logger.Error("Failed to create message summarizer: %v", err)
-			log.Fatalf("Failed to create message summarizer: %v", err)
+			logger.Error().Err(err).Msg("Failed to create message summarizer")
+			panic(err)
 		}
 		if messageSummarizer != nil {
 			crew.SetMessageSummarizer(messageSummarizer)
-			logger.Info("Message summarizer initialized successfully")
+			logger.Info().Msg("Message summarizer initialized successfully")
 		}
 	} else {
-		logger.Info("Message summarization is disabled")
+		logger.Info().Msg("Message summarization is disabled")
 	}
 
 	// ---------------------------
 	// 4. Create Chat Service (must be before InitializeAgents)
 	// ---------------------------
 
-	logger.Info("Creating chat service")
+	logger.Info().Msg("Creating chat service")
 	// Get chat timeout: env var takes precedence, then config file, then default (60)
 	chatTimeout := 60 // default
 	if envTimeout := os.Getenv("STAFF_CHAT_TIMEOUT"); envTimeout != "" {
@@ -523,11 +542,11 @@ func main() {
 	} else if appConfig.ChatTimeout > 0 {
 		chatTimeout = appConfig.ChatTimeout
 	}
-	chatService := ui.NewChatService(crew, db, chatTimeout, appConfig)
+	chatService := ui.NewChatService(logger, crew, db, chatTimeout, appConfig)
 
 	// Initialize AgentRunners (after message persister is set)
 	// Extract enabled providers from config
-	logger.Info("Extracting enabled providers from config")
+	logger.Info().Msg("Extracting enabled providers from config")
 	enabledProviders := appConfig.LLMProviders
 	if len(enabledProviders) == 0 {
 		// TODO: remove default. this should be configured and enforced by the config file.
@@ -536,7 +555,7 @@ func main() {
 
 	// Validate at least one provider is enabled
 	if len(enabledProviders) == 0 {
-		log.Fatalf("No LLM providers enabled. Please configure llm_providers in config file or agents.yaml")
+		panic("No LLM providers enabled. Please configure llm_providers in config file or agents.yaml")
 	}
 
 	// Create provider config from appConfig
@@ -553,44 +572,45 @@ func main() {
 	providerConfig.OpenAIOrg = openaiOrg
 
 	// Create provider registry
-	logger.Info("Creating provider registry with enabled providers: %v", enabledProviders)
+	logger.Info().
+		Interface("enabled_providers", enabledProviders).
+		Msg("Creating provider registry with enabled providers")
 	registry := llm.NewProviderRegistry(&providerConfig, enabledProviders)
 
 	// Initialize agents with registry
 	if err := crew.InitializeAgents(registry); err != nil {
-		logger.Error("Failed to initialize agents: %v", err)
-		log.Fatalf("Failed to initialize agents: %v", err)
+		logger.Error().Err(err).Msg("Failed to initialize agents")
+		panic(err)
 	}
 
-	logger.Info("Agents initialized successfully")
+	logger.Info().Msg("Agents initialized successfully")
 
 	// ---------------------------
 	// 5. Start Background Scheduler
 	// ---------------------------
 
-	logger.Info("Starting background scheduler")
+	logger.Info().Msg("Starting background scheduler")
 	// Create context for graceful shutdown
 	schedulerCtx, cancelScheduler := context.WithCancel(context.Background())
 	defer cancelScheduler()
 
 	// Create scheduler with 15 second poll interval
-	scheduler, err := runtime.NewScheduler(crew, crew.StateManager(), crew.StatsManager(), 15*time.Second)
+	scheduler, err := runtime.NewScheduler(crew, crew.StateManager, crew.StatsManager, 15*time.Second)
 	if err != nil {
-		logger.Error("Failed to create scheduler: %v", err)
-		log.Fatalf("Failed to create scheduler: %v", err)
+		logger.Error().Err(err).Msg("Failed to create scheduler")
+		panic(err)
 	}
 
 	// Start scheduler in background goroutine
 	go scheduler.Start(schedulerCtx)
-	logger.Info("Background scheduler goroutine started")
+	logger.Info().Msg("Background scheduler goroutine started")
 
 	// ---------------------------
 	// 6. Create UI Service and TUI
 	// ---------------------------
 
-	logger.Info("Initializing UI")
-	// Suppress console output to avoid interfering with TUI rendering
-	logger.SetSuppressConsole(true)
+	logger.Info().Msg("Initializing UI")
+
 	// Get theme: env var takes precedence, then config file, then default
 	theme := os.Getenv("STAFF_THEME")
 	if theme == "" {
@@ -599,15 +619,14 @@ func main() {
 	if theme == "" {
 		theme = "solarized"
 	}
-	app := tui.NewAppWithTheme(chatService, theme)
-	app.SetConfigPath(configPath)
+	app := tui.NewAppWithTheme(logger, configPath, chatService, theme)
 
-	logger.Info("Starting terminal UI")
+	logger.Info().Msg("Starting terminal UI")
 	if err := app.Run(); err != nil {
-		logger.Error("Error running application: %v", err)
+		logger.Error().Err(err).Msg("Error running application")
 		fmt.Fprintf(os.Stderr, "Error running application: %v\n", err)
-		os.Exit(1)
+		os.Exit(1) //nolint:gocritic // Exit on error
 	}
 
-	logger.Info("Application shutdown")
+	logger.Info().Msg("Application shutdown")
 }

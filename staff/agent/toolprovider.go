@@ -189,9 +189,9 @@ func (p *ToolProviderFromRegistry) expandToolPattern(pattern string) []string {
 	toolPattern := pattern
 
 	// Check for MCP server prefix (format: "server:pattern")
-	if idx := strings.Index(pattern, ":"); idx != -1 {
-		serverFilter = pattern[:idx]
-		toolPattern = pattern[idx+1:]
+	if server, tools, found := strings.Cut(pattern, ":"); found {
+		serverFilter = server
+		toolPattern = tools
 	}
 
 	// Compile the regexp pattern

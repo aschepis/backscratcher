@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/aschepis/backscratcher/staff/logger"
 )
+
+const confirmClearButtonText = "Yes, Clear"
 
 // showTools displays the tools UI
 func (a *App) showTools() {
@@ -98,7 +101,7 @@ func (a *App) showDumpMemoryDialog() {
 
 		// Ensure directory exists
 		dir := filepath.Dir(filePath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			a.showErrorModal("Dump Memory", fmt.Sprintf("Failed to create directory: %v", err))
 			return
 		}
@@ -141,10 +144,10 @@ func (a *App) showDumpMemoryDialog() {
 func (a *App) showClearMemoryDialog() {
 	modal := tview.NewModal().
 		SetText("Are you sure you want to clear ALL memory?\n\nThis action cannot be undone!").
-		AddButtons([]string{"Yes, Clear", "Cancel"}).
+		AddButtons([]string{confirmClearButtonText, "Cancel"}).
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 			a.pages.RemovePage("clear_memory_modal")
-			if buttonLabel == "Yes, Clear" {
+			if buttonLabel == confirmClearButtonText {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 
@@ -184,7 +187,7 @@ func (a *App) showDumpConversationsDialog() {
 		defer cancel()
 
 		// Expand ~ to home directory
-		if len(outputDir) > 0 && outputDir[0] == '~' {
+		if strings.HasPrefix(outputDir, "~") {
 			homeDir, err := os.UserHomeDir()
 			if err == nil {
 				outputDir = filepath.Join(homeDir, outputDir[1:])
@@ -229,10 +232,10 @@ func (a *App) showDumpConversationsDialog() {
 func (a *App) showClearConversationsDialog() {
 	modal := tview.NewModal().
 		SetText("Are you sure you want to clear ALL conversations?\n\nThis action cannot be undone!").
-		AddButtons([]string{"Yes, Clear", "Cancel"}).
+		AddButtons([]string{confirmClearButtonText, "Cancel"}).
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 			a.pages.RemovePage("clear_conversations_modal")
-			if buttonLabel == "Yes, Clear" {
+			if buttonLabel == confirmClearButtonText {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 
@@ -304,7 +307,7 @@ func (a *App) showDumpInboxDialog() {
 		defer cancel()
 
 		// Expand ~ to home directory
-		if len(filePath) > 0 && filePath[0] == '~' {
+		if strings.HasPrefix(filePath, "~") {
 			homeDir, err := os.UserHomeDir()
 			if err == nil {
 				filePath = filepath.Join(homeDir, filePath[1:])
@@ -313,7 +316,7 @@ func (a *App) showDumpInboxDialog() {
 
 		// Ensure directory exists
 		dir := filepath.Dir(filePath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			a.showErrorModal("Dump Inbox", fmt.Sprintf("Failed to create directory: %v", err))
 			return
 		}
@@ -356,10 +359,10 @@ func (a *App) showDumpInboxDialog() {
 func (a *App) showClearInboxDialog() {
 	modal := tview.NewModal().
 		SetText("Are you sure you want to clear ALL inbox items?\n\nThis action cannot be undone!").
-		AddButtons([]string{"Yes, Clear", "Cancel"}).
+		AddButtons([]string{confirmClearButtonText, "Cancel"}).
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 			a.pages.RemovePage("clear_inbox_modal")
-			if buttonLabel == "Yes, Clear" {
+			if buttonLabel == confirmClearButtonText {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 

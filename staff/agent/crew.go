@@ -12,9 +12,9 @@ import (
 	llmanthropic "github.com/aschepis/backscratcher/staff/llm/anthropic"
 	llmollama "github.com/aschepis/backscratcher/staff/llm/ollama"
 	llmopenai "github.com/aschepis/backscratcher/staff/llm/openai"
-	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/mcp"
 	"github.com/aschepis/backscratcher/staff/tools"
+	"github.com/rs/zerolog"
 )
 
 type Crew struct {
@@ -22,20 +22,22 @@ type Crew struct {
 	Runners           map[string]*AgentRunner
 	ToolRegistry      *tools.Registry
 	ToolProvider      *ToolProviderFromRegistry
-	stateManager      *StateManager
-	statsManager      *StatsManager
+	StateManager      *StateManager
+	StatsManager      *StatsManager
 	messagePersister  MessagePersister   // Optional message persister
 	messageSummarizer *MessageSummarizer // Optional message summarizer
 
 	MCPServers map[string]*config.MCPServerConfig
 	MCPClients map[string]mcp.MCPClient
 
+	logger zerolog.Logger
+
 	apiKey      string
 	clientCache map[string]llm.Client // Cache for LLM clients by ClientKey
 	mu          sync.RWMutex
 }
 
-func NewCrew(apiKey string, db *sql.DB) *Crew {
+func NewCrew(logger zerolog.Logger, apiKey string, db *sql.DB) *Crew {
 	if db == nil {
 		panic("database connection is required for Crew")
 	}
@@ -49,23 +51,14 @@ func NewCrew(apiKey string, db *sql.DB) *Crew {
 		Runners:      make(map[string]*AgentRunner),
 		ToolRegistry: reg,
 		ToolProvider: provider,
-		stateManager: stateManager,
-		statsManager: statsManager,
+		StateManager: stateManager,
+		StatsManager: statsManager,
 		apiKey:       apiKey,
 		clientCache:  make(map[string]llm.Client),
 		MCPServers:   make(map[string]*config.MCPServerConfig),
 		MCPClients:   make(map[string]mcp.MCPClient),
+		logger:       logger.With().Str("component", "crew").Logger(),
 	}
-}
-
-// StateManager returns the state manager for this crew
-func (c *Crew) StateManager() *StateManager {
-	return c.stateManager
-}
-
-// StatsManager returns the stats manager for this crew
-func (c *Crew) StatsManager() *StatsManager {
-	return c.statsManager
 }
 
 // GetToolProvider returns the tool provider for this crew
@@ -118,7 +111,7 @@ func (c *Crew) LoadCrewConfig(cfg *config.Config) error {
 }
 
 func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
-	logger.Info("Initializing agents")
+	c.logger.Info().Msg("Initializing agents")
 
 	// Get a copy of agents to iterate over (to avoid holding lock during client creation)
 	c.mu.RLock()
@@ -129,10 +122,10 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 	c.mu.RUnlock()
 
 	for id, cfg := range agentsCopy {
-		logger.Info("Initializing agent %s", id)
+		c.logger.Info().Msgf("Initializing agent %s", id)
 		// Skip disabled agents - they don't need runners or state initialization
 		if cfg.Disabled {
-			logger.Info("Agent %s: disabled, skipping initialization", id)
+			c.logger.Info().Msgf("Agent %s: disabled, skipping initialization", id)
 			continue
 		}
 
@@ -151,21 +144,21 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 		}
 
 		// Resolve LLM configuration using preference-based selection
-		logger.Info("Resolving LLM configuration for agent %s", id)
+		c.logger.Info().Msgf("Resolving LLM configuration for agent %s", id)
 		clientKey, err := registry.ResolveAgentLLMConfig(id, agentLLMConfig)
 		if err != nil {
 			return fmt.Errorf("failed to resolve LLM config for agent %s: %w", id, err)
 		}
 
 		// Get or create LLM client (with caching) - this may take time, so don't hold lock
-		logger.Debug("Getting or creating LLM client for agent %s", id)
+		c.logger.Debug().Msgf("Getting or creating LLM client for agent %s", id)
 		llmClient, err := c.getOrCreateClient(clientKey, id, cfg)
 		if err != nil {
 			return fmt.Errorf("failed to create LLM client for agent %s: %w", id, err)
 		}
 
-		logger.Info("Creating agent runner for agent %s", id)
-		runner, err := NewAgentRunner(llmClient, NewAgent(id, cfg), clientKey.Model, clientKey.Provider, c.ToolRegistry, c.ToolProvider, c.stateManager, c.statsManager, c.messagePersister, c.messageSummarizer)
+		c.logger.Info().Msgf("Creating agent runner for agent %s", id)
+		runner, err := NewAgentRunner(llmClient, NewAgent(id, cfg), clientKey.Model, clientKey.Provider, c.ToolRegistry, c.ToolProvider, c.StateManager, c.StatsManager, c.messagePersister, c.messageSummarizer)
 		if err != nil {
 			return fmt.Errorf("failed to create runner for agent %s: %w", id, err)
 		}
@@ -175,11 +168,11 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 		c.Runners[id] = runner
 		c.mu.Unlock()
 		// Initialize agent state to idle if not exists
-		exists, err := c.stateManager.StateExists(id)
+		exists, err := c.StateManager.StateExists(id)
 		if err != nil {
 			return fmt.Errorf("failed to check agent state for %s: %w", id, err)
 		}
-		logger.Debug("Agent %s: state exists=%v, startup_delay=%v", id, exists, cfg.StartupDelay)
+		c.logger.Debug().Msgf("Agent %s: state exists=%v, startup_delay=%v", id, exists, cfg.StartupDelay)
 		if !exists {
 			now := time.Now()
 			var nextWake *time.Time
@@ -194,7 +187,7 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 				wakeTime := now.Add(delay)
 				nextWake = &wakeTime
 				hasWakeTime = true
-				logger.Debug("Agent %s: configured with startup_delay of %v, will wake at %d (%s)", id, delay, wakeTime.Unix(), wakeTime.Format("2006-01-02 15:04:05"))
+				c.logger.Debug().Msgf("Agent %s: configured with startup_delay of %v, will wake at %d (%s)", id, delay, wakeTime.Unix(), wakeTime.Format("2006-01-02 15:04:05"))
 			}
 
 			// Check if agent has a schedule and is not disabled
@@ -223,25 +216,25 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 
 			if hasWakeTime {
 				// Agent has a wake time (from startup delay or schedule), set state to waiting_external
-				logger.Info("Agent %s: setting state to waiting_external with next_wake=%d (%s)", id, nextWake.Unix(), nextWake.Format("2006-01-02 15:04:05"))
-				if err := c.stateManager.SetStateWithNextWake(id, StateWaitingExternal, nextWake); err != nil {
+				c.logger.Info().Msgf("Agent %s: setting state to waiting_external with next_wake=%d (%s)", id, nextWake.Unix(), nextWake.Format("2006-01-02 15:04:05"))
+				if err := c.StateManager.SetStateWithNextWake(id, StateWaitingExternal, nextWake); err != nil {
 					return fmt.Errorf("failed to initialize agent state with wake time for %s: %w", id, err)
 				}
 			} else {
 				// Agent has no wake time, initialize to idle
-				logger.Info("Agent %s: no wake time configured, setting state to idle", id)
-				if err := c.stateManager.SetState(id, StateIdle); err != nil {
+				c.logger.Info().Msgf("Agent %s: no wake time configured, setting state to idle", id)
+				if err := c.StateManager.SetState(id, StateIdle); err != nil {
 					return fmt.Errorf("failed to initialize agent state for %s: %w", id, err)
 				}
 			}
 		} else if cfg.StartupDelay != "" {
 			// Agent state already exists - check if we need to apply startup delay
 			// Startup delay should apply on every app startup if the agent is idle or doesn't have a next_wake set
-			currentState, err := c.stateManager.GetState(id)
+			currentState, err := c.StateManager.GetState(id)
 			if err != nil {
 				return fmt.Errorf("failed to get state for agent %s: %w", id, err)
 			}
-			currentNextWake, err := c.stateManager.GetNextWake(id)
+			currentNextWake, err := c.StateManager.GetNextWake(id)
 			if err != nil {
 				return fmt.Errorf("failed to get next_wake for agent %s: %w", id, err)
 			}
@@ -257,8 +250,8 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 				}
 				now := time.Now()
 				wakeTime := now.Add(delay)
-				logger.Info("Agent %s: applying startup_delay of %v (existing state=%s), will wake at %d (%s)", id, delay, currentState, wakeTime.Unix(), wakeTime.Format("2006-01-02 15:04:05"))
-				if err := c.stateManager.SetStateWithNextWake(id, StateWaitingExternal, &wakeTime); err != nil {
+				c.logger.Info().Msgf("Agent %s: applying startup_delay of %v (existing state=%s), will wake at %d (%s)", id, delay, currentState, wakeTime.Unix(), wakeTime.Format("2006-01-02 15:04:05"))
+				if err := c.StateManager.SetStateWithNextWake(id, StateWaitingExternal, &wakeTime); err != nil {
 					return fmt.Errorf("failed to apply startup_delay for agent %s: %w", id, err)
 				}
 			} else {
@@ -268,7 +261,7 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 				} else {
 					nextWakeStr = "nil"
 				}
-				logger.Debug("Agent %s: state exists, skipping startup_delay (state=%s, next_wake=%s)", id, currentState, nextWakeStr)
+				c.logger.Debug().Msgf("Agent %s: state exists, skipping startup_delay (state=%s, next_wake=%s)", id, currentState, nextWakeStr)
 			}
 		}
 	}
@@ -405,7 +398,7 @@ func (c *Crew) getOrCreateClient(key *llm.ClientKey, agentID string, agentConfig
 	keyStr := fmt.Sprintf("%s:%s:%s:%s:%s:%s", key.Provider, key.Model, key.APIKey, key.Host, key.BaseURL, key.Organization)
 
 	// Check cache first with read lock
-	logger.Info("Checking cache for client %s", keyStr)
+	c.logger.Info().Msgf("Checking cache for client %s", keyStr)
 	c.mu.RLock()
 	if client, ok := c.clientCache[keyStr]; ok {
 		c.mu.RUnlock()
@@ -468,9 +461,9 @@ func (c *Crew) wrapClientWithMiddleware(baseClient llm.Client, agentID string, a
 	var middleware []llm.Middleware
 
 	// Add rate limit middleware
-	rateLimitHandler := NewRateLimitHandler(c.stateManager)
+	rateLimitHandler := NewRateLimitHandler(c.StateManager)
 	rateLimitHandler.SetOnRateLimitCallback(func(agentID string, retryAfter time.Duration, attempt int) error {
-		logger.Info("Rate limit callback: agent %s will retry after %v (attempt %d)", agentID, retryAfter, attempt)
+		c.logger.Info().Msgf("Rate limit callback: agent %s will retry after %v (attempt %d)", agentID, retryAfter, attempt)
 		return nil
 	})
 	rateLimitMw := NewRateLimitMiddleware(rateLimitHandler, agentID, agentConfig)

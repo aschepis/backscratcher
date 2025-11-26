@@ -2,29 +2,26 @@ package logger
 
 import (
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/rs/zerolog"
 )
 
 var (
-	logFile *os.File
-	log     zerolog.Logger
+	log zerolog.Logger
 )
 
 // Init initializes the file logger, writing to staff.log in the current directory.
 // It should be called once at application startup.
 // Log level can be configured via LOG_LEVEL environment variable (debug, info, warn, error).
-func Init() error {
+func Init() (zerolog.Logger, error) {
 	logPath := "staff.log"
 
 	var err error
-	logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return fmt.Errorf("failed to open log file %s: %w", logPath, err)
+		return zerolog.Logger{}, fmt.Errorf("failed to open log file %s: %w", logPath, err)
 	}
 
 	// Get log level from environment variable
@@ -40,20 +37,8 @@ func Init() error {
 	// Log initialization
 	log.Info().Str("path", logPath).Str("level", level.String()).Msg("Logger initialized")
 
-	return nil
+	return log, nil
 }
-
-// Close closes the log file. Should be called at application shutdown.
-func Close() error {
-	if logFile != nil {
-		return logFile.Close()
-	}
-	return nil
-}
-
-// SetSuppressConsole is a no-op kept for API compatibility.
-// Console output has been removed in favor of file-only logging.
-func SetSuppressConsole(_ bool) {}
 
 // Info logs an informational message.
 func Info(format string, v ...interface{}) {
@@ -80,14 +65,6 @@ func GetLogger() *zerolog.Logger {
 	return &log
 }
 
-// LogFile returns the path to the log file.
-func LogFile() string {
-	if logFile != nil {
-		return logFile.Name()
-	}
-	return filepath.Join(".", "staff.log")
-}
-
 // GetLevel returns the current log level as a string.
 func GetLevel() string {
 	return log.GetLevel().String()
@@ -96,15 +73,6 @@ func GetLevel() string {
 // SetLevel sets the log level.
 func SetLevel(level string) {
 	log = log.Level(parseLogLevel(level))
-}
-
-// Writer returns an io.Writer that writes to the log file.
-// Useful for redirecting output from other loggers.
-func Writer() io.Writer {
-	if logFile != nil {
-		return logFile
-	}
-	return io.Discard
 }
 
 // Helper functions
