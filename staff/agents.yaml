@@ -223,10 +223,6 @@ agents:
       # User interaction
       - send_user_notification
 
-      # MCP related tools
-      - github:*
-      - "claude_google-workspace:*"
-
     system_prompt: |
       You are the Chief of Staff for the user's Staff system.
       Your job is continuous strategic improvement of the agent workforce ("the Crew").
