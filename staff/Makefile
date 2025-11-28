@@ -21,7 +21,7 @@ help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 build: ## Build the application with FTS5 support
-	CGO_ENABLED=1 $(GOBUILD) $(BUILD_FLAGS) -o $(BINARY_NAME)
+	CGO_ENABLED=1 $(GOBUILD) $(BUILD_FLAGS) -o $(BINARY_NAME) ./cmd/staff
 
 clean: ## Remove build artifacts
 	$(GOCLEAN)

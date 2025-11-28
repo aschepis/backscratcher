@@ -6,7 +6,7 @@
 *.dylib
 
 # Compiled application binary
-staff
+./staff
 
 # Test binary, built with `go test -c`
 *.test
