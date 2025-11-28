@@ -226,7 +226,7 @@ func registerMCPServers(logger zerolog.Logger, crew *agent.Crew, servers map[str
 		case serverConfig.Command != "":
 			// STDIO transport
 			logger.Debug().Str("name", serverName).Str("command", serverConfig.Command).Strs("args", serverConfig.Args).Strs("env", serverConfig.Env).Msg("Creating STDIO MCP client")
-			mcpClient, err = mcp.NewStdioMCPClient(serverConfig.Command, serverConfig.ConfigFile, serverConfig.Args, serverConfig.Env)
+			mcpClient, err = mcp.NewStdioMCPClient(logger, serverConfig.Command, serverConfig.ConfigFile, serverConfig.Args, serverConfig.Env)
 			if err != nil {
 				logger.Error().Str("name", serverName).Err(err).Msg("Failed to create STDIO MCP client")
 				continue
@@ -235,7 +235,7 @@ func registerMCPServers(logger zerolog.Logger, crew *agent.Crew, servers map[str
 		case serverConfig.URL != "":
 			// HTTP transport
 			logger.Debug().Str("name", serverName).Str("url", serverConfig.URL).Msg("Creating HTTP MCP client")
-			mcpClient, err = mcp.NewHttpMCPClient(serverConfig.URL, serverConfig.ConfigFile)
+			mcpClient, err = mcp.NewHttpMCPClient(logger, serverConfig.URL, serverConfig.ConfigFile)
 			if err != nil {
 				logger.Error().Str("name", serverName).Err(err).Msg("Failed to create HTTP MCP client")
 				continue
@@ -341,7 +341,7 @@ func main() {
 	defer db.Close() //nolint:errcheck // No remedy for db close errors
 
 	// Run database migrations
-	if err := migrations.RunMigrations(db, "./migrations"); err != nil {
+	if err := migrations.RunMigrations(db, "./migrations", logger); err != nil {
 		logger.Error().Err(err).Msg("Failed to run migrations")
 		panic(err)
 	}
@@ -352,15 +352,15 @@ func main() {
 		panic(err)
 	}
 
-	store, err := memory.NewStore(db, embedder)
+	store, err := memory.NewStore(db, embedder, logger)
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to create memory store")
 		panic(err)
 	}
 
 	memoryRouter := memory.NewMemoryRouter(store, memory.Config{
-		Summarizer: memory.NewAnthropicSummarizer("claude-3.5-haiku-latest", anthropicAPIKey, 256),
-	})
+		Summarizer: memory.NewAnthropicSummarizer("claude-3.5-haiku-latest", anthropicAPIKey, 256, logger),
+	}, logger)
 
 	// ---------------------------
 	// 2. Create Crew + Shared Tools
@@ -411,7 +411,7 @@ func main() {
 
 			// Load Claude config
 			logger.Info().Str("path", claudeConfigPath).Msg("Loading Claude MCP config")
-			claudeConfig, err := config.LoadClaudeConfig(claudeConfigPath)
+			claudeConfig, err := config.LoadClaudeConfig(logger, claudeConfigPath)
 			if err != nil {
 				logger.Warn().
 					Str("path", claudeConfigPath).
@@ -422,14 +422,14 @@ func main() {
 					Interface("projects", appConfig.ClaudeMCP.Projects).
 					Msg("Claude config loaded successfully, extracting MCP servers from projects")
 				// Extract MCP servers from projects
-				claudeServers, projectToServers := config.ExtractMCPServersFromProjects(claudeConfig, appConfig.ClaudeMCP.Projects)
+				claudeServers, projectToServers := config.ExtractMCPServersFromProjects(logger, claudeConfig, appConfig.ClaudeMCP.Projects)
 
 				if len(claudeServers) > 0 {
 					logger.Info().
 						Int("count", len(claudeServers)).
 						Msg("Found Claude MCP server(s) to process")
 					// Map to our format
-					mappedServers := config.MapClaudeToMCPServerConfig(claudeServers)
+					mappedServers := config.MapClaudeToMCPServerConfig(logger, claudeServers)
 
 					// Merge with existing servers (agents.yaml takes precedence)
 					addedCount := 0
@@ -515,7 +515,7 @@ func main() {
 			MaxLines:      appConfig.MessageSummarization.MaxLines,
 			MaxLineBreaks: appConfig.MessageSummarization.MaxLineBreaks,
 		}
-		messageSummarizer, err := agent.NewMessageSummarizer(summarizerConfig)
+		messageSummarizer, err := agent.NewMessageSummarizer(summarizerConfig, logger)
 		if err != nil {
 			logger.Error().Err(err).Msg("Failed to create message summarizer")
 			panic(err)
@@ -595,7 +595,7 @@ func main() {
 	defer cancelScheduler()
 
 	// Create scheduler with 15 second poll interval
-	scheduler, err := runtime.NewScheduler(crew, crew.StateManager, crew.StatsManager, 15*time.Second)
+	scheduler, err := runtime.NewScheduler(crew, crew.StateManager, crew.StatsManager, 15*time.Second, logger)
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to create scheduler")
 		panic(err)

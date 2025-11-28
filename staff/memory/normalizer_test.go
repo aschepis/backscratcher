@@ -3,6 +3,8 @@ package memory
 import (
 	"context"
 	"testing"
+
+	"github.com/rs/zerolog"
 )
 
 // fakeNormalizerHTTPClient is exercised indirectly via Normalize in integration tests
@@ -10,7 +12,7 @@ import (
 // contract behavior that does not require a live HTTP call.
 
 func TestNormalizerRejectsEmptyInput(t *testing.T) {
-	n := NewNormalizer("claude-3.5-haiku-latest", "dummy", 64)
+	n := NewNormalizer("claude-3.5-haiku-latest", "dummy", 64, zerolog.Nop())
 
 	if _, _, _, err := n.Normalize(context.Background(), ""); err == nil {
 		t.Fatalf("expected error for empty input, got nil")

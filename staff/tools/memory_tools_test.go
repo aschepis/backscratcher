@@ -10,6 +10,7 @@ import (
 
 	"github.com/aschepis/backscratcher/staff/memory"
 	"github.com/aschepis/backscratcher/staff/migrations"
+	"github.com/rs/zerolog"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -42,17 +43,17 @@ func TestMemoryStorePersonalTool_Smoke(t *testing.T) {
 		migrationsPath = filepath.Join("..", "migrations")
 	}
 
-	if err := migrations.RunMigrations(db, migrationsPath); err != nil {
+	if err := migrations.RunMigrations(db, migrationsPath, zerolog.Nop()); err != nil {
 		t.Fatalf("failed to run migrations: %v", err)
 	}
 
-	store, err := memory.NewStore(db, nil)
+	store, err := memory.NewStore(db, nil, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
-	router := memory.NewMemoryRouter(store, memory.Config{})
+	router := memory.NewMemoryRouter(store, memory.Config{}, zerolog.Nop())
 
-	reg := NewRegistry()
+	reg := NewRegistry(zerolog.Nop())
 	reg.RegisterMemoryTools(router, "") // Empty API key will fall back to env var
 
 	args := map[string]any{

@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/aschepis/backscratcher/staff/logger"
 )
 
 // Dangerous command patterns that should be blocked
@@ -60,7 +58,7 @@ func isDangerousCommand(command string) bool {
 
 // RegisterSystemTools registers all system/command execution tools
 func (r *Registry) RegisterSystemTools(workspacePath string) {
-	logger.Info("Registering system tools in registry")
+	r.logger.Info().Msg("Registering system tools in registry")
 
 	r.Register("execute_command", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
 		var payload struct {
@@ -81,7 +79,7 @@ func (r *Registry) RegisterSystemTools(workspacePath string) {
 		}
 
 		if isDangerousCommand(fullCommand) {
-			logger.Warn("Blocked dangerous command from agent %s: %s", agentID, fullCommand)
+			r.logger.Warn().Str("agentID", agentID).Str("command", fullCommand).Msg("Blocked dangerous command from agent")
 			return nil, fmt.Errorf("command blocked: this command appears to be dangerous and could damage the system or delete files. Please use safer alternatives and avoid commands that modify or delete files, format disks, or execute arbitrary code from the internet")
 		}
 

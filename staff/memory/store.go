@@ -9,19 +9,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // Store manages all memory & artifact persistence.
 type Store struct {
 	db       *sql.DB
 	embedder Embedder
+	logger   zerolog.Logger
 }
 
 // NewStore creates and returns a Store.
-func NewStore(db *sql.DB, embedder Embedder) (*Store, error) {
-	logger.Info("Initializing new Store with DB and Embedder")
-	s := &Store{db: db, embedder: embedder}
+func NewStore(db *sql.DB, embedder Embedder, logger zerolog.Logger) (*Store, error) {
+	logger = logger.With().Str("component", "memory_store").Logger()
+	logger.Info().Msg("Initializing new Store with DB and Embedder")
+	s := &Store{db: db, embedder: embedder, logger: logger}
 	return s, nil
 }
 
@@ -43,7 +45,12 @@ func (s *Store) RememberGlobalFact(
 	importance float64,
 	metadata map[string]interface{},
 ) (MemoryItem, error) {
-	logger.Debug("RememberGlobalFact called. Content: %.40q, Importance: %.2f, Metadata: %+v", content, importance, metadata)
+	s.logger.Debug().
+		Str("method", "RememberGlobalFact").
+		Str("content", truncateString(content, 40)).
+		Float64("importance", importance).
+		Interface("metadata", metadata).
+		Msg("called")
 	return s.remember(ctx, MemoryTypeFact, ScopeGlobal, nil, nil, content, importance, metadata)
 }
 
@@ -55,7 +62,13 @@ func (s *Store) RememberAgentFact(
 	importance float64,
 	metadata map[string]interface{},
 ) (MemoryItem, error) {
-	logger.Debug("RememberAgentFact called. AgentID: %s, Content: %.40q, Importance: %.2f, Metadata: %+v", agentID, content, importance, metadata)
+	s.logger.Debug().
+		Str("method", "RememberAgentFact").
+		Str("agent_id", agentID).
+		Str("content", truncateString(content, 40)).
+		Float64("importance", importance).
+		Interface("metadata", metadata).
+		Msg("called")
 	return s.remember(ctx, MemoryTypeFact, ScopeAgent, &agentID, nil, content, importance, metadata)
 }
 
@@ -68,7 +81,14 @@ func (s *Store) RememberAgentEpisode(
 	importance float64,
 	metadata map[string]interface{},
 ) (MemoryItem, error) {
-	logger.Debug("RememberAgentEpisode called. AgentID: %s, ThreadID: %s, Content: %.40q, Importance: %.2f, Metadata: %+v", agentID, threadID, content, importance, metadata)
+	s.logger.Debug().
+		Str("method", "RememberAgentEpisode").
+		Str("agent_id", agentID).
+		Str("thread_id", threadID).
+		Str("content", truncateString(content, 40)).
+		Float64("importance", importance).
+		Interface("metadata", metadata).
+		Msg("called")
 	return s.remember(ctx, MemoryTypeEpisode, ScopeAgent, &agentID, &threadID, content, importance, metadata)
 }
 
@@ -83,8 +103,16 @@ func (s *Store) RememberGeneric(
 	importance float64,
 	metadata map[string]interface{},
 ) (MemoryItem, error) {
-	logger.Debug("RememberGeneric called. Type: %s, Scope: %s, AgentID: %v, ThreadID: %v, Content: %.40q, Importance: %.2f, Metadata: %+v",
-		typ, scope, agentID, threadID, content, importance, metadata)
+	s.logger.Debug().
+		Str("method", "RememberGeneric").
+		Str("type", string(typ)).
+		Str("scope", string(scope)).
+		Str("agent_id", derefString(agentID)).
+		Str("thread_id", derefString(threadID)).
+		Str("content", truncateString(content, 40)).
+		Float64("importance", importance).
+		Interface("metadata", metadata).
+		Msg("called")
 	return s.remember(ctx, typ, scope, agentID, threadID, content, importance, metadata)
 }
 
@@ -98,14 +126,27 @@ func (s *Store) remember(
 	importance float64,
 	metadata map[string]interface{},
 ) (MemoryItem, error) {
-	logger.Debug("remember called. Type: %s, Scope: %s, AgentID: %v, ThreadID: %v, Content: %.40q, Importance: %.2f, Metadata: %+v",
-		typ, scope, agentID, threadID, content, importance, metadata)
+	s.logger.Debug().
+		Str("method", "remember").
+		Str("type", string(typ)).
+		Str("scope", string(scope)).
+		Str("agent_id", derefString(agentID)).
+		Str("thread_id", derefString(threadID)).
+		Str("content", truncateString(content, 40)).
+		Float64("importance", importance).
+		Interface("metadata", metadata).
+		Msg("called")
 	if strings.TrimSpace(content) == "" {
-		logger.Warn("Attempted to remember empty content")
+		s.logger.Warn().
+			Str("method", "remember").
+			Msg("Attempted to remember empty content")
 		return MemoryItem{}, errors.New("content is empty")
 	}
 	if scope != ScopeAgent && scope != ScopeGlobal {
-		logger.Error("Invalid scope provided: %q", scope)
+		s.logger.Error().
+			Str("method", "remember").
+			Str("invalid_scope", string(scope)).
+			Msg("Invalid scope provided")
 		return MemoryItem{}, fmt.Errorf("invalid scope: %q", scope)
 	}
 
@@ -114,7 +155,10 @@ func (s *Store) remember(
 	if metadata != nil {
 		metaJSON, err = json.Marshal(metadata)
 		if err != nil {
-			logger.Error("Failed to marshal metadata: %v", err)
+			s.logger.Error().
+				Str("method", "remember").
+				Err(err).
+				Msg("Failed to marshal metadata")
 			return MemoryItem{}, fmt.Errorf("marshal metadata: %w", err)
 		}
 	}
@@ -123,7 +167,10 @@ func (s *Store) remember(
 	if s.embedder != nil {
 		embedding, err = s.embedder.Embed(ctx, content)
 		if err != nil {
-			logger.Error("Embedding failed: %v. Saving anyway without embedding.", err)
+			s.logger.Error().
+				Str("method", "remember").
+				Err(err).
+				Msg("Embedding failed. Saving anyway without embedding.")
 			embedding = nil
 		}
 	}
@@ -131,7 +178,10 @@ func (s *Store) remember(
 	nowUnix := now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		logger.Error("Failed to begin transaction: %v", err)
+		s.logger.Error().
+			Str("method", "remember").
+			Err(err).
+			Msg("Failed to begin transaction")
 		return MemoryItem{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
@@ -154,35 +204,57 @@ func (s *Store) remember(
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
-		logger.Error("Failed to build insert query: %v", err)
+		s.logger.Error().
+			Str("method", "remember").
+			Err(err).
+			Msg("Failed to build insert query")
 		return MemoryItem{}, fmt.Errorf("build insert query: %w", err)
 	}
 
 	res, err := tx.ExecContext(ctx, queryStr, args...)
 	if err != nil {
-		logger.Error("Failed to insert memory_item: %v", err)
+		s.logger.Error().
+			Str("method", "remember").
+			Err(err).
+			Msg("Failed to insert memory_item")
 		return MemoryItem{}, fmt.Errorf("insert memory_item: %w", err)
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
-		logger.Error("Failed to retrieve LastInsertId for memory_items: %v", err)
+		s.logger.Error().
+			Str("method", "remember").
+			Err(err).
+			Msg("Failed to retrieve LastInsertId for memory_items")
 		return MemoryItem{}, err
 	}
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO memory_items_fts (rowid, content) VALUES (?, ?)
 `, id, content); err != nil {
-		logger.Error("Failed to insert memory_items_fts row: %v", err)
+		s.logger.Error().
+			Str("method", "remember").
+			Err(err).
+			Msg("Failed to insert memory_items_fts row")
 		return MemoryItem{}, fmt.Errorf("insert fts: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		logger.Error("Transaction commit failed for remembering memory_item: %v", err)
+		s.logger.Error().
+			Str("method", "remember").
+			Err(err).
+			Msg("Transaction commit failed for remembering memory_item")
 		return MemoryItem{}, err
 	}
 
-	logger.Info("MemoryItem remembered. Type: %s, Scope: %s, AgentID: %v, ThreadID: %v, Content: %.40q, ID: %d",
-		typ, scope, agentID, threadID, content, id)
+	s.logger.Info().
+		Str("method", "remember").
+		Str("type", string(typ)).
+		Str("scope", string(scope)).
+		Str("agent_id", derefString(agentID)).
+		Str("thread_id", derefString(threadID)).
+		Str("content", truncateString(content, 40)).
+		Int64("id", id).
+		Msg("MemoryItem remembered")
 
 	item := MemoryItem{
 		ID:         id,
@@ -213,13 +285,23 @@ func (s *Store) StorePersonalMemory(
 	importance float64,
 	metadata map[string]interface{},
 ) (MemoryItem, error) {
-	logger.Debug("StorePersonalMemory called. AgentID: %s, Raw: %.60q, Normalized: %.60q, MemoryType: %s, Tags: %v, ThreadID: %v, Importance: %.2f",
-		agentID, rawText, normalized, memoryType, tags, threadID, importance)
+	s.logger.Debug().
+		Str("method", "StorePersonalMemory").
+		Str("agent_id", agentID).
+		Str("raw", truncateString(rawText, 60)).
+		Str("normalized", truncateString(normalized, 60)).
+		Str("memory_type", memoryType).
+		Strs("tags", tags).
+		Str("thread_id", derefString(threadID)).
+		Float64("importance", importance).
+		Msg("called")
 
 	rawText = strings.TrimSpace(rawText)
 	normalized = strings.TrimSpace(normalized)
 	if rawText == "" && normalized == "" {
-		logger.Warn("Attempted to store personal memory with empty raw and normalized text")
+		s.logger.Warn().
+			Str("method", "StorePersonalMemory").
+			Msg("Attempted to store personal memory with empty raw and normalized text")
 		return MemoryItem{}, errors.New("raw and normalized text cannot both be empty")
 	}
 	if normalized == "" {
@@ -237,7 +319,10 @@ func (s *Store) StorePersonalMemory(
 	if metadata != nil {
 		metaJSON, err = json.Marshal(metadata)
 		if err != nil {
-			logger.Error("StorePersonalMemory: failed to marshal metadata: %v", err)
+			s.logger.Error().
+				Str("method", "StorePersonalMemory").
+				Err(err).
+				Msg("failed to marshal metadata")
 			return MemoryItem{}, fmt.Errorf("marshal metadata: %w", err)
 		}
 	}
@@ -245,7 +330,10 @@ func (s *Store) StorePersonalMemory(
 	if tags != nil {
 		tagsJSON, err = json.Marshal(tags)
 		if err != nil {
-			logger.Error("StorePersonalMemory: failed to marshal tags: %v", err)
+			s.logger.Error().
+				Str("method", "StorePersonalMemory").
+				Err(err).
+				Msg("failed to marshal tags")
 			return MemoryItem{}, fmt.Errorf("marshal tags: %w", err)
 		}
 	}
@@ -255,7 +343,10 @@ func (s *Store) StorePersonalMemory(
 	if s.embedder != nil {
 		embedding, err = s.embedder.Embed(ctx, normalized)
 		if err != nil {
-			logger.Error("StorePersonalMemory: embedding failed: %v. Saving without embedding.", err)
+			s.logger.Error().
+				Str("method", "StorePersonalMemory").
+				Err(err).
+				Msg("embedding failed: saving without embedding")
 			embedding = nil
 		}
 	}
@@ -263,7 +354,10 @@ func (s *Store) StorePersonalMemory(
 	nowUnix := now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		logger.Error("StorePersonalMemory: failed to begin transaction: %v", err)
+		s.logger.Error().
+			Str("method", "StorePersonalMemory").
+			Err(err).
+			Msg("failed to begin transaction")
 		return MemoryItem{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
@@ -285,18 +379,27 @@ func (s *Store) StorePersonalMemory(
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
-		logger.Error("StorePersonalMemory: failed to build insert query: %v", err)
+		s.logger.Error().
+			Str("method", "StorePersonalMemory").
+			Err(err).
+			Msg("failed to build insert query")
 		return MemoryItem{}, fmt.Errorf("build insert query: %w", err)
 	}
 
 	res, err := tx.ExecContext(ctx, queryStr, args...)
 	if err != nil {
-		logger.Error("StorePersonalMemory: failed to insert memory_item: %v", err)
+		s.logger.Error().
+			Str("method", "StorePersonalMemory").
+			Err(err).
+			Msg("failed to insert memory_item")
 		return MemoryItem{}, fmt.Errorf("insert personal memory_item: %w", err)
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
-		logger.Error("StorePersonalMemory: failed to retrieve LastInsertId: %v", err)
+		s.logger.Error().
+			Str("method", "StorePersonalMemory").
+			Err(err).
+			Msg("failed to retrieve LastInsertId")
 		return MemoryItem{}, err
 	}
 
@@ -304,16 +407,26 @@ func (s *Store) StorePersonalMemory(
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO memory_items_fts (rowid, content) VALUES (?, ?)
 `, id, normalized); err != nil {
-		logger.Error("StorePersonalMemory: failed to insert memory_items_fts row: %v", err)
+		s.logger.Error().
+			Str("method", "StorePersonalMemory").
+			Err(err).
+			Msg("failed to insert memory_items_fts row")
 		return MemoryItem{}, fmt.Errorf("insert personal fts: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		logger.Error("StorePersonalMemory: transaction commit failed: %v", err)
+		s.logger.Error().
+			Str("method", "StorePersonalMemory").
+			Err(err).
+			Msg("transaction commit failed")
 		return MemoryItem{}, err
 	}
 
-	logger.Info("StorePersonalMemory: stored personal memory. AgentID: %s, ID: %d", agentID, id)
+	s.logger.Info().
+		Str("method", "StorePersonalMemory").
+		Str("agent_id", agentID).
+		Int64("id", id).
+		Msg("stored personal memory")
 
 	item := MemoryItem{
 		ID:         id,
@@ -343,15 +456,27 @@ func (s *Store) CreateArtifact(
 	title, body string,
 	metadata map[string]interface{},
 ) (Artifact, error) {
-	logger.Debug("CreateArtifact called. Scope: %s, AgentID: %v, ThreadID: %v, Title: %.40q, Body: %.40q, Metadata: %+v",
-		scope, agentID, threadID, title, body, metadata)
+	s.logger.Debug().
+		Str("method", "CreateArtifact").
+		Str("scope", string(scope)).
+		Str("agent_id", derefString(agentID)).
+		Str("thread_id", derefString(threadID)).
+		Str("title", truncateString(title, 40)).
+		Str("body", truncateString(body, 40)).
+		Interface("metadata", metadata).
+		Msg("called")
 
 	if strings.TrimSpace(body) == "" {
-		logger.Warn("Attempted to create artifact with empty body")
+		s.logger.Warn().
+			Str("method", "CreateArtifact").
+			Msg("Attempted to create artifact with empty body")
 		return Artifact{}, errors.New("body is empty")
 	}
 	if scope != ScopeAgent && scope != ScopeGlobal {
-		logger.Error("Invalid scope for artifact: %q", scope)
+		s.logger.Error().
+			Str("method", "CreateArtifact").
+			Str("invalid_scope", string(scope)).
+			Msg("Invalid scope for artifact")
 		return Artifact{}, fmt.Errorf("invalid scope: %q", scope)
 	}
 	var metaJSON []byte
@@ -359,7 +484,10 @@ func (s *Store) CreateArtifact(
 	if metadata != nil {
 		metaJSON, err = json.Marshal(metadata)
 		if err != nil {
-			logger.Error("Failed to marshal artifact metadata: %v", err)
+			s.logger.Error().
+				Str("method", "CreateArtifact").
+				Err(err).
+				Msg("Failed to marshal artifact metadata")
 			return Artifact{}, fmt.Errorf("marshal metadata: %w", err)
 		}
 	}
@@ -381,21 +509,37 @@ func (s *Store) CreateArtifact(
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
-		logger.Error("Failed to build insert query: %v", err)
+		s.logger.Error().
+			Str("method", "CreateArtifact").
+			Err(err).
+			Msg("Failed to build insert query")
 		return Artifact{}, fmt.Errorf("build insert query: %w", err)
 	}
 
 	res, err := s.db.ExecContext(ctx, queryStr, args...)
 	if err != nil {
-		logger.Error("Failed to insert artifact: %v", err)
+		s.logger.Error().
+			Str("method", "CreateArtifact").
+			Err(err).
+			Msg("Failed to insert artifact")
 		return Artifact{}, err
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
-		logger.Error("Failed to retrieve LastInsertId for artifact: %v", err)
+		s.logger.Error().
+			Str("method", "CreateArtifact").
+			Err(err).
+			Msg("Failed to retrieve LastInsertId for artifact")
 		return Artifact{}, err
 	}
-	logger.Info("Artifact created. ID: %d, Title: %.40q, Scope: %s, AgentID: %v, ThreadID: %v", id, title, scope, agentID, threadID)
+	s.logger.Info().
+		Str("method", "CreateArtifact").
+		Int64("id", id).
+		Str("title", truncateString(title, 40)).
+		Str("scope", string(scope)).
+		Str("agent_id", derefString(agentID)).
+		Str("thread_id", derefString(threadID)).
+		Msg("Artifact created")
 	return Artifact{
 		ID:        id,
 		AgentID:   agentID,
@@ -407,4 +551,23 @@ func (s *Store) CreateArtifact(
 		CreatedAt: time.Unix(nowUnix, 0),
 		UpdatedAt: time.Unix(nowUnix, 0),
 	}, nil
+}
+
+// Helper function to safely dereference *string for structured logs.
+// TODO: extract this into a ptr module that can ref/deref any type
+func derefString(ptr *string) string {
+	if ptr == nil {
+		return ""
+	}
+	return *ptr
+}
+
+// Helper function to safely truncate strings (for log safety).
+// TODO: add this to a helper module for non-standard library string operations
+func truncateString(s string, n int) string {
+	rs := []rune(s)
+	if len(rs) > n {
+		return string(rs[:n]) + "..."
+	}
+	return s
 }

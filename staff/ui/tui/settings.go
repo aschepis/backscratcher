@@ -10,7 +10,6 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/aschepis/backscratcher/staff/config"
-	"github.com/aschepis/backscratcher/staff/logger"
 )
 
 // showSettings displays the settings UI
@@ -39,7 +38,7 @@ func (a *App) showSettings() {
 	}
 
 	if claudeConfigPath != "" {
-		claudeCfg, err := config.LoadClaudeConfig(claudeConfigPath)
+		claudeCfg, err := config.LoadClaudeConfig(a.logger, claudeConfigPath)
 		if err == nil {
 			// Add "Global" if there are global MCP servers
 			if len(claudeCfg.MCPServers) > 0 {
@@ -192,7 +191,7 @@ func (a *App) showSettings() {
 
 		// Save config
 		if err := config.SaveConfig(cfg, configPath); err != nil {
-			logger.Error("Failed to save config: %v", err)
+			a.logger.Error().Err(err).Msg("Failed to save config")
 			modal := tview.NewModal().
 				SetText(fmt.Sprintf("Error saving config:\n%v\n\nPress Enter to continue.", err)).
 				AddButtons([]string{"OK"}).

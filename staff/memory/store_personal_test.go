@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/aschepis/backscratcher/staff/migrations"
+	"github.com/rs/zerolog"
 )
 
 // TestStorePersonalMemory_Smoke verifies that StorePersonalMemory inserts a row and
@@ -37,11 +38,11 @@ func TestStorePersonalMemory_Smoke(t *testing.T) {
 		migrationsPath = filepath.Join("..", "migrations")
 	}
 
-	if err := migrations.RunMigrations(db, migrationsPath); err != nil {
+	if err := migrations.RunMigrations(db, migrationsPath, zerolog.Nop()); err != nil {
 		t.Fatalf("failed to run migrations: %v", err)
 	}
 
-	store, err := NewStore(db, nil)
+	store, err := NewStore(db, nil, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}

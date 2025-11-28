@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/cenkalti/backoff/v4"
+	"github.com/rs/zerolog"
 )
 
 // AnthropicSummarizer implements Summarizer using Claude via the Messages API.
@@ -20,10 +20,11 @@ type AnthropicSummarizer struct {
 	Model      string
 	MaxTokens  int
 	HTTPClient *http.Client
+	logger     zerolog.Logger
 }
 
 // NewAnthropicSummarizer returns a configured summarizer.
-func NewAnthropicSummarizer(model, apiKey string, maxTokens int) *AnthropicSummarizer {
+func NewAnthropicSummarizer(model, apiKey string, maxTokens int, logger zerolog.Logger) *AnthropicSummarizer {
 	if maxTokens <= 0 {
 		maxTokens = 256
 	}
@@ -34,6 +35,7 @@ func NewAnthropicSummarizer(model, apiKey string, maxTokens int) *AnthropicSumma
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		logger: logger.With().Str("component", "anthropicSummarizer").Logger(),
 	}
 }
 
@@ -145,7 +147,7 @@ Episodes:
 					eb.RandomizationFactor = 0.1
 					eb.Reset()
 				}
-				logger.Warn("AnthropicSummarizer: Rate limit encountered, retrying after %v", retryAfter)
+				s.logger.Warn().Dur("retryAfter", retryAfter).Msg("AnthropicSummarizer: Rate limit encountered, retrying")
 				return fmt.Errorf("AnthropicSummarizer: rate limit: %s: %v", resp.Status, apiErr)
 			}
 
@@ -155,7 +157,7 @@ Episodes:
 			}
 
 			// Retry on 5xx errors
-			logger.Warn("AnthropicSummarizer: Server error %s, retrying", resp.Status)
+			s.logger.Warn().Str("status", resp.Status).Msg("AnthropicSummarizer: Server error, retrying")
 			return fmt.Errorf("AnthropicSummarizer: server error %s: %v", resp.Status, apiErr)
 		}
 

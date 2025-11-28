@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/aschepis/backscratcher/staff/llm"
-	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/rs/zerolog"
 )
 
@@ -143,7 +142,12 @@ func (cm *ContextManager) CompressContext(
 		return "", fmt.Errorf("message persister does not support system messages")
 	}
 
-	logger.Info("Context compressed for agent %s, thread %s: %d chars -> %d chars", agentID, threadID, originalSize, compressedSize)
+	cm.logger.Info().
+		Str("agent_id", agentID).
+		Str("thread_id", threadID).
+		Int("original_size", originalSize).
+		Int("compressed_size", compressedSize).
+		Msg("Context compressed")
 
 	return summary, nil
 }

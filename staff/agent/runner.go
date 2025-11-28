@@ -77,7 +77,7 @@ func NewAgentRunner(
 	if messageSummarizer == nil {
 		return nil, fmt.Errorf("messageSummarizer is required for AgentRunner")
 	}
-	rateLimitHandler := NewRateLimitHandler(stateManager)
+	rateLimitHandler := NewRateLimitHandler(logger, stateManager)
 
 	// Set callback to notify users about rate limits
 	rateLimitHandler.SetOnRateLimitCallback(func(agentID string, retryAfter time.Duration, attempt int) error {
@@ -204,6 +204,7 @@ func (r *AgentRunner) RunAgent(
 		r.toolExec,
 		r.messagePersister,
 		r.messageSummarizer,
+		r.logger,
 	)
 
 	if err != nil {
@@ -267,6 +268,7 @@ func (r *AgentRunner) RunAgentStream(
 		r.messagePersister,
 		r.messageSummarizer,
 		callback,
+		r.logger,
 	)
 
 	if err != nil {

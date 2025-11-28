@@ -10,8 +10,6 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-
-	"github.com/aschepis/backscratcher/staff/logger"
 )
 
 const confirmClearButtonText = "Yes, Clear"
@@ -582,5 +580,5 @@ func (a *App) showErrorModal(title, message string) {
 		})
 	pageName := fmt.Sprintf("error_modal_%s", title)
 	a.pages.AddPage(pageName, modal, true, true)
-	logger.Error("%s: %s", title, message)
+	a.logger.Error().Str("title", title).Str("message", message).Msg("showErrorModal")
 }

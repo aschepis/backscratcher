@@ -10,7 +10,7 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // SearchMemory executes keyword / embedding / tag / hybrid search over memory_items.
@@ -20,111 +20,124 @@ func (s *Store) SearchMemory(ctx context.Context, q *SearchQuery) ([]SearchResul
 		limit = 20
 	}
 
-	// Default UseFTS to true for backward compatibility when query text is provided
-	// The UseFTS field allows disabling FTS if needed, but defaults to true when query text exists
+	// TODO: look into whether FTS should be toggleable
 	queryText := strings.TrimSpace(q.QueryText)
-	useFTS := queryText != "" // default to true when query text exists
+	useFTS := queryText != ""
 	if q.UseFTS != nil {
-		// Explicitly set - use the provided value
 		useFTS = *q.UseFTS && queryText != ""
 	}
 
-	logger.Info("SearchMemory: queryText=%q, useFTS=%v, hasEmbedding=%v, hasTags=%v, agentID=%v, includeGlobal=%v, useHybrid=%v, limit=%d, types=%v, memoryTypes=%v",
-		queryText, useFTS, q.QueryEmbedding != nil, len(q.Tags) > 0, q.AgentID, q.IncludeGlobal, q.UseHybrid, limit, q.Types, q.MemoryTypes)
+	s.logger.Info().
+		Str("queryText", queryText).
+		Bool("useFTS", useFTS).
+		Bool("hasEmbedding", q.QueryEmbedding != nil).
+		Bool("hasTags", len(q.Tags) > 0).
+		Interface("agentID", q.AgentID).
+		Bool("includeGlobal", q.IncludeGlobal).
+		Bool("useHybrid", q.UseHybrid).
+		Int("limit", limit).
+		Interface("types", q.Types).
+		Interface("memoryTypes", q.MemoryTypes).
+		Msg("SearchMemory: Start")
 
 	var byKeyword []SearchResult
 	var byVector []SearchResult
 	var byTags []SearchResult
 	var err error
 
-	// FTS search (optional)
 	if useFTS && strings.TrimSpace(q.QueryText) != "" {
-		logger.Debug("SearchMemory: executing FTS search")
+		s.logger.Debug().Msg("SearchMemory: executing FTS search")
 		byKeyword, err = s.searchByKeyword(ctx, q, limit*3)
 		if err != nil {
-			logger.Error("SearchMemory: FTS search failed: %v", err)
+			s.logger.Error().Err(err).Msg("SearchMemory: FTS search failed")
 			return nil, err
 		}
-		logger.Info("SearchMemory: FTS search returned %d results", len(byKeyword))
+		s.logger.Info().
+			Int("numKeywordResults", len(byKeyword)).
+			Msg("SearchMemory: FTS search completed")
 	} else {
-		logger.Debug("SearchMemory: skipping FTS search (useFTS=%v, queryText=%q)", useFTS, queryText)
+		s.logger.Debug().
+			Bool("useFTS", useFTS).
+			Str("queryText", queryText).
+			Msg("SearchMemory: skipping FTS search")
 	}
 
-	// Vector search
 	if q.QueryEmbedding != nil {
-		logger.Debug("SearchMemory: executing vector search")
+		s.logger.Debug().Msg("SearchMemory: executing vector search")
 		byVector, err = s.searchByVector(ctx, q, limit*3)
 		if err != nil {
-			logger.Error("SearchMemory: vector search failed: %v", err)
+			s.logger.Error().Err(err).Msg("SearchMemory: vector search failed")
 			return nil, err
 		}
-		logger.Info("SearchMemory: vector search returned %d results", len(byVector))
+		s.logger.Info().
+			Int("numVectorResults", len(byVector)).
+			Msg("SearchMemory: vector search completed")
 	} else {
-		logger.Debug("SearchMemory: skipping vector search (no embedding provided)")
+		s.logger.Debug().Msg("SearchMemory: skipping vector search (no embedding provided)")
 	}
 
-	// Tag search
 	if len(q.Tags) > 0 {
-		logger.Debug("SearchMemory: executing tag search with tags=%v", q.Tags)
+		s.logger.Debug().
+			Interface("tags", q.Tags).
+			Msg("SearchMemory: executing tag search")
 		byTags, err = s.searchByTags(ctx, q, limit*3)
 		if err != nil {
-			logger.Error("SearchMemory: tag search failed: %v", err)
+			s.logger.Error().Err(err).Msg("SearchMemory: tag search failed")
 			return nil, err
 		}
-		logger.Info("SearchMemory: tag search returned %d results", len(byTags))
+		s.logger.Info().
+			Int("numTagResults", len(byTags)).
+			Msg("SearchMemory: tag search completed")
 	} else {
-		logger.Debug("SearchMemory: skipping tag search (no tags provided)")
+		s.logger.Debug().Msg("SearchMemory: skipping tag search (no tags provided)")
 	}
 
-	// If not using hybrid mode, return the best single result set
 	if !q.UseHybrid {
-		logger.Debug("SearchMemory: non-hybrid mode, selecting best result set")
-		// Priority: vector > tags > keyword
+		s.logger.Debug().Msg("SearchMemory: non-hybrid mode, selecting best result set")
 		if len(byVector) > 0 {
 			if len(byVector) > limit {
 				byVector = byVector[:limit]
 			}
-			logger.Info("SearchMemory: returning %d vector results", len(byVector))
+			s.logger.Info().
+				Int("numVectorResults", len(byVector)).
+				Msg("SearchMemory: returning vector results")
 			return byVector, nil
 		}
 		if len(byTags) > 0 {
 			if len(byTags) > limit {
 				byTags = byTags[:limit]
 			}
-			logger.Info("SearchMemory: returning %d tag results", len(byTags))
+			s.logger.Info().
+				Int("numTagResults", len(byTags)).
+				Msg("SearchMemory: returning tag results")
 			return byTags, nil
 		}
 		if len(byKeyword) > 0 {
 			if len(byKeyword) > limit {
 				byKeyword = byKeyword[:limit]
 			}
-			logger.Info("SearchMemory: returning %d keyword results", len(byKeyword))
+			s.logger.Info().
+				Int("numKeywordResults", len(byKeyword)).
+				Msg("SearchMemory: returning keyword results")
 			return byKeyword, nil
 		}
-		logger.Warn("SearchMemory: no results found from any search method")
+		s.logger.Warn().Msg("SearchMemory: no results found from any search method")
 		return nil, nil
 	}
 
-	// Hybrid mode: merge all result sets with weighted scoring
 	results := make(map[int64]SearchResult)
-
-	// Weight constants for different search methods
 	const vectorWeight = 0.5
 	const tagWeight = 0.3
 	const ftsWeight = 0.2
 
-	// Add vector results
 	for _, r := range byVector {
 		results[r.Item.ID] = SearchResult{
 			Item:  r.Item,
 			Score: r.Score * vectorWeight,
 		}
 	}
-
-	// Merge tag results
 	for _, r := range byTags {
 		if existing, ok := results[r.Item.ID]; ok {
-			// Combine scores: weighted average
 			existing.Score += r.Score * tagWeight
 			results[r.Item.ID] = existing
 		} else {
@@ -134,11 +147,8 @@ func (s *Store) SearchMemory(ctx context.Context, q *SearchQuery) ([]SearchResul
 			}
 		}
 	}
-
-	// Merge FTS results
 	for _, r := range byKeyword {
 		if existing, ok := results[r.Item.ID]; ok {
-			// Combine scores: weighted average
 			existing.Score += r.Score * ftsWeight
 			results[r.Item.ID] = existing
 		} else {
@@ -149,7 +159,6 @@ func (s *Store) SearchMemory(ctx context.Context, q *SearchQuery) ([]SearchResul
 		}
 	}
 
-	// Convert map to slice and sort by score
 	merged := make([]SearchResult, 0, len(results))
 	for _, r := range results {
 		merged = append(merged, r)
@@ -160,13 +169,21 @@ func (s *Store) SearchMemory(ctx context.Context, q *SearchQuery) ([]SearchResul
 	if len(merged) > limit {
 		merged = merged[:limit]
 	}
-	logger.Info("SearchMemory: hybrid mode merged %d unique results (from %d vector + %d tags + %d keyword), returning %d",
-		len(results), len(byVector), len(byTags), len(byKeyword), len(merged))
+	s.logger.Info().
+		Int("uniqueResults", len(results)).
+		Int("vectorResults", len(byVector)).
+		Int("tagResults", len(byTags)).
+		Int("keywordResults", len(byKeyword)).
+		Int("returning", len(merged)).
+		Msg("SearchMemory: hybrid mode merged results")
 	return merged, nil
 }
 
 func (s *Store) searchByKeyword(ctx context.Context, q *SearchQuery, limit int) ([]SearchResult, error) {
-	logger.Debug("searchByKeyword: query=%q, limit=%d", q.QueryText, limit)
+	s.logger.Debug().
+		Str("queryText", q.QueryText).
+		Int("limit", limit).
+		Msg("searchByKeyword: begin")
 	rows, err := s.db.QueryContext(ctx, `
 SELECT rowid
 FROM memory_items_fts
@@ -174,44 +191,53 @@ WHERE memory_items_fts MATCH ?
 LIMIT ?
 `, q.QueryText, limit)
 	if err != nil {
-		logger.Error("searchByKeyword: FTS query failed: %v", err)
+		s.logger.Error().Err(err).Msg("searchByKeyword: FTS query failed")
 		return nil, fmt.Errorf("fts query: %w", err)
 	}
-	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
+	defer rows.Close() //nolint:errcheck // no remedy for rows close error
 
 	var ids []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			logger.Error("searchByKeyword: failed to scan rowid: %v", err)
+			s.logger.Error().Err(err).Msg("searchByKeyword: failed to scan rowid")
 			return nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		logger.Error("searchByKeyword: row iteration error: %v", err)
+		s.logger.Error().Err(err).Msg("searchByKeyword: row iteration error")
 		return nil, err
 	}
-	logger.Info("searchByKeyword: FTS query returned %d rowids: %v", len(ids), ids)
+	s.logger.Info().
+		Int("numRowIDs", len(ids)).
+		Ints64("rowIDs", ids).
+		Msg("searchByKeyword: FTS query results")
 	if len(ids) == 0 {
-		logger.Warn("searchByKeyword: no rowids found from FTS query")
+		s.logger.Warn().Msg("searchByKeyword: no rowids found from FTS query")
 		return nil, nil
 	}
 
 	items, err := s.loadItemsByIDs(ctx, ids)
 	if err != nil {
-		logger.Error("searchByKeyword: failed to load items: %v", err)
+		s.logger.Error().Err(err).Msg("searchByKeyword: failed to load items")
 		return nil, err
 	}
-	logger.Info("searchByKeyword: loaded %d items from database", len(items))
+	s.logger.Info().
+		Int("numLoadedItems", len(items)).
+		Msg("searchByKeyword: loaded items from DB")
 
 	results := make([]SearchResult, 0, len(items))
 	filteredCount := 0
 	for _, it := range items {
-		if !applyFilters(it, q) {
+		if !applyFilters(it, q, s.logger) {
 			filteredCount++
-			logger.Debug("searchByKeyword: item id=%d filtered out (scope=%s, agentID=%v, type=%s)",
-				it.ID, it.Scope, it.AgentID, it.Type)
+			s.logger.Debug().
+				Int64("itemID", it.ID).
+				Str("scope", string(it.Scope)).
+				Interface("agentID", it.AgentID).
+				Str("type", string(it.Type)).
+				Msg("searchByKeyword: item filtered out")
 			continue
 		}
 		results = append(results, SearchResult{
@@ -219,14 +245,15 @@ LIMIT ?
 			Score: 1.0,
 		})
 	}
-	logger.Info("searchByKeyword: %d items passed filters, %d filtered out, returning %d results",
-		len(results), filteredCount, len(results))
+	s.logger.Info().
+		Int("passed", len(results)).
+		Int("filtered", filteredCount).
+		Int("returning", len(results)).
+		Msg("searchByKeyword: items after filtering")
 	return results, nil
 }
 
-// loadMemoryItemFromRow scans a database row and returns a MemoryItem.
-// It expects the SELECT to include: id, agent_id, thread_id, scope, type, content,
-// embedding, metadata, created_at, updated_at, importance, raw_content, memory_type, tags_json
+// loadMemoryItemFromRow has no usage of logger, so unchanged.
 func loadMemoryItemFromRow(rows *sql.Rows) (*MemoryItem, error) {
 	var (
 		id          int64
@@ -274,7 +301,6 @@ func loadMemoryItemFromRow(rows *sql.Rows) (*MemoryItem, error) {
 	var tags []string
 	if tagsJSON.Valid && tagsJSON.String != "" {
 		if err := json.Unmarshal([]byte(tagsJSON.String), &tags); err != nil {
-			// If tags_json is invalid, just leave tags empty
 			tags = nil
 		}
 	}
@@ -311,23 +337,26 @@ func (s *Store) searchByVector(ctx context.Context, q *SearchQuery, limit int) (
 	query := StatementBuilder().
 		Select(SelectMemoryItemsColumns()...).
 		From("memory_items").
-		Where(buildFilterWhere(q)).
+		Where(buildFilterWhere(q, s.logger)).
 		OrderBy("created_at DESC").
 		Limit(uint64(candidateLimit))
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
-		logger.Error("searchByVector: failed to build query: %v", err)
+		s.logger.Error().Err(err).Msg("searchByVector: failed to build query")
 		return nil, fmt.Errorf("build query: %w", err)
 	}
-	logger.Debug("searchByVector: query=%q, args=%v", queryStr, args)
+	s.logger.Debug().
+		Str("query", queryStr).
+		Interface("args", args).
+		Msg("searchByVector: built query")
 
 	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
-		logger.Error("searchByVector: query failed: %v", err)
+		s.logger.Error().Err(err).Msg("searchByVector: query failed")
 		return nil, fmt.Errorf("vector query: %w", err)
 	}
-	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
+	defer rows.Close() //nolint:errcheck // no remedy for rows close error
 
 	var results []SearchResult
 	scannedCount := 0
@@ -336,13 +365,15 @@ func (s *Store) searchByVector(ctx context.Context, q *SearchQuery, limit int) (
 	for rows.Next() {
 		item, err := loadMemoryItemFromRow(rows)
 		if err != nil {
-			logger.Error("searchByVector: failed to load row: %v", err)
+			s.logger.Error().Err(err).Msg("searchByVector: failed to load row")
 			return nil, err
 		}
 		scannedCount++
 
 		if len(item.Embedding) == 0 {
-			logger.Debug("searchByVector: item id=%d has no embedding, skipping", item.ID)
+			s.logger.Debug().
+				Int64("itemID", item.ID).
+				Msg("searchByVector: item has no embedding, skipping")
 			continue
 		}
 
@@ -352,10 +383,14 @@ func (s *Store) searchByVector(ctx context.Context, q *SearchQuery, limit int) (
 			continue
 		}
 
-		if !applyFilters(item, q) {
+		if !applyFilters(item, q, s.logger) {
 			filteredCount++
-			logger.Debug("searchByVector: item id=%d filtered out (scope=%s, agentID=%v, type=%s)",
-				item.ID, item.Scope, item.AgentID, item.Type)
+			s.logger.Debug().
+				Int64("itemID", item.ID).
+				Str("scope", string(item.Scope)).
+				Interface("agentID", item.AgentID).
+				Str("type", string(item.Type)).
+				Msg("searchByVector: item filtered out")
 			continue
 		}
 
@@ -365,12 +400,16 @@ func (s *Store) searchByVector(ctx context.Context, q *SearchQuery, limit int) (
 		})
 	}
 	if err := rows.Err(); err != nil {
-		logger.Error("searchByVector: row iteration error: %v", err)
+		s.logger.Error().Err(err).Msg("searchByVector: row iteration error")
 		return nil, err
 	}
 
-	logger.Info("searchByVector: scanned %d items, %d had zero/negative score, %d filtered out, %d with valid scores",
-		scannedCount, zeroScoreCount, filteredCount, len(results))
+	s.logger.Info().
+		Int("scanned", scannedCount).
+		Int("zeroOrNegativeScore", zeroScoreCount).
+		Int("filtered", filteredCount).
+		Int("validResults", len(results)).
+		Msg("searchByVector: summary")
 
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score
@@ -378,40 +417,39 @@ func (s *Store) searchByVector(ctx context.Context, q *SearchQuery, limit int) (
 	if len(results) > limit {
 		results = results[:limit]
 	}
-	logger.Info("searchByVector: returning %d results", len(results))
+	s.logger.Info().
+		Int("numResults", len(results)).
+		Msg("searchByVector: returning results")
+
 	return results, nil
 }
 
-// searchByTags searches memories by tag intersection.
-// Returns results with scores based on the ratio of matching tags.
 func (s *Store) searchByTags(ctx context.Context, q *SearchQuery, limit int) ([]SearchResult, error) {
 	if len(q.Tags) == 0 {
 		return nil, nil
 	}
 
-	// We need to load all candidate memories and filter by tags in Go
-	// since SQLite JSON extraction can be tricky for array intersection
 	const candidateLimit = 500
 	query := StatementBuilder().
 		Select(SelectMemoryItemsColumns()...).
 		From("memory_items").
-		Where(buildFilterWhere(q)).
+		Where(buildFilterWhere(q, s.logger)).
 		OrderBy("created_at DESC").
 		Limit(uint64(candidateLimit))
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
-		logger.Error("searchByTags: failed to build query: %v", err)
+		s.logger.Error().Err(err).Msg("searchByTags: failed to build query")
 		return nil, fmt.Errorf("build query: %w", err)
 	}
 
 	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
+		s.logger.Error().Err(err).Msg("searchByTags: query failed")
 		return nil, fmt.Errorf("tag query: %w", err)
 	}
-	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
+	defer rows.Close() //nolint:errcheck // no remedy for rows close error
 
-	// Build a set of query tags for fast lookup
 	queryTagSet := make(map[string]bool)
 	for _, tag := range q.Tags {
 		queryTagSet[strings.ToLower(strings.TrimSpace(tag))] = true
@@ -421,19 +459,18 @@ func (s *Store) searchByTags(ctx context.Context, q *SearchQuery, limit int) ([]
 	for rows.Next() {
 		item, err := loadMemoryItemFromRow(rows)
 		if err != nil {
+			s.logger.Error().Err(err).Msg("searchByTags: failed to load row")
 			return nil, err
 		}
 
-		if !applyFilters(item, q) {
+		if !applyFilters(item, q, s.logger) {
 			continue
 		}
 
-		// Calculate tag intersection score
 		if len(item.Tags) == 0 {
-			continue // Skip items with no tags
+			continue
 		}
 
-		// Count matching tags
 		matchCount := 0
 		for _, tag := range item.Tags {
 			if queryTagSet[strings.ToLower(strings.TrimSpace(tag))] {
@@ -442,16 +479,11 @@ func (s *Store) searchByTags(ctx context.Context, q *SearchQuery, limit int) ([]
 		}
 
 		if matchCount == 0 {
-			continue // No tag matches
+			continue
 		}
 
-		// Score is the ratio of matching tags to query tags
-		// This favors memories that match more of the requested tags
 		score := float64(matchCount) / float64(len(q.Tags))
-		// Also consider how many of the memory's tags matched (Jaccard-like)
-		// This helps when a memory has many tags but only a few match
 		jaccard := float64(matchCount) / float64(len(item.Tags)+len(q.Tags)-matchCount)
-		// Combine both metrics
 		finalScore := (score*0.7 + jaccard*0.3)
 
 		results = append(results, SearchResult{
@@ -460,6 +492,7 @@ func (s *Store) searchByTags(ctx context.Context, q *SearchQuery, limit int) ([]
 		})
 	}
 	if err := rows.Err(); err != nil {
+		s.logger.Error().Err(err).Msg("searchByTags: row iteration error")
 		return nil, err
 	}
 
@@ -469,16 +502,18 @@ func (s *Store) searchByTags(ctx context.Context, q *SearchQuery, limit int) ([]
 	if len(results) > limit {
 		results = results[:limit]
 	}
+	s.logger.Info().
+		Int("returningNum", len(results)).
+		Msg("searchByTags: returning results")
 	return results, nil
 }
 
 func (s *Store) loadItemsByIDs(ctx context.Context, ids []int64) ([]*MemoryItem, error) {
 	if len(ids) == 0 {
-		logger.Debug("loadItemsByIDs: no IDs provided")
+		s.logger.Debug().Msg("loadItemsByIDs: no IDs provided")
 		return nil, nil
 	}
 
-	// Convert []int64 to []interface{} for Squirrel
 	idArgs := make([]interface{}, len(ids))
 	for i, id := range ids {
 		idArgs[i] = id
@@ -491,40 +526,49 @@ func (s *Store) loadItemsByIDs(ctx context.Context, ids []int64) ([]*MemoryItem,
 
 	queryStr, args, err := query.ToSql()
 	if err != nil {
-		logger.Error("loadItemsByIDs: failed to build query: %v", err)
+		s.logger.Error().Err(err).Msg("loadItemsByIDs: failed to build query")
 		return nil, fmt.Errorf("build query: %w", err)
 	}
-	logger.Debug("loadItemsByIDs: loading %d items with IDs: %v", len(ids), ids)
+	s.logger.Debug().
+		Int("numIDs", len(ids)).
+		Ints64("IDs", ids).
+		Msg("loadItemsByIDs: loading items")
 	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
-		logger.Error("loadItemsByIDs: query failed: %v", err)
+		s.logger.Error().Err(err).Msg("loadItemsByIDs: query failed")
 		return nil, err
 	}
-	defer rows.Close() //nolint:errcheck // No remedy for rows close errors
+	defer rows.Close() //nolint:errcheck // no remedy for rows close error
 
 	var items []*MemoryItem
 	for rows.Next() {
 		item, err := loadMemoryItemFromRow(rows)
 		if err != nil {
-			logger.Error("loadItemsByIDs: failed to load row: %v", err)
+			s.logger.Error().Err(err).Msg("loadItemsByIDs: failed to load row")
 			return nil, err
 		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		logger.Error("loadItemsByIDs: row iteration error: %v", err)
+		s.logger.Error().Err(err).Msg("loadItemsByIDs: row iteration error")
 		return nil, err
 	}
-	logger.Info("loadItemsByIDs: requested %d IDs, loaded %d items", len(ids), len(items))
+	s.logger.Info().
+		Int("requested", len(ids)).
+		Int("loaded", len(items)).
+		Msg("loadItemsByIDs: items loaded")
 	if len(items) < len(ids) {
-		logger.Warn("loadItemsByIDs: some IDs were not found in database (requested %d, got %d)", len(ids), len(items))
+		s.logger.Warn().
+			Int("requested", len(ids)).
+			Int("loaded", len(items)).
+			Msg("loadItemsByIDs: some IDs were not found in the database")
 	}
 	return items, nil
 }
 
 // buildFilterWhere builds Squirrel WHERE conditions based on SearchQuery filters.
 // Returns a sq.Sqlizer that can be used in Where() clauses.
-func buildFilterWhere(q *SearchQuery) sq.Sqlizer {
+func buildFilterWhere(q *SearchQuery, logger zerolog.Logger) sq.Sqlizer {
 	var conditions []sq.Sqlizer
 
 	// Build scope/agent_id filter
@@ -573,7 +617,7 @@ func buildFilterWhere(q *SearchQuery) sq.Sqlizer {
 
 	// If no filters were applied, return a condition that matches all rows
 	if len(conditions) == 0 {
-		logger.Debug("buildFilterWhere: no filters, query will match all rows")
+		logger.Debug().Msg("buildFilterWhere: no filters, query will match all rows")
 		return sq.Expr("1=1")
 	}
 
@@ -584,34 +628,54 @@ func buildFilterWhere(q *SearchQuery) sq.Sqlizer {
 	return sq.And(conditions)
 }
 
-func applyFilters(item *MemoryItem, q *SearchQuery) bool {
+func applyFilters(item *MemoryItem, q *SearchQuery, logger zerolog.Logger) bool {
 	if q.AgentID != nil {
 		if q.IncludeGlobal {
 			if item.Scope == ScopeAgent {
 				if item.AgentID == nil || *item.AgentID != *q.AgentID {
-					logger.Debug("applyFilters: item id=%d filtered (agent scope but agentID mismatch: item=%v, query=%v)",
-						item.ID, item.AgentID, q.AgentID)
+					logger.Debug().
+						Str("reason", "agent scope but agentID mismatch").
+						Int64("item_id", item.ID).
+						Interface("item_agent_id", item.AgentID).
+						Interface("query_agent_id", q.AgentID).
+						Msg("applyFilters: item filtered")
 					return false
 				}
 			} else if item.Scope != ScopeGlobal {
-				logger.Debug("applyFilters: item id=%d filtered (not agent or global scope: %s)", item.ID, item.Scope)
+				logger.Debug().
+					Str("reason", "not agent or global scope").
+					Int64("item_id", item.ID).
+					Str("item_scope", string(item.Scope)).
+					Msg("applyFilters: item filtered")
 				return false
 			}
 		} else {
 			if item.Scope != ScopeAgent {
-				logger.Debug("applyFilters: item id=%d filtered (not agent scope: %s)", item.ID, item.Scope)
+				logger.Debug().
+					Str("reason", "not agent scope").
+					Int64("item_id", item.ID).
+					Str("item_scope", string(item.Scope)).
+					Msg("applyFilters: item filtered")
 				return false
 			}
 			if item.AgentID == nil || *item.AgentID != *q.AgentID {
-				logger.Debug("applyFilters: item id=%d filtered (agentID mismatch: item=%v, query=%v)",
-					item.ID, item.AgentID, q.AgentID)
+				logger.Debug().
+					Str("reason", "agentID mismatch").
+					Int64("item_id", item.ID).
+					Interface("item_agent_id", item.AgentID).
+					Interface("query_agent_id", q.AgentID).
+					Msg("applyFilters: item filtered")
 				return false
 			}
 		}
 	} else {
 		if q.IncludeGlobal {
 			if item.Scope != ScopeGlobal {
-				logger.Debug("applyFilters: item id=%d filtered (not global scope: %s)", item.ID, item.Scope)
+				logger.Debug().
+					Str("reason", "not global scope").
+					Int64("item_id", item.ID).
+					Str("item_scope", string(item.Scope)).
+					Msg("applyFilters: item filtered")
 				return false
 			}
 		}
@@ -626,7 +690,12 @@ func applyFilters(item *MemoryItem, q *SearchQuery) bool {
 			}
 		}
 		if !match {
-			logger.Debug("applyFilters: item id=%d filtered (type mismatch: item=%s, query=%v)", item.ID, item.Type, q.Types)
+			logger.Debug().
+				Str("reason", "type mismatch").
+				Int64("item_id", item.ID).
+				Str("item_type", string(item.Type)).
+				Interface("query_types", q.Types).
+				Msg("applyFilters: item filtered")
 			return false
 		}
 	}
@@ -640,22 +709,42 @@ func applyFilters(item *MemoryItem, q *SearchQuery) bool {
 			}
 		}
 		if !match {
-			logger.Debug("applyFilters: item id=%d filtered (memoryType mismatch: item=%s, query=%v)", item.ID, item.MemoryType, q.MemoryTypes)
+			logger.Debug().
+				Str("reason", "memoryType mismatch").
+				Int64("item_id", item.ID).
+				Str("item_memory_type", item.MemoryType).
+				Interface("query_memory_types", q.MemoryTypes).
+				Msg("applyFilters: item filtered")
 			return false
 		}
 	}
 
 	if q.MinImportance > 0 && item.Importance < q.MinImportance {
-		logger.Debug("applyFilters: item id=%d filtered (importance too low: item=%.2f, min=%.2f)", item.ID, item.Importance, q.MinImportance)
+		logger.Debug().
+			Str("reason", "importance too low").
+			Int64("item_id", item.ID).
+			Float64("item_importance", item.Importance).
+			Float64("min_importance", q.MinImportance).
+			Msg("applyFilters: item filtered")
 		return false
 	}
 
 	if q.After != nil && item.CreatedAt.Before(*q.After) {
-		logger.Debug("applyFilters: item id=%d filtered (created before: item=%v, after=%v)", item.ID, item.CreatedAt, *q.After)
+		logger.Debug().
+			Str("reason", "created before").
+			Int64("item_id", item.ID).
+			Time("item_created_at", item.CreatedAt).
+			Time("after", *q.After).
+			Msg("applyFilters: item filtered")
 		return false
 	}
 	if q.Before != nil && item.CreatedAt.After(*q.Before) {
-		logger.Debug("applyFilters: item id=%d filtered (created after: item=%v, before=%v)", item.ID, item.CreatedAt, *q.Before)
+		logger.Debug().
+			Str("reason", "created after").
+			Int64("item_id", item.ID).
+			Time("item_created_at", item.CreatedAt).
+			Time("before", *q.Before).
+			Msg("applyFilters: item filtered")
 		return false
 	}
 

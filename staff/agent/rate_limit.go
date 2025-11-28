@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/cenkalti/backoff/v4"
+	"github.com/rs/zerolog"
 )
 
 // RateLimitError represents a rate limit error from the Anthropic API
@@ -72,14 +72,16 @@ type RateLimitHandler struct {
 	maxElapsedTime  time.Duration
 	stateManager    *StateManager
 	onRateLimitFunc func(agentID string, retryAfter time.Duration, attempt int) error
+	logger          zerolog.Logger
 }
 
 // NewRateLimitHandler creates a new rate limit handler with default settings
-func NewRateLimitHandler(stateManager *StateManager) *RateLimitHandler {
+func NewRateLimitHandler(logger zerolog.Logger, stateManager *StateManager) *RateLimitHandler {
 	return &RateLimitHandler{
 		maxRetries:     5,
 		maxElapsedTime: 5 * time.Minute,
 		stateManager:   stateManager,
+		logger:         logger.With().Str("component", "rateLimitHandler").Logger(),
 	}
 }
 
@@ -137,17 +139,23 @@ func (h *RateLimitHandler) HandleRateLimit(ctx context.Context, agentID string, 
 
 	// Check if we should stop retrying
 	if nextDelay == backoff.Stop {
-		logger.Error("Max retries (%d) or elapsed time exceeded for agent %s due to rate limits", h.maxRetries, agentID)
+		h.logger.Error().Uint64("max_retries", h.maxRetries).Str("agent_id", agentID).Msg("Max retries or elapsed time exceeded for agent due to rate limits")
 		return 0, false, fmt.Errorf("rate limit: max retries or elapsed time exceeded: %w", err)
 	}
 
 	// Log rate limit event
-	logger.Warn("Rate limit encountered for agent %s (attempt %d/%d): %v. Retrying after %v", agentID, attempt+1, h.maxRetries, err, nextDelay)
+	h.logger.Warn().
+		Str("agent_id", agentID).
+		Int("attempt", attempt+1).
+		Uint64("max_retries", h.maxRetries).
+		Err(err).
+		Dur("next_delay", nextDelay).
+		Msg("Rate limit encountered for agent. Retrying after delay")
 
 	// Call callback if set
 	if h.onRateLimitFunc != nil {
 		if callbackErr := h.onRateLimitFunc(agentID, nextDelay, attempt); callbackErr != nil {
-			logger.Warn("Rate limit callback failed: %v", callbackErr)
+			h.logger.Warn().Err(callbackErr).Msg("Rate limit callback failed")
 		}
 	}
 
@@ -168,7 +176,12 @@ func (h *RateLimitHandler) ScheduleRetryWithNextWake(agentID string, delay time.
 		return fmt.Errorf("failed to schedule retry: %w", err)
 	}
 
-	logger.Info("Scheduled agent %s retry via next_wake at %d (%s) (in %v)", agentID, nextWake.Unix(), nextWake.Format("2006-01-02 15:04:05"), delay)
+	h.logger.Info().
+		Str("agent_id", agentID).
+		Int64("next_wake_unix", nextWake.Unix()).
+		Str("next_wake_human", nextWake.Format("2006-01-02 15:04:05")).
+		Dur("delay", delay).
+		Msg("Scheduled agent retry via next_wake")
 	return nil
 }
 

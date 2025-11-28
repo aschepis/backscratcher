@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-
-	"github.com/aschepis/backscratcher/staff/logger"
 )
 
 // StaffToolsData provides the data needed for staff tools without creating import cycles
@@ -70,11 +68,11 @@ func (r *Registry) RegisterStaffTools(
 	workspacePath string,
 	db *sql.DB,
 ) {
-	logger.Info("Registering staff tools in registry")
+	r.logger.Info().Msg("Registering staff tools in registry")
 
 	// list_agents - Returns config for all agents
 	r.Register("list_agents", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
-		logger.Debug("Received call to list_agents from agent=%s", agentID)
+		r.logger.Debug().Str("agentID", agentID).Msg("Received call to list_agents from agent")
 
 		var agents []map[string]any
 		agentConfigs := data.GetAgents()
@@ -108,9 +106,9 @@ func (r *Registry) RegisterStaffTools(
 		var payload struct {
 			AgentID string `json:"agent_id"`
 		}
-		logger.Debug("Received call to get_agent_state from agent=%s", agentID)
+		r.logger.Debug().Str("agentID", agentID).Msg("Received call to get_agent_state from agent")
 		if err := json.Unmarshal(args, &payload); err != nil {
-			logger.Warn("Failed to decode arguments for get_agent_state: %v", err)
+			r.logger.Warn().Err(err).Msg("Failed to decode arguments for get_agent_state")
 			return nil, fmt.Errorf("failed to unmarshal arguments: %w", err)
 		}
 
@@ -143,7 +141,7 @@ func (r *Registry) RegisterStaffTools(
 			for agentID, state := range states {
 				nextWakeUnix, err := data.GetNextWake(agentID)
 				if err != nil {
-					logger.Warn("Failed to get next_wake for agent %s: %v", agentID, err)
+					r.logger.Warn().Str("agentID", agentID).Err(err).Msg("Failed to get next_wake for agent")
 					continue
 				}
 
@@ -171,9 +169,9 @@ func (r *Registry) RegisterStaffTools(
 		var payload struct {
 			AgentID string `json:"agent_id"`
 		}
-		logger.Debug("Received call to get_agent_stats from agent=%s", agentID)
+		r.logger.Debug().Str("agentID", agentID).Msg("Received call to get_agent_stats from agent")
 		if err := json.Unmarshal(args, &payload); err != nil {
-			logger.Warn("Failed to decode arguments for get_agent_stats: %v", err)
+			r.logger.Warn().Err(err).Msg("Failed to decode arguments for get_agent_stats")
 			return nil, fmt.Errorf("failed to unmarshal arguments: %w", err)
 		}
 
@@ -203,7 +201,7 @@ func (r *Registry) RegisterStaffTools(
 
 	// list_tools - Returns all registered tools
 	r.Register("list_tools", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
-		logger.Debug("Received call to list_tools from agent=%s", agentID)
+		r.logger.Debug().Str("agentID", agentID).Msg("Received call to list_tools from agent")
 
 		schemas := data.GetAllToolSchemas()
 
@@ -223,7 +221,7 @@ func (r *Registry) RegisterStaffTools(
 
 	// list_mcp_servers - Returns configured MCP servers
 	r.Register("list_mcp_servers", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
-		logger.Debug("Received call to list_mcp_servers from agent=%s", agentID)
+		r.logger.Debug().Str("agentID", agentID).Msg("Received call to list_mcp_servers from agent")
 
 		var servers []map[string]any
 		mcpServers := data.GetMCPServers()
@@ -261,9 +259,9 @@ func (r *Registry) RegisterStaffTools(
 		var payload struct {
 			ServerName string `json:"server_name"`
 		}
-		logger.Debug("Received call to mcp_tools_discover from agent=%s", agentID)
+		r.logger.Debug().Str("agentID", agentID).Msg("Received call to mcp_tools_discover from agent")
 		if err := json.Unmarshal(args, &payload); err != nil {
-			logger.Warn("Failed to decode arguments for mcp_tools_discover: %v", err)
+			r.logger.Warn().Err(err).Msg("Failed to decode arguments for mcp_tools_discover")
 			return nil, fmt.Errorf("failed to unmarshal arguments: %w", err)
 		}
 
@@ -295,7 +293,7 @@ func (r *Registry) RegisterStaffTools(
 			for serverName, client := range mcpClients {
 				tools, err := client.ListTools(ctx)
 				if err != nil {
-					logger.Warn("Failed to list tools from server %s: %v", serverName, err)
+					r.logger.Warn().Str("serverName", serverName).Err(err).Msg("Failed to list tools from server")
 					continue
 				}
 

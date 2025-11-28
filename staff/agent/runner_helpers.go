@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/aschepis/backscratcher/staff/llm"
-	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/ui/tui/debug"
+	"github.com/rs/zerolog"
 )
 
 // Constants for loop safeguards
@@ -42,6 +42,7 @@ type toolLoopContext struct {
 	messagePersister  MessagePersister
 	messageSummarizer *MessageSummarizer
 	repeatedFailures  map[toolCallKey]int
+	logger            zerolog.Logger
 }
 
 // newToolLoopContext creates a new tool loop context.
@@ -51,6 +52,7 @@ func newToolLoopContext(
 	toolExec ToolExecutor,
 	messagePersister MessagePersister,
 	messageSummarizer *MessageSummarizer,
+	logger zerolog.Logger,
 ) *toolLoopContext {
 	return &toolLoopContext{
 		ctx:               ctx,
@@ -60,6 +62,7 @@ func newToolLoopContext(
 		messagePersister:  messagePersister,
 		messageSummarizer: messageSummarizer,
 		repeatedFailures:  make(map[toolCallKey]int),
+		logger:            logger.With().Str("component", "toolLoopContext").Logger(),
 	}
 }
 
@@ -73,7 +76,7 @@ func (tlc *toolLoopContext) executeSingleTool(toolUse *llm.ToolUseBlock) (*toolE
 	// Marshal tool input to JSON for execution
 	raw, err := json.Marshal(toolUse.Input)
 	if err != nil {
-		logger.Warn("failed to marshal tool input for tool %s (id: %s): %v", toolUse.Name, toolUse.ID, err)
+		tlc.logger.Warn().Err(err).Str("toolName", toolUse.Name).Str("toolID", toolUse.ID).Msg("failed to marshal tool input")
 		raw = []byte("{}")
 	}
 
@@ -92,8 +95,11 @@ func (tlc *toolLoopContext) executeSingleTool(toolUse *llm.ToolUseBlock) (*toolE
 		// Check for repeated identical failing tool calls
 		tlc.repeatedFailures[callKey]++
 		if tlc.repeatedFailures[callKey] >= maxRepeatedFailures {
-			logger.Warn("Tool '%s' with input '%s' has failed %d times. Breaking loop to prevent infinite retry",
-				toolUse.Name, string(raw), tlc.repeatedFailures[callKey])
+			tlc.logger.Warn().
+				Str("toolName", toolUse.Name).
+				Str("input", string(raw)).
+				Int("failures", tlc.repeatedFailures[callKey]).
+				Msg("Tool has failed too many times. Breaking loop to prevent infinite retry")
 			return &toolExecutionResult{
 					ToolID:          toolUse.ID,
 					ToolName:        toolUse.Name,
@@ -111,7 +117,7 @@ func (tlc *toolLoopContext) executeSingleTool(toolUse *llm.ToolUseBlock) (*toolE
 	// Summarize result if needed (before marshaling to JSON)
 	summarizedResult, summarizeErr := summarizeToolResult(tlc.ctx, tlc.messageSummarizer, result)
 	if summarizeErr != nil {
-		logger.Warn("Failed to summarize tool result, using original: %v", summarizeErr)
+		tlc.logger.Warn().Err(summarizeErr).Msg("Failed to summarize tool result, using original")
 		summarizedResult = result
 	}
 
@@ -150,7 +156,7 @@ func (tlc *toolLoopContext) persistToolCalls(contentBlocks []llm.ContentBlock) {
 			toolUse := block.ToolUse
 			if err := tlc.messagePersister.AppendToolCall(tlc.ctx, tlc.agentID, tlc.threadID,
 				toolUse.ID, toolUse.Name, toolUse.Input); err != nil {
-				logger.Warn("failed to persist tool call: %v", err)
+				tlc.logger.Warn().Err(err).Msg("failed to persist tool call")
 			}
 		}
 	}
@@ -165,7 +171,7 @@ func (tlc *toolLoopContext) persistToolResults(results []*toolExecutionResult) {
 	for _, result := range results {
 		if err := tlc.messagePersister.AppendToolResult(tlc.ctx, tlc.agentID, tlc.threadID,
 			result.ToolID, result.ToolName, result.Result, result.IsError); err != nil {
-			logger.Warn("failed to persist tool result: %v", err)
+			tlc.logger.Warn().Err(err).Msg("failed to persist tool result")
 		}
 	}
 }
@@ -177,7 +183,7 @@ func (tlc *toolLoopContext) persistFinalMessage(text string) {
 	}
 
 	if err := tlc.messagePersister.AppendAssistantMessage(tlc.ctx, tlc.agentID, tlc.threadID, text); err != nil {
-		logger.Warn("failed to persist assistant message: %v", err)
+		tlc.logger.Warn().Err(err).Msg("failed to persist assistant message")
 	}
 }
 
@@ -214,14 +220,14 @@ func buildToolResultMessage(results []*toolExecutionResult) llm.Message {
 }
 
 // summarizeFinalText summarizes the final assistant text if needed.
-func summarizeFinalText(ctx context.Context, summarizer *MessageSummarizer, text string) string {
+func summarizeFinalText(ctx context.Context, summarizer *MessageSummarizer, text string, logger zerolog.Logger) string {
 	if summarizer == nil || !summarizer.ShouldSummarize(text) {
 		return text
 	}
 
 	summarized, err := summarizer.Summarize(ctx, text)
 	if err != nil {
-		logger.Warn("Failed to summarize assistant message, using original: %v", err)
+		logger.Warn().Err(err).Msg("Failed to summarize assistant message, using original")
 		return text
 	}
 	return summarized
@@ -260,8 +266,9 @@ func executeToolLoop(
 	toolExec ToolExecutor,
 	messagePersister MessagePersister,
 	messageSummarizer *MessageSummarizer,
+	logger zerolog.Logger,
 ) (string, error) {
-	tlc := newToolLoopContext(ctx, agentID, threadID, toolExec, messagePersister, messageSummarizer)
+	tlc := newToolLoopContext(ctx, agentID, threadID, toolExec, messagePersister, messageSummarizer, logger)
 	conversationHistory := req.Messages
 
 	for iterationCount := 1; iterationCount <= maxIterations; iterationCount++ {
@@ -314,7 +321,7 @@ func executeToolLoop(
 		// If no tool calls, we're done
 		if len(toolResults) == 0 {
 			finalTextStr := strings.TrimSpace(finalText.String())
-			finalTextStr = summarizeFinalText(ctx, messageSummarizer, finalTextStr)
+			finalTextStr = summarizeFinalText(ctx, messageSummarizer, finalTextStr, logger)
 			tlc.persistFinalMessage(finalTextStr)
 			return finalTextStr, nil
 		}
@@ -341,8 +348,9 @@ func executeToolLoopStream(
 	messagePersister MessagePersister,
 	messageSummarizer *MessageSummarizer,
 	streamCallback StreamCallback,
+	logger zerolog.Logger,
 ) (string, error) {
-	tlc := newToolLoopContext(ctx, agentID, threadID, toolExec, messagePersister, messageSummarizer)
+	tlc := newToolLoopContext(ctx, agentID, threadID, toolExec, messagePersister, messageSummarizer, logger)
 	conversationHistory := req.Messages
 
 	for iterationCount := 1; iterationCount <= maxIterations; iterationCount++ {

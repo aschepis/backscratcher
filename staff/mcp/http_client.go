@@ -7,8 +7,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
-
-	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // HttpMCPClient implements MCPClient for HTTP transport.
@@ -16,11 +15,13 @@ type HttpMCPClient struct {
 	client     *client.Client
 	baseURL    string
 	configFile string
+	logger     zerolog.Logger
 }
 
 // NewHttpMCPClient creates a new HTTP MCP client.
-func NewHttpMCPClient(baseURL, configFile string) (*HttpMCPClient, error) {
-	logger.Info("NewHttpMCPClient: creating client for baseURL=%s configFile=%s", baseURL, configFile)
+func NewHttpMCPClient(logger zerolog.Logger, baseURL, configFile string) (*HttpMCPClient, error) {
+	logger = logger.With().Str("component", "httpMCPClient").Logger()
+	logger.Info().Str("base_url", baseURL).Str("config_file", configFile).Msg("Creating HTTP MCP client")
 	if baseURL == "" {
 		return nil, fmt.Errorf("baseURL is required for HTTP MCP client")
 	}
@@ -28,23 +29,24 @@ func NewHttpMCPClient(baseURL, configFile string) (*HttpMCPClient, error) {
 	// Validate URL
 	_, err := url.Parse(baseURL)
 	if err != nil {
-		logger.Error("NewHttpMCPClient: invalid URL: %v", err)
+		logger.Error().Err(err).Msg("Invalid URL")
 		return nil, fmt.Errorf("invalid baseURL: %w", err)
 	}
 
 	// Create the HTTP client using mcp-go
-	logger.Info("NewHttpMCPClient: creating underlying mcp-go HTTP client")
+	logger.Info().Msg("Creating underlying mcp-go HTTP client")
 	mcpClient, err := client.NewStreamableHttpClient(baseURL)
 	if err != nil {
-		logger.Error("NewHttpMCPClient: failed to create underlying client: %v", err)
+		logger.Error().Err(err).Msg("Failed to create underlying client")
 		return nil, fmt.Errorf("failed to create HTTP MCP client: %w", err)
 	}
 
-	logger.Info("NewHttpMCPClient: successfully created underlying client")
+	logger.Info().Msg("Successfully created underlying client")
 	return &HttpMCPClient{
 		client:     mcpClient,
 		baseURL:    baseURL,
 		configFile: configFile,
+		logger:     logger,
 	}, nil
 }
 
@@ -77,12 +79,18 @@ func NewHttpMCPClientWithAuth(baseURL, configFile, authToken string) (*HttpMCPCl
 
 // Start initializes the MCP client connection.
 func (c *HttpMCPClient) Start(ctx context.Context) error {
-	logger.Info("HttpMCPClient.Start: beginning initialization for baseURL=%s", c.baseURL)
+	c.logger.Info().
+		Str("base_url", c.baseURL).
+		Msg("HttpMCPClient.Start: beginning initialization")
+
 	// For HTTP clients, Start() may handle initialization internally
 	// Try calling Start() first, and only initialize explicitly if needed
-	logger.Info("HttpMCPClient.Start: calling client.Start")
+	c.logger.Info().
+		Msg("HttpMCPClient.Start: calling client.Start")
 	if err := c.client.Start(ctx); err != nil {
-		logger.Warn("HttpMCPClient.Start: client.Start failed, trying explicit initialization: %v", err)
+		c.logger.Warn().
+			Err(err).
+			Msg("HttpMCPClient.Start: client.Start failed, trying explicit initialization")
 		// If Start() fails, try explicit initialization with different protocol versions
 		protocolVersions := []string{
 			"2024-11-05", // Older stable version
@@ -91,7 +99,9 @@ func (c *HttpMCPClient) Start(ctx context.Context) error {
 
 		var lastErr error = err
 		for _, protocolVersion := range protocolVersions {
-			logger.Info("HttpMCPClient.Start: trying Initialize with protocolVersion=%s", protocolVersion)
+			c.logger.Info().
+				Str("protocol_version", protocolVersion).
+				Msg("HttpMCPClient.Start: trying Initialize with protocolVersion")
 			// Initialize the client explicitly
 			initReq := mcp.InitializeRequest{
 				Params: mcp.InitializeParams{
@@ -107,44 +117,67 @@ func (c *HttpMCPClient) Start(ctx context.Context) error {
 			_, initErr := c.client.Initialize(ctx, initReq)
 			if initErr != nil {
 				lastErr = initErr
-				logger.Warn("HttpMCPClient.Start: failed to initialize with protocol version %s: %v, trying next version", protocolVersion, initErr)
+				c.logger.Warn().
+					Str("protocol_version", protocolVersion).
+					Err(initErr).
+					Msg("HttpMCPClient.Start: failed to initialize with protocol version, trying next version")
 				continue
 			}
-			logger.Info("HttpMCPClient.Start: Initialize succeeded with protocolVersion=%s", protocolVersion)
+			c.logger.Info().
+				Str("protocol_version", protocolVersion).
+				Msg("HttpMCPClient.Start: Initialize succeeded")
 
 			// Try Start() again after initialization
-			logger.Info("HttpMCPClient.Start: calling client.Start after Initialize")
+			c.logger.Info().
+				Msg("HttpMCPClient.Start: calling client.Start after Initialize")
 			if startErr := c.client.Start(ctx); startErr != nil {
 				lastErr = startErr
-				logger.Warn("HttpMCPClient.Start: failed to start after initialization with protocol version %s: %v, trying next version", protocolVersion, startErr)
+				c.logger.Warn().
+					Str("protocol_version", protocolVersion).
+					Err(startErr).
+					Msg("HttpMCPClient.Start: failed to start after initialization, trying next version")
 				continue
 			}
 
-			logger.Info("HttpMCPClient.Start: client started successfully: baseURL=%s protocolVersion=%s", c.baseURL, protocolVersion)
+			c.logger.Info().
+				Str("base_url", c.baseURL).
+				Str("protocol_version", protocolVersion).
+				Msg("HttpMCPClient.Start: client started successfully")
 			return nil
 		}
 
-		logger.Error("HttpMCPClient.Start: all initialization attempts failed: %v", lastErr)
+		c.logger.Error().
+			Err(lastErr).
+			Msg("HttpMCPClient.Start: all initialization attempts failed")
 		return fmt.Errorf("failed to start HTTP MCP client: %w", lastErr)
 	}
 
 	// Start() succeeded without explicit initialization
-	logger.Info("HttpMCPClient.Start: client started successfully without explicit initialization: baseURL=%s", c.baseURL)
+	c.logger.Info().
+		Str("base_url", c.baseURL).
+		Msg("HttpMCPClient.Start: client started successfully without explicit initialization")
 	return nil
 }
 
 // ListTools returns all tools available from the MCP server.
 func (c *HttpMCPClient) ListTools(ctx context.Context) ([]ToolDefinition, error) {
-	logger.Info("HttpMCPClient.ListTools: requesting tools from baseURL=%s", c.baseURL)
+	c.logger.Info().
+		Str("base_url", c.baseURL).
+		Msg("HttpMCPClient.ListTools: requesting tools")
 	// Use the mcp-go client's ListTools method
 	req := mcp.ListToolsRequest{}
 
 	result, err := c.client.ListTools(ctx, req)
 	if err != nil {
-		logger.Error("HttpMCPClient.ListTools: failed to list tools: %v", err)
+		c.logger.Error().
+			Err(err).
+			Msg("HttpMCPClient.ListTools: failed to list tools")
 		return nil, fmt.Errorf("failed to list tools: %w", err)
 	}
-	logger.Info("HttpMCPClient.ListTools: received %d tools from baseURL=%s", len(result.Tools), c.baseURL)
+	c.logger.Info().
+		Int("tool_count", len(result.Tools)).
+		Str("base_url", c.baseURL).
+		Msg("HttpMCPClient.ListTools: received tools")
 
 	tools := make([]ToolDefinition, 0, len(result.Tools))
 	for _, tool := range result.Tools {

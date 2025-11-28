@@ -5,13 +5,14 @@ import (
 	"errors"
 	"time"
 
-	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // MemoryRouter handles routing of memories between agent-private and global.
 type MemoryRouter struct {
 	store      *Store
 	summarizer Summarizer
+	logger     zerolog.Logger
 }
 
 // Config allows customizing MemoryRouter behavior.
@@ -19,10 +20,11 @@ type Config struct {
 	Summarizer Summarizer
 }
 
-func NewMemoryRouter(store *Store, cfg Config) *MemoryRouter {
+func NewMemoryRouter(store *Store, cfg Config, logger zerolog.Logger) *MemoryRouter {
 	return &MemoryRouter{
 		store:      store,
 		summarizer: cfg.Summarizer,
+		logger:     logger,
 	}
 }
 
@@ -165,8 +167,16 @@ func (r *MemoryRouter) QueryAgentMemory(
 	limit int,
 	types []MemoryType,
 ) ([]SearchResult, error) {
-	logger.Info("QueryAgentMemory: agentID=%s, text=%q, hasEmbedding=%v, includeGlobal=%v, limit=%d, types=%v",
-		agentID, text, embedding != nil, includeGlobal, limit, types)
+	r.logger.Info().
+		Str("method", "QueryAgentMemory").
+		Str("agentID", agentID).
+		Str("text", text).
+		Bool("hasEmbedding", embedding != nil).
+		Bool("includeGlobal", includeGlobal).
+		Int("limit", limit).
+		Interface("types", types).
+		Msg("QueryAgentMemory started")
+
 	results, err := r.store.SearchMemory(ctx, &SearchQuery{
 		AgentID:        &agentID,
 		IncludeGlobal:  includeGlobal,
@@ -177,10 +187,16 @@ func (r *MemoryRouter) QueryAgentMemory(
 		Types:          types,
 	})
 	if err != nil {
-		logger.Error("QueryAgentMemory: search failed: %v", err)
+		r.logger.Error().
+			Str("method", "QueryAgentMemory").
+			Err(err).
+			Msg("search failed")
 		return nil, err
 	}
-	logger.Info("QueryAgentMemory: returning %d results", len(results))
+	r.logger.Info().
+		Str("method", "QueryAgentMemory").
+		Int("result_count", len(results)).
+		Msg("QueryAgentMemory returning results")
 	return results, nil
 }
 

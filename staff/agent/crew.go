@@ -41,8 +41,8 @@ func NewCrew(logger zerolog.Logger, apiKey string, db *sql.DB) *Crew {
 	if db == nil {
 		panic("database connection is required for Crew")
 	}
-	reg := tools.NewRegistry()
-	provider := NewToolProvider(reg)
+	reg := tools.NewRegistry(logger)
+	provider := NewToolProvider(reg, logger)
 	stateManager := NewStateManager(logger, db)
 	statsManager := NewStatsManager(logger, db)
 
@@ -461,7 +461,7 @@ func (c *Crew) wrapClientWithMiddleware(baseClient llm.Client, agentID string, a
 	var middleware []llm.Middleware
 
 	// Add rate limit middleware
-	rateLimitHandler := NewRateLimitHandler(c.StateManager)
+	rateLimitHandler := NewRateLimitHandler(c.logger, c.StateManager)
 	rateLimitHandler.SetOnRateLimitCallback(func(agentID string, retryAfter time.Duration, attempt int) error {
 		c.logger.Info().Msgf("Rate limit callback: agent %s will retry after %v (attempt %d)", agentID, retryAfter, attempt)
 		return nil

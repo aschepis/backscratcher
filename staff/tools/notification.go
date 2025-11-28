@@ -8,7 +8,6 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/gen2brain/beeep"
 )
 
@@ -18,7 +17,7 @@ type SetStateFunc func(agentID string, state string) error
 
 // RegisterNotificationTools registers notification-related tools
 func (r *Registry) RegisterNotificationTools(db *sql.DB, setState SetStateFunc) {
-	logger.Info("Registering notification tools in registry")
+	r.logger.Info().Msg("Registering notification tools in registry")
 
 	r.Register("send_user_notification", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
 		var payload struct {
@@ -44,22 +43,22 @@ func (r *Registry) RegisterNotificationTools(db *sql.DB, setState SetStateFunc) 
 
 		queryStr, queryArgs, err := query.ToSql()
 		if err != nil {
-			logger.Error("Failed to build insert query: %v", err)
+			r.logger.Error().Err(err).Msg("Failed to build insert query")
 			return nil, fmt.Errorf("build insert query: %w", err)
 		}
 
 		result, err := db.ExecContext(ctx, queryStr, queryArgs...)
 		if err != nil {
-			logger.Error("Failed to insert notification into inbox: %v", err)
+			r.logger.Error().Err(err).Msg("Failed to insert notification into inbox")
 			return nil, fmt.Errorf("failed to insert notification into inbox: %w", err)
 		}
 
 		inboxID, err := result.LastInsertId()
 		if err != nil {
-			logger.Warn("Failed to get last insert ID for inbox: %v", err)
+			r.logger.Warn().Err(err).Msg("Failed to get last insert ID for inbox")
 		}
 
-		logger.Info("Inserted notification into inbox: id=%d agentID=%s message=%.100q", inboxID, agentID, payload.Message)
+		r.logger.Info().Int64("id", inboxID).Str("agentID", agentID).Str("message", payload.Message).Msg("Inserted notification into inbox")
 
 		// Attempt to send desktop notification using beeep (uses modern UserNotifications framework)
 		notificationTitle := payload.Title
@@ -80,19 +79,19 @@ func (r *Registry) RegisterNotificationTools(db *sql.DB, setState SetStateFunc) 
 		if notifErr != nil {
 			// Log error but don't fail the tool - the inbox insert succeeded
 			// Common causes: notification permissions not granted, or notification center disabled
-			logger.Warn("Failed to send desktop notification (notification still saved to inbox): %v", notifErr)
-			logger.Info("Note: If notifications aren't appearing, check macOS System Settings > Notifications > Staff")
+			r.logger.Warn().Err(notifErr).Msg("Failed to send desktop notification (notification still saved to inbox)")
+			r.logger.Info().Msg("Note: If notifications aren't appearing, check macOS System Settings > Notifications > Staff")
 		} else {
-			logger.Info("Desktop notification sent successfully")
+			r.logger.Info().Msg("Desktop notification sent successfully")
 		}
 
 		// If notification requires response, set agent state to waiting_human
 		if payload.RequiresResponse && setState != nil {
 			if err := setState(agentID, "waiting_human"); err != nil {
-				logger.Warn("Failed to set agent state to waiting_human: %v", err)
+				r.logger.Warn().Err(err).Msg("Failed to set agent state to waiting_human")
 				// Don't fail the tool - notification was successfully sent
 			} else {
-				logger.Info("Agent state set to waiting_human for agent %s", agentID)
+				r.logger.Info().Str("agentID", agentID).Msg("Agent state set to waiting_human")
 			}
 		}
 

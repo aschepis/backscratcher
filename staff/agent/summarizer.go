@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/aschepis/backscratcher/staff/llm"
-	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/memory/ollama"
+	"github.com/rs/zerolog"
 )
 
 // MessageSummarizerConfig holds configuration for message summarization.
@@ -24,11 +24,12 @@ type MessageSummarizerConfig struct {
 type MessageSummarizer struct {
 	config     MessageSummarizerConfig
 	summarizer *ollama.Summarizer
+	logger     zerolog.Logger
 }
 
 // NewMessageSummarizer creates a new MessageSummarizer with the given config.
 // If summarization is disabled or summarizer creation fails, returns nil.
-func NewMessageSummarizer(cfg MessageSummarizerConfig) (*MessageSummarizer, error) {
+func NewMessageSummarizer(cfg MessageSummarizerConfig, logger zerolog.Logger) (*MessageSummarizer, error) {
 	summarizer, err := ollama.NewSummarizer(cfg.Model)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ollama summarizer: %w", err)
@@ -37,6 +38,7 @@ func NewMessageSummarizer(cfg MessageSummarizerConfig) (*MessageSummarizer, erro
 	return &MessageSummarizer{
 		config:     cfg,
 		summarizer: summarizer,
+		logger:     logger.With().Str("component", "messageSummarizer").Logger(),
 	}, nil
 }
 
@@ -73,11 +75,11 @@ func (m *MessageSummarizer) Summarize(ctx context.Context, text string) (string,
 
 	summary, err := m.summarizer.SummarizeText(ctx, text)
 	if err != nil {
-		logger.Warn("Failed to summarize text, using original: %v", err)
+		m.logger.Warn().Err(err).Msg("Failed to summarize text, using original")
 		return text, err
 	}
 
-	logger.Debug("Summarized text: %d chars -> %d chars", len(text), len(summary))
+	m.logger.Debug().Int("original_chars", len(text)).Int("summary_chars", len(summary)).Msg("Summarized text")
 	return summary, nil
 }
 
@@ -144,10 +146,13 @@ func (m *MessageSummarizer) SummarizeContext(
 	// Use context-specific summarization
 	summary, err := m.summarizer.SummarizeContext(ctx, conversationText.String())
 	if err != nil {
-		logger.Warn("Failed to summarize context, using original: %v", err)
+		m.logger.Warn().Err(err).Msg("Failed to summarize context, using original")
 		return "", fmt.Errorf("failed to summarize context: %w", err)
 	}
 
-	logger.Debug("Summarized context: %d chars -> %d chars", conversationText.Len(), len(summary))
+	m.logger.Debug().
+		Int("original_chars", conversationText.Len()).
+		Int("summary_chars", len(summary)).
+		Msg("Summarized context")
 	return summary, nil
 }

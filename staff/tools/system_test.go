@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rs/zerolog"
 )
 
 func TestIsDangerousCommand(t *testing.T) {
@@ -45,7 +47,7 @@ func TestExecuteCommand(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspacePath, _ := filepath.Abs(tmpDir)
 
-	reg := NewRegistry()
+	reg := NewRegistry(zerolog.Nop())
 	reg.RegisterSystemTools(workspacePath)
 
 	ctx := context.Background()
@@ -112,7 +114,7 @@ func TestExecuteCommandWorkingDir(t *testing.T) {
 	subDir := filepath.Join(workspacePath, "subdir")
 	_ = os.MkdirAll(subDir, 0o750) //nolint:errcheck // Test setup
 
-	reg := NewRegistry()
+	reg := NewRegistry(zerolog.Nop())
 	reg.RegisterSystemTools(workspacePath)
 
 	ctx := context.Background()
@@ -149,7 +151,7 @@ func TestExecuteCommandSecurity(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspacePath, _ := filepath.Abs(tmpDir)
 
-	reg := NewRegistry()
+	reg := NewRegistry(zerolog.Nop())
 	reg.RegisterSystemTools(workspacePath)
 
 	ctx := context.Background()

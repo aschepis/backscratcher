@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/aschepis/backscratcher/staff/migrations"
+	"github.com/rs/zerolog"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -102,7 +103,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		migrationsPath = filepath.Join("..", "migrations")
 	}
 
-	if err := migrations.RunMigrations(db, migrationsPath); err != nil {
+	if err := migrations.RunMigrations(db, migrationsPath, zerolog.Nop()); err != nil {
 		_ = db.Close() //nolint:errcheck // Cleanup on error
 		t.Fatalf("failed to run migrations: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestStore_RememberGlobalFactAndSearch(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close() //nolint:errcheck // Test cleanup
 
-	store, err := NewStore(db, stubEmbedder{})
+	store, err := NewStore(db, stubEmbedder{}, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -155,11 +156,11 @@ func TestRouter_AddEpisodeAndQuery(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close() //nolint:errcheck // Test cleanup
 
-	store, err := NewStore(db, stubEmbedder{})
+	store, err := NewStore(db, stubEmbedder{}, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	router := NewMemoryRouter(store, Config{})
+	router := NewMemoryRouter(store, Config{}, zerolog.Nop())
 
 	ctx := context.Background()
 	agentID := "researcher"
@@ -188,7 +189,7 @@ func TestSemanticEmbeddingSearch(t *testing.T) {
 
 	// Use semantic embedder that simulates real embeddings
 	embedder := newSemanticEmbedder(128)
-	store, err := NewStore(db, embedder)
+	store, err := NewStore(db, embedder, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}

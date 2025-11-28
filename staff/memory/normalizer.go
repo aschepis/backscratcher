@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/cenkalti/backoff/v4"
+	"github.com/rs/zerolog"
 )
 
 // Normalizer converts raw user/agent statements into structured personal memories.
@@ -21,10 +21,11 @@ type Normalizer struct {
 	Model      string
 	MaxTokens  int
 	HTTPClient *http.Client
+	logger     zerolog.Logger
 }
 
 // NewNormalizer constructs a Normalizer configured for the Anthropic Messages API.
-func NewNormalizer(model, apiKey string, maxTokens int) *Normalizer {
+func NewNormalizer(model, apiKey string, maxTokens int, logger zerolog.Logger) *Normalizer {
 	if maxTokens <= 0 {
 		maxTokens = 256
 	}
@@ -35,6 +36,7 @@ func NewNormalizer(model, apiKey string, maxTokens int) *Normalizer {
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		logger: logger.With().Str("component", "normalizer").Logger(),
 	}
 }
 
@@ -183,7 +185,7 @@ func (n *Normalizer) callAnthropic(ctx context.Context, body []byte) (string, st
 					eb.RandomizationFactor = 0.1
 					eb.Reset()
 				}
-				logger.Warn("Normalizer: Rate limit encountered, retrying after %v", retryAfter)
+				n.logger.Warn().Dur("retryAfter", retryAfter).Msg("Normalizer: Rate limit encountered, retrying")
 				return fmt.Errorf("normalizer: rate limit: %s: %v", resp.Status, apiErr)
 			}
 
@@ -193,7 +195,7 @@ func (n *Normalizer) callAnthropic(ctx context.Context, body []byte) (string, st
 			}
 
 			// Retry on 5xx errors
-			logger.Warn("Normalizer: Server error %s, retrying", resp.Status)
+			n.logger.Warn().Str("status", resp.Status).Msg("Normalizer: Server error, retrying")
 			return fmt.Errorf("normalizer: server error %s: %v", resp.Status, apiErr)
 		}
 

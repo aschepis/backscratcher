@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // ClaudeConfig represents the structure of Claude's configuration file.
@@ -33,7 +33,7 @@ type ClaudeMCPServer struct {
 // Env can be either an array of strings or an object (map[string]string).
 // If it's an object, converts it to "KEY=VALUE" format strings.
 // If it's an array, returns it as-is.
-func (c *ClaudeMCPServer) GetEnvAsStrings() []string {
+func (c *ClaudeMCPServer) GetEnvAsStrings(logger zerolog.Logger) []string {
 	if len(c.Env) == 0 {
 		return nil
 	}
@@ -55,21 +55,23 @@ func (c *ClaudeMCPServer) GetEnvAsStrings() []string {
 	}
 
 	// If both fail, return empty
-	logger.Warn("Failed to parse env field, expected array of strings or object: %v", string(c.Env))
+	logger.Warn().
+		Str("env", string(c.Env)).
+		Msg("Failed to parse env field, expected array of strings or object")
 	return nil
 }
 
 // LoadClaudeConfig loads Claude's configuration from the specified path.
 // Returns a config with empty projects if the file doesn't exist (non-fatal).
 // Returns an error only if the file exists but cannot be parsed.
-func LoadClaudeConfig(path string) (*ClaudeConfig, error) {
+func LoadClaudeConfig(logger zerolog.Logger, path string) (*ClaudeConfig, error) {
 	expandedPath := expandPath(path)
-	logger.Info("LoadClaudeConfig: loading Claude config from %q (expanded: %q)", path, expandedPath)
+	logger.Info().Str("path", path).Str("expanded_path", expandedPath).Msg("Loading Claude config")
 
 	// Check if file exists
 	if _, err := os.Stat(expandedPath); os.IsNotExist(err) {
 		// File doesn't exist - return empty config (non-fatal)
-		logger.Info("LoadClaudeConfig: config file does not exist at %q, returning empty config", expandedPath)
+		logger.Info().Str("path", expandedPath).Msg("Config file does not exist, returning empty config")
 		return &ClaudeConfig{
 			Projects: make(map[string]ClaudeProject),
 		}, nil
@@ -78,16 +80,16 @@ func LoadClaudeConfig(path string) (*ClaudeConfig, error) {
 	// Read file
 	data, err := os.ReadFile(expandedPath) //#nosec 304 -- intentional file read for config
 	if err != nil {
-		logger.Error("LoadClaudeConfig: failed to read config file %q: %v", expandedPath, err)
+		logger.Error().Str("path", expandedPath).Err(err).Msg("Failed to read config file")
 		return nil, fmt.Errorf("failed to read Claude config file %q: %w", expandedPath, err)
 	}
 
-	logger.Info("LoadClaudeConfig: read %d bytes from config file", len(data))
+	logger.Info().Int("bytes", len(data)).Msg("Read config file")
 
 	// Parse JSON
 	var cfg ClaudeConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		logger.Error("LoadClaudeConfig: failed to parse JSON from %q: %v", expandedPath, err)
+		logger.Error().Str("path", expandedPath).Err(err).Msg("Failed to parse JSON")
 		return nil, fmt.Errorf("failed to parse Claude config file %q: %w", expandedPath, err)
 	}
 
@@ -101,14 +103,14 @@ func LoadClaudeConfig(path string) (*ClaudeConfig, error) {
 		cfg.MCPServers = make(map[string]ClaudeMCPServer)
 	}
 
-	logger.Info("LoadClaudeConfig: successfully loaded config with %d global MCP server(s) and %d project(s)", len(cfg.MCPServers), len(cfg.Projects))
+	logger.Info().Int("global_servers", len(cfg.MCPServers)).Int("projects", len(cfg.Projects)).Msg("Successfully loaded config")
 	return &cfg, nil
 }
 
 // MapClaudeToMCPServerConfig converts Claude MCP server configurations to our MCPServerConfig format.
 // Takes a map of Claude MCP servers and returns a map of MCPServerConfig with "claude_" prefix.
-func MapClaudeToMCPServerConfig(claudeServers map[string]ClaudeMCPServer) map[string]*MCPServerConfig {
-	logger.Info("MapClaudeToMCPServerConfig: converting %d Claude MCP server(s) to MCPServerConfig format", len(claudeServers))
+func MapClaudeToMCPServerConfig(logger zerolog.Logger, claudeServers map[string]ClaudeMCPServer) map[string]*MCPServerConfig {
+	logger.Info().Int("servers", len(claudeServers)).Msg("Converting Claude MCP servers to MCPServerConfig format")
 	result := make(map[string]*MCPServerConfig)
 
 	for serverName, claudeServer := range claudeServers {
@@ -121,9 +123,15 @@ func MapClaudeToMCPServerConfig(claudeServers map[string]ClaudeMCPServer) map[st
 			configFile = expandPath(configFile)
 		}
 
-		envStrings := claudeServer.GetEnvAsStrings()
-		logger.Info("MapClaudeToMCPServerConfig: mapping server %q -> %q (command=%s, args=%v, env=%d vars, configFile=%s)",
-			serverName, safeName, claudeServer.Command, claudeServer.Args, len(envStrings), configFile)
+		envStrings := claudeServer.GetEnvAsStrings(logger)
+		logger.Info().
+			Str("server", serverName).
+			Str("safe_name", safeName).
+			Str("command", claudeServer.Command).
+			Strs("args", claudeServer.Args).
+			Int("env_var_count", len(envStrings)).
+			Str("config_file", configFile).
+			Msg("MapClaudeToMCPServerConfig: mapping server")
 
 		result[safeName] = &MCPServerConfig{
 			Name:       serverName,
@@ -135,7 +143,7 @@ func MapClaudeToMCPServerConfig(claudeServers map[string]ClaudeMCPServer) map[st
 		}
 	}
 
-	logger.Info("MapClaudeToMCPServerConfig: successfully mapped %d server(s)", len(result))
+	logger.Info().Int("servers", len(result)).Msg("Successfully mapped servers")
 	return result
 }
 
@@ -143,8 +151,8 @@ func MapClaudeToMCPServerConfig(claudeServers map[string]ClaudeMCPServer) map[st
 // projectPaths can contain "Global" to include global servers, or project paths.
 // If projectPaths is empty, extracts from all projects and global servers.
 // Returns a map of server name to ClaudeMCPServer and a map of project path to server names.
-func ExtractMCPServersFromProjects(claudeConfig *ClaudeConfig, projectPaths []string) (map[string]ClaudeMCPServer, map[string][]string) {
-	logger.Info("ExtractMCPServersFromProjects: extracting from %d global server(s) and %d project(s) in Claude config, filter: %v", len(claudeConfig.MCPServers), len(claudeConfig.Projects), projectPaths)
+func ExtractMCPServersFromProjects(logger zerolog.Logger, claudeConfig *ClaudeConfig, projectPaths []string) (map[string]ClaudeMCPServer, map[string][]string) {
+	logger.Info().Int("global_servers", len(claudeConfig.MCPServers)).Int("projects", len(claudeConfig.Projects)).Strs("project_paths", projectPaths).Msg("Extracting MCP servers from projects")
 	servers := make(map[string]ClaudeMCPServer)
 	projectToServers := make(map[string][]string)
 
@@ -164,16 +172,16 @@ func ExtractMCPServersFromProjects(claudeConfig *ClaudeConfig, projectPaths []st
 	for _, path := range filteredProjectPaths {
 		normalized := filepath.Clean(expandPath(path))
 		normalizedPaths[normalized] = path
-		logger.Debug("ExtractMCPServersFromProjects: normalized project path %q -> %q", path, normalized)
+		logger.Debug().Str("path", path).Str("normalized", normalized).Msg("Normalized project path")
 	}
 
 	// If no project paths specified, load from all projects and global
 	loadAll := len(filteredProjectPaths) == 0
 	if loadAll {
-		logger.Debug("ExtractMCPServersFromProjects: no project filter specified, loading from all projects and global servers")
+		logger.Debug().Msg("No project filter specified, loading from all projects and global servers")
 		includeGlobal = true
 	} else {
-		logger.Debug("ExtractMCPServersFromProjects: filtering to %d specified project(s), includeGlobal=%v", len(filteredProjectPaths), includeGlobal)
+		logger.Debug().Int("project_count", len(filteredProjectPaths)).Bool("include_global", includeGlobal).Msg("Filtering to specified project(s)")
 	}
 
 	// Extract global MCP servers if requested
@@ -182,12 +190,12 @@ func ExtractMCPServersFromProjects(claudeConfig *ClaudeConfig, projectPaths []st
 		for serverName, server := range claudeConfig.MCPServers {
 			servers[serverName] = server
 			serverNames = append(serverNames, serverName)
-			logger.Debug("ExtractMCPServersFromProjects: extracted global server %q (command=%s)", serverName, server.Command)
+			logger.Debug().Str("server", serverName).Str("command", server.Command).Msg("Extracted global server")
 		}
 		projectToServers["Global"] = serverNames
-		logger.Debug("ExtractMCPServersFromProjects: Global contributed %d MCP server(s)", len(serverNames))
+		logger.Debug().Int("server_count", len(serverNames)).Msg("Global contributed MCP servers")
 	} else if includeGlobal {
-		logger.Debug("ExtractMCPServersFromProjects: Global has no MCP servers")
+		logger.Debug().Msg("Global has no MCP servers")
 	}
 
 	// Extract from projects
@@ -218,21 +226,21 @@ func ExtractMCPServersFromProjects(claudeConfig *ClaudeConfig, projectPaths []st
 			for serverName, server := range project.MCPServers {
 				servers[serverName] = server
 				serverNames = append(serverNames, serverName)
-				logger.Debug("ExtractMCPServersFromProjects: extracted server %q from project %q (command=%s)", serverName, projectPath, server.Command)
+				logger.Debug().Str("server", serverName).Str("project", projectPath).Str("command", server.Command).Msg("Extracted server from project")
 			}
 			projectToServers[projectPath] = serverNames
-			logger.Debug("ExtractMCPServersFromProjects: project %q contributed %d MCP server(s)", projectPath, len(serverNames))
+			logger.Debug().Str("project", projectPath).Int("server_count", len(serverNames)).Msg("Project contributed MCP servers")
 			continue
 		}
 
 		if shouldLoad {
-			logger.Debug("ExtractMCPServersFromProjects: project %q has no MCP servers", projectPath)
+			logger.Debug().Str("project", projectPath).Msg("Project has no MCP servers")
 			continue
 		}
 
-		logger.Debug("ExtractMCPServersFromProjects: skipping project %q (not in filter list)", projectPath)
+		logger.Debug().Str("project", projectPath).Msg("Skipping project (not in filter list)")
 	}
 
-	logger.Info("ExtractMCPServersFromProjects: extracted %d MCP servers from Claude config", len(servers))
+	logger.Info().Int("server_count", len(servers)).Msg("Extracted MCP servers from Claude config")
 	return servers, projectToServers
 }

@@ -6,8 +6,8 @@ import (
 
 	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
-	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/tools"
+	"github.com/rs/zerolog"
 )
 
 type ToolSchema struct {
@@ -22,15 +22,18 @@ type ToolProvider interface {
 	SpecsFor(agent *config.AgentConfig) []llm.ToolSpec
 }
 
+// TODO: remove factory pattern
 type ToolProviderFromRegistry struct {
 	registry *tools.Registry
 	schemas  map[string]ToolSchema
+	logger   zerolog.Logger
 }
 
-func NewToolProvider(reg *tools.Registry) *ToolProviderFromRegistry {
+func NewToolProvider(reg *tools.Registry, logger zerolog.Logger) *ToolProviderFromRegistry {
 	return &ToolProviderFromRegistry{
 		registry: reg,
 		schemas:  make(map[string]ToolSchema),
+		logger:   logger.With().Str("component", "toolProvider").Logger(),
 	}
 }
 
@@ -55,7 +58,7 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *config.AgentConfig) []llm.Too
 
 	for _, pattern := range agent.Tools {
 		if pattern == "" {
-			logger.Warn("Empty tool pattern found in agent config, skipping")
+			p.logger.Warn().Msg("Empty tool pattern found in agent config, skipping")
 			continue
 		}
 
@@ -67,10 +70,16 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *config.AgentConfig) []llm.Too
 		if len(matched) == 0 {
 			// Only warn if this is not a server prefix pattern (those warn inside expandToolPattern)
 			if !hasServerPrefix {
-				logger.Warn("Tool pattern %q matched no tools", pattern)
+				p.logger.Warn().
+					Str("pattern", pattern).
+					Msg("Tool pattern matched no tools")
 			}
 		} else {
-			logger.Debug("Tool pattern %q matched %d tools: %v", pattern, len(matched), matched)
+			p.logger.Debug().
+				Str("pattern", pattern).
+				Int("matchCount", len(matched)).
+				Strs("matchedTools", matched).
+				Msg("Tool pattern matched tools")
 		}
 		for _, toolName := range matched {
 			if !seen[toolName] {
@@ -110,7 +119,10 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *config.AgentConfig) []llm.Too
 					}
 				}
 			default:
-				logger.Warn("Tool %s has 'required' field with unexpected type: %T (value: %v). Attempting to convert...", name, requiredRaw, requiredRaw)
+				p.logger.Warn().
+					Str("tool", name).
+					Any("type", requiredRaw).
+					Msg("Tool has 'required' field with unexpected type. Attempting to convert...")
 				// Last resort: try to convert via type assertion to []interface{}
 				if reqSlice, ok := requiredRaw.([]interface{}); ok {
 					required = make([]string, 0, len(reqSlice))
@@ -120,11 +132,16 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *config.AgentConfig) []llm.Too
 						}
 					}
 				} else {
-					logger.Error("Failed to extract required fields for tool %s: type %T cannot be converted", name, requiredRaw)
+					p.logger.Error().
+						Str("tool", name).
+						Any("type", requiredRaw).
+						Msg("Failed to extract required fields for tool: type cannot be converted")
 				}
 			}
 		} else {
-			logger.Debug("Tool %s has no 'required' field in schema", name)
+			p.logger.Debug().
+				Str("tool", name).
+				Msg("Tool has no 'required' field in schema")
 		}
 
 		// Extra fields (e.g. descriptions) go into ExtraFields
@@ -146,14 +163,20 @@ func (p *ToolProviderFromRegistry) SpecsFor(agent *config.AgentConfig) []llm.Too
 			},
 		}
 
-		logger.Debug("Tool schema for %s: required=%v, properties=%v", name, required, getPropertyNames(props))
+		p.logger.Debug().
+			Str("tool", name).
+			Strs("required", required).
+			Strs("properties", getPropertyNames(props)).
+			Msg("Tool schema")
 
 		out = append(out, toolSpec)
 	}
 
 	// Log warnings for missing tools but don't fail (allow partial matches)
 	if len(missingTools) > 0 {
-		logger.Warn("Some tools were not found in registry: %v", missingTools)
+		p.logger.Warn().
+			Strs("missingTools", missingTools).
+			Msg("Some tools were not found in registry")
 	}
 
 	return out
@@ -197,7 +220,10 @@ func (p *ToolProviderFromRegistry) expandToolPattern(pattern string) []string {
 	// Compile the regexp pattern
 	re, err := regexp.Compile(toolPattern)
 	if err != nil {
-		logger.Warn("Invalid regexp pattern %q: %v", pattern, err)
+		p.logger.Warn().
+			Str("pattern", pattern).
+			Err(err).
+			Msg("Invalid regexp pattern")
 		return nil
 	}
 
@@ -217,7 +243,10 @@ func (p *ToolProviderFromRegistry) expandToolPattern(pattern string) []string {
 	}
 
 	if len(matched) == 0 && serverFilter != "" {
-		logger.Warn("Tool pattern %q matched no tools (server %q may not exist)", pattern, serverFilter)
+		p.logger.Warn().
+			Str("pattern", pattern).
+			Str("server", serverFilter).
+			Msg("Tool pattern matched no tools (server may not exist)")
 	}
 
 	return matched

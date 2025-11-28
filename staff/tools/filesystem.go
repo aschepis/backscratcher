@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-
-	"github.com/aschepis/backscratcher/staff/logger"
 )
 
 // validateWorkspacePath ensures the given path is within the workspace directory
@@ -49,7 +47,7 @@ func validateWorkspacePath(workspacePath, targetPath string) (string, error) {
 
 // RegisterFilesystemTools registers all filesystem-related tools
 func (r *Registry) RegisterFilesystemTools(workspacePath string) {
-	logger.Info("Registering filesystem tools in registry")
+	r.logger.Info().Msg("Registering filesystem tools in registry")
 
 	r.Register("read_file", func(ctx context.Context, agentID string, args json.RawMessage) (any, error) {
 		var payload struct {
@@ -102,7 +100,7 @@ func (r *Registry) RegisterFilesystemTools(workspacePath string) {
 		contentStr := string(content)
 		if payload.Encoding != "utf-8" {
 			// For now, we only support UTF-8. In the future, we could add encoding conversion
-			logger.Warn("Non-UTF-8 encoding requested but not yet supported: %s", payload.Encoding)
+			r.logger.Warn().Str("encoding", payload.Encoding).Msg("Non-UTF-8 encoding requested but not yet supported")
 		}
 
 		return map[string]any{

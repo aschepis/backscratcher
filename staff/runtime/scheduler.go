@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/aschepis/backscratcher/staff/agent"
-	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // Scheduler manages automatic waking of scheduled agents
@@ -15,10 +15,11 @@ type Scheduler struct {
 	stateMgr     *agent.StateManager
 	statsMgr     *agent.StatsManager
 	pollInterval time.Duration
+	logger       zerolog.Logger
 }
 
 // NewScheduler creates a new scheduler with the given crew, state manager, stats manager, and poll interval
-func NewScheduler(crew *agent.Crew, stateMgr *agent.StateManager, statsMgr *agent.StatsManager, pollInterval time.Duration) (*Scheduler, error) {
+func NewScheduler(crew *agent.Crew, stateMgr *agent.StateManager, statsMgr *agent.StatsManager, pollInterval time.Duration, logger zerolog.Logger) (*Scheduler, error) {
 	if statsMgr == nil {
 		return nil, fmt.Errorf("statsMgr cannot be nil")
 	}
@@ -27,27 +28,28 @@ func NewScheduler(crew *agent.Crew, stateMgr *agent.StateManager, statsMgr *agen
 		stateMgr:     stateMgr,
 		statsMgr:     statsMgr,
 		pollInterval: pollInterval,
+		logger:       logger.With().Str("component", "scheduler").Logger(),
 	}, nil
 }
 
 // Start begins the scheduler goroutine that polls for agents ready to wake
 func (s *Scheduler) Start(ctx context.Context) {
-	logger.Info("Starting scheduler with poll interval: %v", s.pollInterval)
+	s.logger.Info().Dur("pollInterval", s.pollInterval).Msg("Starting scheduler")
 
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
 
 	// Run initial check immediately
-	logger.Info("Scheduler: performing initial check for agents ready to wake")
+	s.logger.Info().Msg("Scheduler: performing initial check for agents ready to wake")
 	s.checkAndWakeAgents(ctx)
 
 	// Log that we're entering the polling loop
-	logger.Info("Scheduler: entering polling loop (will check every %v)", s.pollInterval)
+	s.logger.Info().Dur("pollInterval", s.pollInterval).Msg("Scheduler: entering polling loop")
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("Scheduler stopped: context cancelled")
+			s.logger.Info().Msg("Scheduler stopped: context cancelled")
 			return
 		case <-ticker.C:
 			s.checkAndWakeAgents(ctx)
@@ -60,7 +62,7 @@ func (s *Scheduler) checkAndWakeAgents(ctx context.Context) {
 	// Get agents ready to wake
 	agentIDs, err := s.stateMgr.GetAgentsReadyToWake()
 	if err != nil {
-		logger.Error("Failed to get agents ready to wake: %v", err)
+		s.logger.Error().Err(err).Msg("Failed to get agents ready to wake")
 		return
 	}
 
@@ -68,13 +70,13 @@ func (s *Scheduler) checkAndWakeAgents(ctx context.Context) {
 		return
 	}
 
-	logger.Info("Found %d agent(s) ready to wake", len(agentIDs))
+	s.logger.Info().Int("numAgents", len(agentIDs)).Msg("Found agents ready to wake")
 
 	// Wake each agent
 	for _, agentID := range agentIDs {
 		// Skip disabled agents
 		if s.crew.IsAgentDisabled(agentID) {
-			logger.Debug("Scheduler: skipping disabled agent %s", agentID)
+			s.logger.Debug().Str("agentID", agentID).Msg("Scheduler: skipping disabled agent")
 			continue
 		}
 		s.wakeAgent(ctx, agentID)
@@ -83,11 +85,11 @@ func (s *Scheduler) checkAndWakeAgents(ctx context.Context) {
 
 // wakeAgent wakes a single agent by calling Crew.Run with "continue" message
 func (s *Scheduler) wakeAgent(ctx context.Context, agentID string) {
-	logger.Info("Waking agent: %s", agentID)
+	s.logger.Info().Str("agentID", agentID).Msg("Waking agent")
 
 	// Track wakeup
 	if err := s.statsMgr.IncrementWakeupCount(agentID); err != nil {
-		logger.Warn("Failed to update wakeup stats for agent %s: %v", agentID, err)
+		s.logger.Warn().Str("agentID", agentID).Err(err).Msg("Failed to update wakeup stats")
 	}
 
 	// Create a new context with timeout for the agent run
@@ -97,9 +99,9 @@ func (s *Scheduler) wakeAgent(ctx context.Context, agentID string) {
 	// Call Crew.Run with "continue" message and empty history
 	_, err := s.crew.Run(runCtx, agentID, fmt.Sprintf("scheduled-%d", time.Now().Unix()), "continue", nil)
 	if err != nil {
-		logger.Error("Failed to wake agent %s: %v", agentID, err)
+		s.logger.Error().Err(err).Str("agentID", agentID).Msg("Failed to wake agent")
 		return
 	}
 
-	logger.Info("Successfully woke agent: %s", agentID)
+	s.logger.Info().Str("agentID", agentID).Msg("Successfully woke agent")
 }

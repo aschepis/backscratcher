@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/rs/zerolog"
 )
 
 func TestValidateWorkspacePath(t *testing.T) {
@@ -84,7 +86,7 @@ func TestReadFile(t *testing.T) {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
-	reg := NewRegistry()
+	reg := NewRegistry(zerolog.Nop())
 	reg.RegisterFilesystemTools(workspacePath)
 
 	ctx := context.Background()
@@ -109,7 +111,7 @@ func TestWriteFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspacePath, _ := filepath.Abs(tmpDir)
 
-	reg := NewRegistry()
+	reg := NewRegistry(zerolog.Nop())
 	reg.RegisterFilesystemTools(workspacePath)
 
 	ctx := context.Background()
@@ -151,7 +153,7 @@ func TestListDirectory(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(workspacePath, "file1.txt"), []byte("content"), 0o600) //nolint:errcheck // Test setup
 	_ = os.WriteFile(filepath.Join(workspacePath, "file2.txt"), []byte("content"), 0o600) //nolint:errcheck // Test setup
 
-	reg := NewRegistry()
+	reg := NewRegistry(zerolog.Nop())
 	reg.RegisterFilesystemTools(workspacePath)
 
 	ctx := context.Background()
@@ -186,7 +188,7 @@ func TestFileSearch(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(workspacePath, "test2.go"), []byte("content"), 0o600) //nolint:errcheck // Test setup
 	_ = os.WriteFile(filepath.Join(workspacePath, "test.txt"), []byte("content"), 0o600) //nolint:errcheck // Test setup
 
-	reg := NewRegistry()
+	reg := NewRegistry(zerolog.Nop())
 	reg.RegisterFilesystemTools(workspacePath)
 
 	ctx := context.Background()
@@ -219,7 +221,7 @@ func TestFileInfo(t *testing.T) {
 	testFile := filepath.Join(workspacePath, "info.txt")
 	_ = os.WriteFile(testFile, []byte("test content"), 0o600) //nolint:errcheck // Test setup
 
-	reg := NewRegistry()
+	reg := NewRegistry(zerolog.Nop())
 	reg.RegisterFilesystemTools(workspacePath)
 
 	ctx := context.Background()
@@ -248,7 +250,7 @@ func TestCreateDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspacePath, _ := filepath.Abs(tmpDir)
 
-	reg := NewRegistry()
+	reg := NewRegistry(zerolog.Nop())
 	reg.RegisterFilesystemTools(workspacePath)
 
 	ctx := context.Background()
@@ -288,7 +290,7 @@ func TestGrepSearch(t *testing.T) {
 	content := "line1: hello\nline2: world\nline3: hello world\nline4: test"
 	_ = os.WriteFile(testFile, []byte(content), 0o600) //nolint:errcheck // Test setup
 
-	reg := NewRegistry()
+	reg := NewRegistry(zerolog.Nop())
 	reg.RegisterFilesystemTools(workspacePath)
 
 	ctx := context.Background()
