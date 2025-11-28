@@ -1,7 +1,11 @@
-.PHONY: build clean run test install lint check help
+.PHONY: build clean run test install lint check help gen
 
 # Binary name
 BINARY_NAME=staff
+
+# Proto paths
+PROTO_DIR=api/proto
+PROTO_OUT=api/staffpb
 
 # Build flags
 BUILD_FLAGS=-tags sqlite_fts5
@@ -20,7 +24,7 @@ help: ## Show this help message
 	@echo 'Available targets:'
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-build: ## Build the application with FTS5 support
+build: gen ## Build the application
 	CGO_ENABLED=1 $(GOBUILD) $(BUILD_FLAGS) -o $(BINARY_NAME) ./cmd/staff
 
 clean: ## Remove build artifacts
@@ -49,3 +53,14 @@ install: ## Install dependencies
 dev: clean build ## Clean build for development
 
 all: clean install build test ## Full build pipeline
+
+gen: ## Generate Go code from protobuf definitions
+	@mkdir -p $(PROTO_OUT)
+	protoc \
+		--proto_path=$(PROTO_DIR) \
+		--go_out=$(PROTO_OUT) \
+		--go_opt=paths=source_relative \
+		--go-grpc_out=$(PROTO_OUT) \
+		--go-grpc_opt=paths=source_relative \
+		$(PROTO_DIR)/staff.proto
+	@echo "Generated protobuf code in $(PROTO_OUT)"

@@ -1,0 +1,298 @@
+syntax = "proto3";
+package staff.v1;
+option go_package = "github.com/aschepis/backscratcher/staff/api/staffpb";
+
+import "google/protobuf/timestamp.proto";
+
+// =============================================================================
+// ChatService - Core agent interaction
+// =============================================================================
+
+service ChatService {
+  // Stream agent responses
+  rpc Chat(ChatRequest) returns (stream ChatEvent);
+
+  // Get or create a conversation thread
+  rpc GetOrCreateThread(GetThreadRequest) returns (ThreadResponse);
+
+  // Load conversation history
+  rpc LoadHistory(LoadHistoryRequest) returns (LoadHistoryResponse);
+
+  // Reset conversation context
+  rpc ResetContext(ContextRequest) returns (ContextResponse);
+
+  // Compress/summarize context to save tokens
+  rpc CompressContext(ContextRequest) returns (ContextResponse);
+}
+
+// ChatRequest - Send a message to an agent
+message ChatRequest {
+  string agent_id = 1;
+  string thread_id = 2;
+  string message = 3;
+}
+
+// ChatEvent - Streaming events from agent
+message ChatEvent {
+  oneof event {
+    TextDelta text_delta = 1;
+    ToolUse tool_use = 2;
+    ToolResult tool_result = 3;
+    ChatComplete complete = 4;
+    ChatError error = 5;
+  }
+}
+
+message TextDelta {
+  string text = 1;
+}
+
+message ToolUse {
+  string tool_id = 1;
+  string tool_name = 2;
+  string input = 3;  // JSON-encoded input
+}
+
+message ToolResult {
+  string tool_id = 1;
+  string tool_name = 2;
+  string output = 3;
+  bool is_error = 4;
+}
+
+message ChatComplete {
+  string response = 1;
+  int32 input_tokens = 2;
+  int32 output_tokens = 3;
+}
+
+message ChatError {
+  string message = 1;
+  string code = 2;
+}
+
+// Thread management
+message GetThreadRequest {
+  string agent_id = 1;
+  string thread_id = 2;  // Optional - if empty, creates new thread
+}
+
+message ThreadResponse {
+  string thread_id = 1;
+  string agent_id = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message LoadHistoryRequest {
+  string agent_id = 1;
+  string thread_id = 2;
+  int32 limit = 3;  // 0 = no limit
+}
+
+message LoadHistoryResponse {
+  repeated Message messages = 1;
+}
+
+message Message {
+  string role = 1;  // "user", "assistant", "system"
+  string content = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+// Context management
+message ContextRequest {
+  string agent_id = 1;
+  string thread_id = 2;
+}
+
+message ContextResponse {
+  bool success = 1;
+  string message = 2;
+  int32 tokens_before = 3;
+  int32 tokens_after = 4;
+}
+
+// =============================================================================
+// AgentService - Agent management
+// =============================================================================
+
+service AgentService {
+  // List all available agents
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+
+  // Get current state of an agent
+  rpc GetAgentState(GetStateRequest) returns (AgentState);
+
+  // Watch agent state changes in real-time
+  rpc WatchStates(WatchStatesRequest) returns (stream AgentState);
+}
+
+message ListAgentsRequest {}
+
+message ListAgentsResponse {
+  repeated AgentInfo agents = 1;
+}
+
+message AgentInfo {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string model = 4;
+  bool schedulable = 5;
+}
+
+message GetStateRequest {
+  string agent_id = 1;
+}
+
+message AgentState {
+  string agent_id = 1;
+  string status = 2;  // "idle", "running", "paused", "error"
+  string current_task = 3;
+  google.protobuf.Timestamp last_run = 4;
+  google.protobuf.Timestamp next_run = 5;
+  string error_message = 6;
+}
+
+message WatchStatesRequest {
+  repeated string agent_ids = 1;  // Empty = watch all
+}
+
+// =============================================================================
+// InboxService - Notifications and messages
+// =============================================================================
+
+service InboxService {
+  // List inbox items
+  rpc ListItems(ListInboxRequest) returns (ListInboxResponse);
+
+  // Archive an inbox item
+  rpc Archive(ArchiveRequest) returns (ArchiveResponse);
+
+  // Watch for new inbox items in real-time
+  rpc Watch(WatchInboxRequest) returns (stream InboxItem);
+}
+
+message ListInboxRequest {
+  bool include_archived = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ListInboxResponse {
+  repeated InboxItem items = 1;
+  int32 total_count = 2;
+}
+
+message InboxItem {
+  string id = 1;
+  string agent_id = 2;
+  string title = 3;
+  string body = 4;
+  string priority = 5;  // "low", "normal", "high", "urgent"
+  bool archived = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message ArchiveRequest {
+  string item_id = 1;
+}
+
+message ArchiveResponse {
+  bool success = 1;
+}
+
+message WatchInboxRequest {
+  repeated string agent_ids = 1;  // Empty = watch all
+}
+
+// =============================================================================
+// MemoryService - Memory operations
+// =============================================================================
+
+service MemoryService {
+  // Search memories
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // Store a memory
+  rpc Store(StoreRequest) returns (StoreResponse);
+}
+
+message SearchRequest {
+  string query = 1;
+  string memory_type = 2;  // "personal", "agent", "conversation", or empty for all
+  string agent_id = 3;     // Filter by agent (optional)
+  int32 limit = 4;
+}
+
+message SearchResponse {
+  repeated MemoryResult results = 1;
+}
+
+message MemoryResult {
+  string id = 1;
+  string content = 2;
+  string memory_type = 3;
+  string agent_id = 4;
+  float score = 5;
+  google.protobuf.Timestamp created_at = 6;
+  map<string, string> metadata = 7;
+}
+
+message StoreRequest {
+  string content = 1;
+  string memory_type = 2;
+  string agent_id = 3;
+  map<string, string> metadata = 4;
+}
+
+message StoreResponse {
+  string id = 1;
+  bool success = 2;
+}
+
+// =============================================================================
+// SystemService - Daemon information and control
+// =============================================================================
+
+service SystemService {
+  // Get daemon system information
+  rpc GetInfo(GetInfoRequest) returns (SystemInfo);
+
+  // List available tools
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
+}
+
+message GetInfoRequest {}
+
+message SystemInfo {
+  string version = 1;
+  google.protobuf.Timestamp started_at = 2;
+  int64 uptime_seconds = 3;
+  string socket_path = 4;
+  DatabaseInfo database = 5;
+}
+
+message DatabaseInfo {
+  string path = 1;
+  int64 size_bytes = 2;
+  int32 memory_count = 3;
+  int32 conversation_count = 4;
+}
+
+message ListToolsRequest {
+  string agent_id = 1;  // Optional - filter by agent
+}
+
+message ListToolsResponse {
+  repeated ToolInfo tools = 1;
+}
+
+message ToolInfo {
+  string name = 1;
+  string description = 2;
+  string source = 3;  // "builtin", "mcp:<server_name>"
+  string schema = 4;  // JSON schema
+}
+
