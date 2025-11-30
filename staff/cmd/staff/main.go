@@ -12,6 +12,7 @@ import (
 
 	"github.com/aschepis/backscratcher/staff/agent"
 	"github.com/aschepis/backscratcher/staff/config"
+	"github.com/aschepis/backscratcher/staff/conversations"
 	"github.com/aschepis/backscratcher/staff/llm"
 	stafflogger "github.com/aschepis/backscratcher/staff/logger"
 	"github.com/aschepis/backscratcher/staff/mcp"
@@ -89,7 +90,6 @@ func registerToolHandlers(crew *agent.Crew, memoryRouter *memory.MemoryRouter, w
 					ID:           cfg.ID,
 					Name:         cfg.Name,
 					System:       cfg.System,
-					Model:        cfg.Model,
 					MaxTokens:    cfg.MaxTokens,
 					Tools:        cfg.Tools,
 					Schedule:     cfg.Schedule,
@@ -362,12 +362,49 @@ func main() {
 		Summarizer: memory.NewAnthropicSummarizer("claude-3.5-haiku-latest", anthropicAPIKey, 256, logger),
 	}, logger)
 
+	// Create conversations store for message persistence
+	conversationStore := conversations.NewStore(db)
+
 	// ---------------------------
-	// 2. Create Crew + Shared Tools
+	// 2. Create Message Summarizer (if enabled)
+	// ---------------------------
+
+	var messageSummarizer *agent.MessageSummarizer
+	if !appConfig.MessageSummarization.Disabled {
+		logger.Info().
+			Str("model", appConfig.MessageSummarization.Model).
+			Msg("Message summarization is enabled, initializing Ollama summarizer")
+		summarizerConfig := agent.MessageSummarizerConfig{
+			Model:         appConfig.MessageSummarization.Model,
+			MaxChars:      appConfig.MessageSummarization.MaxChars,
+			MaxLines:      appConfig.MessageSummarization.MaxLines,
+			MaxLineBreaks: appConfig.MessageSummarization.MaxLineBreaks,
+		}
+		var err error
+		messageSummarizer, err = agent.NewMessageSummarizer(summarizerConfig, logger)
+		if err != nil {
+			logger.Error().Err(err).Msg("Failed to create message summarizer")
+			panic(err)
+		}
+		if messageSummarizer != nil {
+			logger.Info().Msg("Message summarizer initialized successfully")
+		}
+	} else {
+		logger.Info().Msg("Message summarization is disabled")
+	}
+
+	// ---------------------------
+	// 3. Create Crew + Shared Tools
 	// ---------------------------
 
 	logger.Info().Msg("Creating crew and registering tools")
-	crew := agent.NewCrew(logger, anthropicAPIKey, db)
+	crewOpts := []agent.CrewOption{
+		agent.WithMessagePersister(conversationStore),
+	}
+	if messageSummarizer != nil {
+		crewOpts = append(crewOpts, agent.WithMessageSummarizer(messageSummarizer))
+	}
+	crew := agent.NewCrew(logger, anthropicAPIKey, db, crewOpts...)
 
 	// Get workspace path (default to current directory, or staff directory)
 	workspacePath, err := os.Getwd()
@@ -503,31 +540,6 @@ func main() {
 		Msg("Starting MCP server registration for total server(s) (from agents.yaml and Claude config)")
 	registerMCPServers(logger, crew, appConfig.MCPServers)
 
-	// Initialize message summarizer if enabled
-	if !appConfig.MessageSummarization.Disabled {
-		logger.Info().
-			Str("model", appConfig.MessageSummarization.Model).
-			Msg("Message summarization is enabled, initializing Ollama summarizer")
-		// Convert config.MessageSummarization to agent.MessageSummarizationConfig to avoid import cycle
-		summarizerConfig := agent.MessageSummarizerConfig{
-			Model:         appConfig.MessageSummarization.Model,
-			MaxChars:      appConfig.MessageSummarization.MaxChars,
-			MaxLines:      appConfig.MessageSummarization.MaxLines,
-			MaxLineBreaks: appConfig.MessageSummarization.MaxLineBreaks,
-		}
-		messageSummarizer, err := agent.NewMessageSummarizer(summarizerConfig, logger)
-		if err != nil {
-			logger.Error().Err(err).Msg("Failed to create message summarizer")
-			panic(err)
-		}
-		if messageSummarizer != nil {
-			crew.SetMessageSummarizer(messageSummarizer)
-			logger.Info().Msg("Message summarizer initialized successfully")
-		}
-	} else {
-		logger.Info().Msg("Message summarization is disabled")
-	}
-
 	// ---------------------------
 	// 4. Create Chat Service (must be before InitializeAgents)
 	// ---------------------------
@@ -542,7 +554,7 @@ func main() {
 	} else if appConfig.ChatTimeout > 0 {
 		chatTimeout = appConfig.ChatTimeout
 	}
-	chatService := ui.NewChatService(logger, crew, db, chatTimeout, appConfig)
+	chatService := ui.NewChatService(logger, crew, db, conversationStore, chatTimeout, appConfig)
 
 	// Initialize AgentRunners (after message persister is set)
 	// Extract enabled providers from config

@@ -5,8 +5,9 @@
 *.so
 *.dylib
 
-# Compiled application binary
+# Compiled application binaries 
 /staff
+/staffd
 
 # Test binary, built with `go test -c`
 *.test

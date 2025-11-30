@@ -13,9 +13,11 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/rs/zerolog"
+	"github.com/samber/lo"
 
 	"github.com/aschepis/backscratcher/staff/agent"
 	"github.com/aschepis/backscratcher/staff/config"
+	"github.com/aschepis/backscratcher/staff/conversations"
 	"github.com/aschepis/backscratcher/staff/llm"
 )
 
@@ -24,36 +26,32 @@ const (
 	roleUser      = "user"
 	roleTool      = "tool"
 	roleSystem    = "system"
-
-	providerAnthropic = "anthropic"
-	providerOllama    = "ollama"
 )
 
 // chatService implements ChatService by wrapping an agent.Crew
 type chatService struct {
-	crew    *agent.Crew
-	db      *sql.DB
-	timeout time.Duration // Timeout for chat operations
-	config  *config.Config
-	logger  zerolog.Logger
+	crew              *agent.Crew
+	db                *sql.DB
+	conversationStore *conversations.Store
+	timeout           time.Duration // Timeout for chat operations
+	config            *config.Config
+	logger            zerolog.Logger
 }
 
 // NewChatService creates a new ChatService that wraps the given crew and database.
 // timeoutSeconds is the timeout in seconds for chat operations (default: 60 if 0).
-func NewChatService(logger zerolog.Logger, crew *agent.Crew, db *sql.DB, timeoutSeconds int, appConfig *config.Config) ChatService {
+func NewChatService(logger zerolog.Logger, crew *agent.Crew, db *sql.DB, conversationStore *conversations.Store, timeoutSeconds int, appConfig *config.Config) ChatService {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 60 // Default timeout
 	}
-	cs := &chatService{
-		crew:    crew,
-		db:      db,
-		timeout: time.Duration(timeoutSeconds) * time.Second,
-		config:  appConfig,
-		logger:  logger.With().Str("component", "chatService").Logger(),
+	return &chatService{
+		crew:              crew,
+		db:                db,
+		conversationStore: conversationStore,
+		timeout:           time.Duration(timeoutSeconds) * time.Second,
+		config:            appConfig,
+		logger:            logger.With().Str("component", "chatService").Logger(),
 	}
-	// Register chatService as the message persister for the crew
-	crew.SetMessagePersister(cs) // TODO: fix this.. it is weird.
-	return cs
 }
 
 // SendMessage sends a message to an agent and returns the response.
@@ -70,48 +68,18 @@ func (s *chatService) SendMessageStream(ctx context.Context, agentID, threadID, 
 
 // ListAgents returns a list of available agents.
 func (s *chatService) ListAgents() []AgentInfo {
-	agents := s.crew.ListAgents()
-	info := make([]AgentInfo, 0, len(agents))
-	for _, ag := range agents {
-		agentInfo := AgentInfo{
-			ID:   ag.ID,
-			Name: ag.Config.Name,
-		}
+	// Get agent infos from crew (authoritative source)
+	agentInfos := s.crew.GetAgentInfos()
 
-		// Get the actual resolved provider and model from the runner
-		// This ensures we show the model that's actually being used, not just the first preference
-		runner := s.crew.GetRunner(ag.ID)
-		if runner != nil {
-			agentInfo.Provider = runner.GetResolvedProvider()
-			agentInfo.Model = runner.GetResolvedModel()
-		} else {
-			// Runner not available (e.g., agent disabled or not initialized)
-			// Fall back to config-based inference
-			if len(ag.Config.LLM) > 0 {
-				pref := ag.Config.LLM[0]
-				agentInfo.Provider = pref.Provider
-				if pref.Model != "" {
-					agentInfo.Model = pref.Model
-				} else {
-					agentInfo.Model = ag.Config.Model // Fallback to legacy model field
-				}
-			} else {
-				// No preferences - use legacy model field and infer provider from config
-				agentInfo.Model = ag.Config.Model
-				// Try to infer provider from model name (heuristic)
-				switch {
-				case strings.HasPrefix(ag.Config.Model, "claude-"):
-					agentInfo.Provider = providerAnthropic
-				case strings.Contains(ag.Config.Model, ":"):
-					agentInfo.Provider = providerOllama
-				default:
-					agentInfo.Provider = providerAnthropic // Default
-				}
-			}
+	// Convert to UI view model (subset of agent.AgentInfo)
+	info := lo.Map(agentInfos, func(ai *agent.AgentInfo, _ int) AgentInfo {
+		return AgentInfo{
+			ID:       ai.ID,
+			Name:     ai.Name,
+			Provider: ai.Provider,
+			Model:    ai.Model,
 		}
-
-		info = append(info, agentInfo)
-	}
+	})
 	return info
 }
 
@@ -1049,139 +1017,34 @@ func (s *chatService) SaveMessage(ctx context.Context, agentID, threadID, role, 
 	return err
 }
 
-// AppendUserMessage saves a user text message to the conversation history.
-func (s *chatService) AppendUserMessage(ctx context.Context, agentID, threadID, content string) error {
-	now := time.Now().Unix()
-	query := sq.Insert("conversations").
-		Columns("agent_id", "thread_id", "role", "content", "tool_name", "created_at").
-		Values(agentID, threadID, "user", content, nil, now)
-
-	queryStr, args, err := query.ToSql()
-	if err != nil {
-		return fmt.Errorf("build query: %w", err)
-	}
-
-	_, err = s.db.ExecContext(ctx, queryStr, args...)
-	return err
-}
-
-// AppendAssistantMessage saves an assistant text-only message to the conversation history.
-func (s *chatService) AppendAssistantMessage(ctx context.Context, agentID, threadID, content string) error {
-	now := time.Now().Unix()
-	query := sq.Insert("conversations").
-		Columns("agent_id", "thread_id", "role", "content", "tool_name", "created_at").
-		Values(agentID, threadID, "assistant", content, nil, now)
-
-	queryStr, args, err := query.ToSql()
-	if err != nil {
-		return fmt.Errorf("build query: %w", err)
-	}
-
-	_, err = s.db.ExecContext(ctx, queryStr, args...)
-	return err
-}
-
-// AppendToolCall saves an assistant message with tool use blocks to the conversation history.
-// toolID is the unique ID for this tool call.
-// toolName is the name of the tool being called.
-// toolInput is the input parameters for the tool (will be JSON-marshaled).
-// Uses INSERT OR IGNORE to prevent duplicate tool_use IDs in case of crashes/restarts.
-func (s *chatService) AppendToolCall(ctx context.Context, agentID, threadID, toolID, toolName string, toolInput any) error {
-	// Create a JSON object with id, input, and name fields
-	toolUseData := map[string]interface{}{
-		"id":    toolID,
-		"input": toolInput,
-		"name":  toolName,
-	}
-	contentJSON, err := json.Marshal(toolUseData)
-	if err != nil {
-		return fmt.Errorf("marshal tool use data: %w", err)
-	}
-
-	now := time.Now().Unix()
-	// Use INSERT OR IGNORE to prevent duplicates based on unique index on (agent_id, thread_id, tool_id)
-	query := sq.Insert("conversations").
-		Columns("agent_id", "thread_id", "role", "content", "tool_name", "tool_id", "created_at").
-		Values(agentID, threadID, "assistant", string(contentJSON), toolName, toolID, now)
-
-	queryStr, args, err := query.ToSql()
-	if err != nil {
-		return fmt.Errorf("build query: %w", err)
-	}
-
-	// SQLite requires "OR IGNORE" to come after "INSERT", so we replace "INSERT INTO" with "INSERT OR IGNORE INTO"
-	queryStr = strings.Replace(queryStr, "INSERT INTO", "INSERT OR IGNORE INTO", 1)
-
-	_, err = s.db.ExecContext(ctx, queryStr, args...)
-	return err
-}
-
 // GetChatTimeout returns the timeout duration for chat operations.
 func (s *chatService) GetChatTimeout() time.Duration {
 	return s.timeout
 }
 
+// AppendUserMessage saves a user text message to the conversation history.
+func (s *chatService) AppendUserMessage(ctx context.Context, agentID, threadID, content string) error {
+	return s.conversationStore.AppendUserMessage(ctx, agentID, threadID, content)
+}
+
+// AppendAssistantMessage saves an assistant text-only message to the conversation history.
+func (s *chatService) AppendAssistantMessage(ctx context.Context, agentID, threadID, content string) error {
+	return s.conversationStore.AppendAssistantMessage(ctx, agentID, threadID, content)
+}
+
+// AppendToolCall saves an assistant message with tool use blocks to the conversation history.
+func (s *chatService) AppendToolCall(ctx context.Context, agentID, threadID, toolID, toolName string, toolInput any) error {
+	return s.conversationStore.AppendToolCall(ctx, agentID, threadID, toolID, toolName, toolInput)
+}
+
 // AppendToolResult saves a tool result message to the conversation history.
-// toolID is the unique ID for the tool call that produced this result.
-// toolName is the name of the tool that produced the result.
-// result is the tool result (will be JSON-marshaled).
-// isError indicates if the result represents an error.
-// Uses INSERT OR IGNORE to prevent duplicate tool results in case of crashes/restarts.
 func (s *chatService) AppendToolResult(ctx context.Context, agentID, threadID, toolID, toolName string, result any, isError bool) error {
-	// Marshal the result to JSON string
-	var resultStr string
-	if resultBytes, err := json.Marshal(result); err == nil {
-		resultStr = string(resultBytes)
-	} else {
-		resultStr = fmt.Sprintf("%v", result)
-	}
-
-	// Create a JSON object with id, result, and is_error fields
-	toolResultData := map[string]interface{}{
-		"id":       toolID,
-		"result":   resultStr,
-		"is_error": isError,
-	}
-	contentJSON, err := json.Marshal(toolResultData)
-	if err != nil {
-		return fmt.Errorf("marshal tool result data: %w", err)
-	}
-
-	now := time.Now().Unix()
-	// Use INSERT OR IGNORE to prevent duplicates based on unique index on (agent_id, thread_id, tool_id, role)
-	// The unique index allows one 'assistant' row and one 'tool' row per tool_id, preventing duplicate results
-	query := sq.Insert("conversations").
-		Columns("agent_id", "thread_id", "role", "content", "tool_name", "tool_id", "created_at").
-		Values(agentID, threadID, "tool", string(contentJSON), toolName, toolID, now)
-
-	queryStr, args, err := query.ToSql()
-	if err != nil {
-		return fmt.Errorf("build query: %w", err)
-	}
-
-	// SQLite requires "OR IGNORE" to come after "INSERT", so we replace "INSERT INTO" with "INSERT OR IGNORE INTO"
-	queryStr = strings.Replace(queryStr, "INSERT INTO", "INSERT OR IGNORE INTO", 1)
-
-	_, err = s.db.ExecContext(ctx, queryStr, args...)
-	return err
+	return s.conversationStore.AppendToolResult(ctx, agentID, threadID, toolID, toolName, result, isError)
 }
 
 // AppendSystemMessage saves a system message to the conversation history.
-// breakType should be "reset" or "compress".
-// content should be a JSON string containing the system message data.
 func (s *chatService) AppendSystemMessage(ctx context.Context, agentID, threadID, content, breakType string) error {
-	now := time.Now().Unix()
-	query := sq.Insert("conversations").
-		Columns("agent_id", "thread_id", "role", "content", "tool_name", "created_at").
-		Values(agentID, threadID, roleSystem, content, nil, now)
-
-	queryStr, args, err := query.ToSql()
-	if err != nil {
-		return fmt.Errorf("build query: %w", err)
-	}
-
-	_, err = s.db.ExecContext(ctx, queryStr, args...)
-	return err
+	return s.conversationStore.AppendSystemMessage(ctx, agentID, threadID, content, breakType)
 }
 
 // ResetContext clears the context by inserting a system message marking the reset.
@@ -1198,7 +1061,7 @@ func (s *chatService) ResetContext(ctx context.Context, agentID, threadID string
 		return fmt.Errorf("failed to marshal system message: %w", err)
 	}
 
-	return s.AppendSystemMessage(ctx, agentID, threadID, string(contentJSON), "reset")
+	return s.conversationStore.AppendSystemMessage(ctx, agentID, threadID, string(contentJSON), "reset")
 }
 
 // LoadSystemMessages loads system messages (context breaks) for a given agent and thread ID.
@@ -1305,7 +1168,7 @@ func (s *chatService) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 	if s.config != nil {
 		info.LLMProvider = strings.Join(s.config.LLMProviders, ", ")
 	} else {
-		info.LLMProvider = "anthropic" // Default
+		info.LLMProvider = llm.ProviderAnthropic // Default
 	}
 
 	// Get MCP servers
@@ -1698,16 +1561,14 @@ func (s *chatService) ListAllTools(ctx context.Context) ([]string, error) {
 	}
 
 	schemas := toolProvider.GetAllSchemas()
-	tools := make([]string, 0, len(schemas))
-	for toolName, schema := range schemas {
+	tools := lo.MapToSlice(schemas, func(toolName string, schema agent.ToolSchema) string {
 		if schema.ServerName != "" {
 			// MCP tool: format as "<mcp-server>:<tool-name>"
-			tools = append(tools, fmt.Sprintf("%s:%s", schema.ServerName, toolName))
-		} else {
-			// Native tool: format as "<tool-name>"
-			tools = append(tools, toolName)
+			return fmt.Sprintf("%s:%s", schema.ServerName, toolName)
 		}
-	}
+		// Native tool: format as "<tool-name>"
+		return toolName
+	})
 
 	// Sort tools alphabetically
 	sort.Strings(tools)
@@ -1734,8 +1595,7 @@ func (s *chatService) DumpToolSchemas(ctx context.Context, filePath string) erro
 		Schema        map[string]interface{} `json:"schema"`
 	}
 
-	entries := make([]toolSchemaEntry, 0, len(schemas))
-	for toolName, schema := range schemas {
+	entries := lo.MapToSlice(schemas, func(toolName string, schema agent.ToolSchema) toolSchemaEntry {
 		var formattedName string
 		if schema.ServerName != "" {
 			formattedName = fmt.Sprintf("%s:%s", schema.ServerName, toolName)
@@ -1743,14 +1603,14 @@ func (s *chatService) DumpToolSchemas(ctx context.Context, filePath string) erro
 			formattedName = toolName
 		}
 
-		entries = append(entries, toolSchemaEntry{
+		return toolSchemaEntry{
 			FormattedName: formattedName,
 			Name:          toolName,
 			Description:   schema.Description,
 			Server:        schema.ServerName,
 			Schema:        schema.Schema,
-		})
-	}
+		}
+	})
 
 	// Sort entries by formatted name
 	sort.Slice(entries, func(i, j int) bool {

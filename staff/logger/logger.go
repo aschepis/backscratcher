@@ -2,6 +2,7 @@ package logger
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -16,67 +17,68 @@ var (
 // It should be called once at application startup.
 // Log level can be configured via LOG_LEVEL environment variable (debug, info, warn, error).
 func Init() (zerolog.Logger, error) {
-	logPath := "staff.log"
+	return InitWithOptions("staff.log", false)
+}
 
-	var err error
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return zerolog.Logger{}, fmt.Errorf("failed to open log file %s: %w", logPath, err)
-	}
-
+// InitWithOptions initializes the logger with the specified options.
+// If logFile is empty, logs to stdout/stderr.
+// If pretty is true, uses ConsoleWriter for human-readable output (only valid when logFile is empty).
+// Log level can be configured via LOG_LEVEL environment variable (debug, info, warn, error).
+func InitWithOptions(logFile string, pretty bool) (zerolog.Logger, error) {
 	// Get log level from environment variable
 	level := parseLogLevel(os.Getenv("LOG_LEVEL"))
 
-	// Create file logger - JSON structured logs
-	log = zerolog.New(logFile).
-		Level(level).
-		With().
-		Timestamp().
-		Logger()
+	var output io.Writer
+	var logPath string
+
+	switch {
+	case logFile != "":
+		// Log to file
+		logPath = logFile
+		//nolint:gosec // G304: User-specified log file path is intentional
+		file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return zerolog.Logger{}, fmt.Errorf("failed to open log file %s: %w", logPath, err)
+		}
+		output = file
+		// Create file logger - JSON structured logs
+		log = zerolog.New(output).
+			Level(level).
+			With().
+			Timestamp().
+			Logger()
+	case pretty:
+		// Log to stdout with pretty console output
+		output = zerolog.ConsoleWriter{Out: os.Stdout}
+		log = zerolog.New(output).
+			Level(level).
+			With().
+			Timestamp().
+			Logger()
+	default:
+		// Log to stdout/stderr (default)
+		output = os.Stdout
+		log = zerolog.New(output).
+			Level(level).
+			With().
+			Timestamp().
+			Logger()
+	}
 
 	// Log initialization
-	log.Info().Str("path", logPath).Str("level", level.String()).Msg("Logger initialized")
+	switch {
+	case logFile != "":
+		log.Info().Str("path", logPath).Str("level", level.String()).Msg("Logger initialized")
+	case pretty:
+		log.Info().Str("output", "stdout").Str("format", "pretty").Str("level", level.String()).Msg("Logger initialized")
+	default:
+		log.Info().Str("output", "stdout/stderr").Str("level", level.String()).Msg("Logger initialized")
+	}
 
 	return log, nil
 }
 
-// Info logs an informational message.
-func Info(format string, v ...interface{}) {
-	log.Info().Msg(fmt.Sprintf(format, v...))
-}
-
-// Error logs an error message.
-func Error(format string, v ...interface{}) {
-	log.Error().Msg(fmt.Sprintf(format, v...))
-}
-
-// Debug logs a debug message.
-func Debug(format string, v ...interface{}) {
-	log.Debug().Msg(fmt.Sprintf(format, v...))
-}
-
-// Warn logs a warning message.
-func Warn(format string, v ...interface{}) {
-	log.Warn().Msg(fmt.Sprintf(format, v...))
-}
-
-// GetLogger returns the zerolog.Logger for structured logging.
-func GetLogger() zerolog.Logger {
-	return log
-}
-
-// GetLevel returns the current log level as a string.
-func GetLevel() string {
-	return log.GetLevel().String()
-}
-
-// SetLevel sets the log level.
-func SetLevel(level string) {
-	log = log.Level(parseLogLevel(level))
-}
-
 // Helper functions
-
 func parseLogLevel(level string) zerolog.Level {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "debug":

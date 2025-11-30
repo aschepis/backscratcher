@@ -123,7 +123,7 @@ type MessageWithTimestamp struct {
 type AgentInfo struct {
 	ID       string
 	Name     string
-	Provider string // e.g., "anthropic", "ollama", "openai"
+	Provider string // e.g., llm.ProviderAnthropic, llm.ProviderOllama, llm.ProviderOpenAI
 	Model    string // e.g., "claude-sonnet-4-20250514"
 }
 

@@ -65,8 +65,8 @@ func TestProviderRegistry_ResolveAgentLLMConfig_WithPreferences(t *testing.T) {
 	// Agent with preferences - first preference should be selected
 	agentCfg := AgentLLMConfig{
 		LLMPreferences: []LLMPreference{
-			{Provider: providerAnthropic, Model: "claude-sonnet-4-20250514"},
-			{Provider: providerOllama, Model: "mistral:20b"},
+			{Provider: ProviderAnthropic, Model: "claude-sonnet-4-20250514"},
+			{Provider: ProviderOllama, Model: "mistral:20b"},
 		},
 	}
 
@@ -75,7 +75,7 @@ func TestProviderRegistry_ResolveAgentLLMConfig_WithPreferences(t *testing.T) {
 		t.Fatalf("Failed to resolve config: %v", err)
 	}
 
-	if key.Provider != providerAnthropic {
+	if key.Provider != ProviderAnthropic {
 		t.Errorf("Expected provider 'anthropic', got '%s'", key.Provider)
 	}
 	if key.Model != "claude-sonnet-4-20250514" {
@@ -87,13 +87,10 @@ func TestProviderRegistry_ResolveAgentLLMConfig_WithoutPreferences(t *testing.T)
 	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
 	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
 
-	registry := NewProviderRegistry(&ProviderConfig{}, []string{providerAnthropic, providerOllama})
+	registry := NewProviderRegistry(&ProviderConfig{}, []string{ProviderAnthropic, ProviderOllama})
 
 	// Agent without preferences - should use first enabled provider with its default model
-	// (agent's model field is ignored as it may be provider-specific)
-	agentCfg := AgentLLMConfig{
-		Model: "claude-haiku-4-5", // This field is ignored when no preferences are set
-	}
+	agentCfg := AgentLLMConfig{}
 
 	key, err := registry.ResolveAgentLLMConfig("test-agent", agentCfg)
 	if err != nil {
@@ -139,9 +136,7 @@ func TestProviderRegistry_ResolveAgentLLMConfig_NoAvailableProvider(t *testing.T
 	// No providers enabled
 	registry := NewProviderRegistry(&ProviderConfig{}, []string{})
 
-	agentCfg := AgentLLMConfig{
-		Model: "claude-haiku-4-5",
-	}
+	agentCfg := AgentLLMConfig{}
 
 	_, err := registry.ResolveAgentLLMConfig("test-agent", agentCfg)
 	if err == nil {

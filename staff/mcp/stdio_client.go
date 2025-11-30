@@ -8,6 +8,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/rs/zerolog"
+	"github.com/samber/lo"
 )
 
 // StdioMCPClient implements MCPClient for STDIO transport.
@@ -219,8 +220,7 @@ func (c *StdioMCPClient) ListTools(ctx context.Context) ([]ToolDefinition, error
 		Int("tool_count", len(result.Tools)).
 		Msg("Received tools from MCP server")
 
-	tools := make([]ToolDefinition, 0, len(result.Tools))
-	for _, tool := range result.Tools {
+	tools := lo.Map(result.Tools, func(tool mcp.Tool, _ int) ToolDefinition {
 		// Convert mcp.Tool to ToolDefinition
 		inputSchema := make(map[string]interface{})
 		inputSchema["type"] = tool.InputSchema.Type
@@ -234,12 +234,12 @@ func (c *StdioMCPClient) ListTools(ctx context.Context) ([]ToolDefinition, error
 			inputSchema["$defs"] = tool.InputSchema.Defs
 		}
 
-		tools = append(tools, ToolDefinition{
+		return ToolDefinition{
 			Name:        tool.Name,
 			Description: tool.Description,
 			InputSchema: inputSchema,
-		})
-	}
+		}
+	})
 
 	return tools, nil
 }

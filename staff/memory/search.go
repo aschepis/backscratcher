@@ -11,6 +11,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/rs/zerolog"
+	"github.com/samber/lo"
 )
 
 // SearchMemory executes keyword / embedding / tag / hybrid search over memory_items.
@@ -227,24 +228,22 @@ LIMIT ?
 		Int("numLoadedItems", len(items)).
 		Msg("searchByKeyword: loaded items from DB")
 
-	results := make([]SearchResult, 0, len(items))
-	filteredCount := 0
-	for _, it := range items {
+	results := lo.FilterMap(items, func(it *MemoryItem, _ int) (SearchResult, bool) {
 		if !applyFilters(it, q, s.logger) {
-			filteredCount++
 			s.logger.Debug().
 				Int64("itemID", it.ID).
 				Str("scope", string(it.Scope)).
 				Interface("agentID", it.AgentID).
 				Str("type", string(it.Type)).
 				Msg("searchByKeyword: item filtered out")
-			continue
+			return SearchResult{}, false
 		}
-		results = append(results, SearchResult{
+		return SearchResult{
 			Item:  it,
 			Score: 1.0,
-		})
-	}
+		}, true
+	})
+	filteredCount := len(items) - len(results)
 	s.logger.Info().
 		Int("passed", len(results)).
 		Int("filtered", filteredCount).

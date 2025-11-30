@@ -8,6 +8,7 @@ import (
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/tools"
 	"github.com/rs/zerolog"
+	"github.com/samber/lo"
 )
 
 type ToolSchema struct {
@@ -193,11 +194,7 @@ func (p *ToolProviderFromRegistry) GetAllSchemas() map[string]ToolSchema {
 
 // getAllToolNames returns all registered tool names
 func (p *ToolProviderFromRegistry) getAllToolNames() []string {
-	names := make([]string, 0, len(p.schemas))
-	for name := range p.schemas {
-		names = append(names, name)
-	}
-	return names
+	return lo.Keys(p.schemas)
 }
 
 // expandToolPattern expands a tool pattern (with optional MCP server prefix) into matching tool names using regexp
@@ -257,9 +254,5 @@ func getPropertyNames(props map[string]any) []string {
 	if props == nil {
 		return nil
 	}
-	names := make([]string, 0, len(props))
-	for k := range props {
-		names = append(names, k)
-	}
-	return names
+	return lo.Keys(props)
 }

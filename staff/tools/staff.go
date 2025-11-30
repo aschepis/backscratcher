@@ -31,7 +31,6 @@ type AgentConfigData struct {
 	ID           string
 	Name         string
 	System       string
-	Model        string
 	MaxTokens    int64
 	Tools        []string
 	Schedule     string
@@ -82,7 +81,6 @@ func (r *Registry) RegisterStaffTools(
 				"name":       cfg.Name,
 				"disabled":   cfg.Disabled,
 				"schedule":   cfg.Schedule,
-				"model":      cfg.Model,
 				"max_tokens": cfg.MaxTokens,
 				"tools":      cfg.Tools,
 			}

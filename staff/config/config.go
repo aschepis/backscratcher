@@ -68,7 +68,6 @@ type AgentConfig struct {
 	ID           string          `yaml:"id" json:"id"`
 	Name         string          `yaml:"name" json:"name"`
 	System       string          `yaml:"system_prompt" json:"system"`
-	Model        string          `yaml:"model" json:"model"` // Legacy: used when LLM preferences not specified
 	MaxTokens    int64           `yaml:"max_tokens" json:"max_tokens"`
 	Tools        []string        `yaml:"tools" json:"tools"`
 	Schedule     string          `yaml:"schedule" json:"schedule"`           // e.g., "15m", "2h", "0 */15 * * * *" (cron)
@@ -269,9 +268,6 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		if agentCfg.MaxTokens == 0 {
 			agentCfg.MaxTokens = 2048
-		}
-		if agentCfg.Model == "" {
-			agentCfg.Model = "claude-haiku-4-5"
 		}
 	}
 

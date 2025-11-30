@@ -6,3 +6,4 @@ nodejs 25.0.0
 protoc 33.1
 protoc-gen-go 1.36.10
 protoc-gen-go-grpc 1.6.0
+buf 1.61.0

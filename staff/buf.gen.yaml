@@ -1,0 +1,13 @@
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/go
+    out: api/staffpb
+    opt:
+      - paths=source_relative
+  - remote: buf.build/grpc/go
+    out: api/staffpb
+    opt:
+      - paths=source_relative
+inputs:
+  - directory: api/proto
+

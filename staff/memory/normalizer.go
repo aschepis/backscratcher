@@ -12,6 +12,7 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/rs/zerolog"
+	"github.com/samber/lo"
 )
 
 // Normalizer converts raw user/agent statements into structured personal memories.
@@ -261,19 +262,18 @@ func sanitizeMemoryType(t string) string {
 }
 
 func sanitizeTags(tags []string) []string {
-	out := make([]string, 0, len(tags))
-	for _, tag := range tags {
+	out := lo.FilterMap(tags, func(tag string, _ int) (string, bool) {
 		tag = strings.ToLower(strings.TrimSpace(tag))
 		if tag == "" {
-			continue
+			return "", false
 		}
 		tag = tagSanitizer.ReplaceAllString(tag, "_")
 		tag = strings.Trim(tag, "_-")
 		if tag == "" {
-			continue
+			return "", false
 		}
-		out = append(out, tag)
-	}
+		return tag, true
+	})
 	if len(out) > 8 {
 		out = out[:8]
 	}

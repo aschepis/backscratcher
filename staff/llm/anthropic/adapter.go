@@ -5,6 +5,7 @@ import (
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/aschepis/backscratcher/staff/llm"
+	"github.com/samber/lo"
 )
 
 // FromMessageParam converts an Anthropic MessageParam to an llm.Message.
@@ -130,6 +131,7 @@ func FromMessageParams(msgs []anthropic.MessageParam) ([]llm.Message, error) {
 		result = append(result, llmMsg)
 	}
 	return result, nil
+	// Note: Using loop instead of lo.Map due to error handling requirement
 }
 
 // ToMessageParams converts a slice of llm.Messages to Anthropic MessageParams.
@@ -143,6 +145,7 @@ func ToMessageParams(msgs []llm.Message) ([]anthropic.MessageParam, error) {
 		result = append(result, anthMsg)
 	}
 	return result, nil
+	// Note: Using loop instead of lo.Map due to error handling requirement
 }
 
 // FromToolUnionParam converts an Anthropic ToolUnionParam to an llm.ToolSpec.
@@ -216,13 +219,12 @@ func FromToolUnionParams(tools []anthropic.ToolUnionParam) ([]llm.ToolSpec, erro
 		result = append(result, spec)
 	}
 	return result, nil
+	// Note: Using loop instead of lo.Map due to error handling requirement
 }
 
 // ToToolUnionParams converts a slice of llm.ToolSpecs to Anthropic ToolUnionParams.
 func ToToolUnionParams(specs []llm.ToolSpec) []anthropic.ToolUnionParam {
-	result := make([]anthropic.ToolUnionParam, 0, len(specs))
-	for _, spec := range specs {
-		result = append(result, ToToolUnionParam(&spec))
-	}
-	return result
+	return lo.Map(specs, func(spec llm.ToolSpec, _ int) anthropic.ToolUnionParam {
+		return ToToolUnionParam(&spec)
+	})
 }

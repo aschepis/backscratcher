@@ -8,6 +8,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/rs/zerolog"
+	"github.com/samber/lo"
 )
 
 // HttpMCPClient implements MCPClient for HTTP transport.
@@ -179,8 +180,7 @@ func (c *HttpMCPClient) ListTools(ctx context.Context) ([]ToolDefinition, error)
 		Str("base_url", c.baseURL).
 		Msg("HttpMCPClient.ListTools: received tools")
 
-	tools := make([]ToolDefinition, 0, len(result.Tools))
-	for _, tool := range result.Tools {
+	tools := lo.Map(result.Tools, func(tool mcp.Tool, _ int) ToolDefinition {
 		// Convert mcp.Tool to ToolDefinition
 		// Convert ToolInputSchema to map[string]interface{}
 		inputSchema := make(map[string]interface{})
@@ -195,12 +195,12 @@ func (c *HttpMCPClient) ListTools(ctx context.Context) ([]ToolDefinition, error)
 			inputSchema["$defs"] = tool.InputSchema.Defs
 		}
 
-		tools = append(tools, ToolDefinition{
+		return ToolDefinition{
 			Name:        tool.Name,
 			Description: tool.Description,
 			InputSchema: inputSchema,
-		})
-	}
+		}
+	})
 
 	return tools, nil
 }
