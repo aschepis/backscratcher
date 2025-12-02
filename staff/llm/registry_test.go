@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"os"
 	"testing"
 )
 
@@ -26,11 +25,7 @@ func TestProviderRegistry_IsProviderConfigured(t *testing.T) {
 		t.Error("anthropic should not be configured without API key")
 	}
 
-	// Set API key via environment
-	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
-	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
-
-	registry2 := NewProviderRegistry(&ProviderConfig{}, []string{"anthropic"})
+	registry2 := NewProviderRegistry(&ProviderConfig{AnthropicAPIKey: "test-key"}, []string{"anthropic"})
 	if !registry2.IsProviderConfigured("anthropic") {
 		t.Error("anthropic should be configured with API key")
 	}
@@ -47,20 +42,14 @@ func TestProviderRegistry_IsProviderConfigured(t *testing.T) {
 		t.Error("openai should not be configured without API key")
 	}
 
-	_ = os.Setenv("OPENAI_API_KEY", "test-key") //nolint:errcheck // ignore error
-	defer os.Unsetenv("OPENAI_API_KEY")         //nolint:errcheck // ignore error
-
-	registry5 := NewProviderRegistry(&ProviderConfig{}, []string{"openai"})
+	registry5 := NewProviderRegistry(&ProviderConfig{OpenAIAPIKey: "test-key"}, []string{"openai"})
 	if !registry5.IsProviderConfigured("openai") {
 		t.Error("openai should be configured with API key")
 	}
 }
 
 func TestProviderRegistry_ResolveAgentLLMConfig_WithPreferences(t *testing.T) {
-	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
-	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
-
-	registry := NewProviderRegistry(&ProviderConfig{}, []string{"anthropic", "ollama"})
+	registry := NewProviderRegistry(&ProviderConfig{AnthropicAPIKey: "test-key", OllamaHost: "http://localhost:11434", OllamaModel: "mistral:20b"}, []string{"anthropic", "ollama"})
 
 	// Agent with preferences - first preference should be selected
 	agentCfg := AgentLLMConfig{
@@ -84,10 +73,7 @@ func TestProviderRegistry_ResolveAgentLLMConfig_WithPreferences(t *testing.T) {
 }
 
 func TestProviderRegistry_ResolveAgentLLMConfig_WithoutPreferences(t *testing.T) {
-	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
-	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
-
-	registry := NewProviderRegistry(&ProviderConfig{}, []string{ProviderAnthropic, ProviderOllama})
+	registry := NewProviderRegistry(&ProviderConfig{AnthropicAPIKey: "test-key", OllamaHost: "http://localhost:11434", OllamaModel: "mistral:20b"}, []string{ProviderAnthropic, ProviderOllama})
 
 	// Agent without preferences - should use first enabled provider with its default model
 	agentCfg := AgentLLMConfig{}
@@ -108,11 +94,8 @@ func TestProviderRegistry_ResolveAgentLLMConfig_WithoutPreferences(t *testing.T)
 }
 
 func TestProviderRegistry_ResolveAgentLLMConfig_Fallback(t *testing.T) {
-	_ = os.Setenv("ANTHROPIC_API_KEY", "test-key") //nolint:errcheck // ignore error
-	defer os.Unsetenv("ANTHROPIC_API_KEY")         //nolint:errcheck // ignore error
-
 	// Only enable anthropic, not ollama
-	registry := NewProviderRegistry(&ProviderConfig{}, []string{"anthropic"})
+	registry := NewProviderRegistry(&ProviderConfig{AnthropicAPIKey: "test-key", OllamaHost: "http://localhost:11434", OllamaModel: "mistral:20b"}, []string{"anthropic"})
 
 	// Agent prefers ollama first, but it's not enabled - should fallback to anthropic
 	agentCfg := AgentLLMConfig{

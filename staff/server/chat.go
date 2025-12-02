@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/samber/lo"
+
 	"github.com/aschepis/backscratcher/staff/api/staffpb"
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/ui"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // Chat handles streaming chat with an agent.

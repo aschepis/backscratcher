@@ -64,19 +64,20 @@ func main() {
 
 	// Determine connection address (command line flags override config)
 	var address string
-	if *tcpAddress != "" {
+	switch {
+	case *tcpAddress != "":
 		address = *tcpAddress
 		logger.Info().Str("address", address).Msg("Connecting to daemon via TCP")
-	} else if clientConfig.Daemon.TCP != "" {
+	case clientConfig.Daemon.TCP != "":
 		address = clientConfig.Daemon.TCP
 		logger.Info().Str("address", address).Msg("Connecting to daemon via TCP (from config)")
-	} else if *socketPath != defaultSocketPath {
+	case *socketPath != defaultSocketPath:
 		address = *socketPath
 		logger.Info().Str("socket", address).Msg("Connecting to daemon via Unix socket")
-	} else if clientConfig.Daemon.Socket != "" {
+	case clientConfig.Daemon.Socket != "":
 		address = clientConfig.Daemon.Socket
 		logger.Info().Str("socket", address).Msg("Connecting to daemon via Unix socket (from config)")
-	} else {
+	default:
 		address = defaultSocketPath
 		logger.Info().Str("socket", address).Msg("Connecting to daemon via Unix socket (default)")
 	}
@@ -131,7 +132,7 @@ func main() {
 	if err := app.Run(); err != nil {
 		logger.Error().Err(err).Msg("Error running application")
 		fmt.Fprintf(os.Stderr, "Error running application: %v\n", err)
-		os.Exit(1)
+		os.Exit(1) //nolint:gocritic // Exiting will close the grpc client anyways
 	}
 
 	logger.Info().Msg("Application shutdown")

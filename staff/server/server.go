@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"net"
-	"slices"
 	"sync"
 	"time"
 
@@ -197,23 +196,6 @@ func (s *Server) unsubscribeStateChanges(ch chan *staffpb.AgentState) {
 	close(ch)
 }
 
-// broadcastStateChange sends a state change to all watchers.
-func (s *Server) broadcastStateChange(state *staffpb.AgentState) {
-	s.stateWatchersMu.RLock()
-	defer s.stateWatchersMu.RUnlock()
-
-	for ch, agentFilter := range s.stateWatchers {
-		// If filter is empty, send all; otherwise check if agent is in filter
-		if len(agentFilter) == 0 || slices.Contains(agentFilter, state.AgentId) {
-			select {
-			case ch <- state:
-			default:
-				// Channel full, skip (non-blocking)
-			}
-		}
-	}
-}
-
 // subscribeInbox registers a channel to receive inbox notifications.
 func (s *Server) subscribeInbox() chan *staffpb.InboxItem {
 	ch := make(chan *staffpb.InboxItem, 100)
@@ -229,20 +211,6 @@ func (s *Server) unsubscribeInbox(ch chan *staffpb.InboxItem) {
 	delete(s.inboxWatchers, ch)
 	s.inboxWatchersMu.Unlock()
 	close(ch)
-}
-
-// broadcastInboxItem sends an inbox item to all watchers.
-func (s *Server) broadcastInboxItem(item *staffpb.InboxItem) {
-	s.inboxWatchersMu.RLock()
-	defer s.inboxWatchersMu.RUnlock()
-
-	for ch := range s.inboxWatchers {
-		select {
-		case ch <- item:
-		default:
-			// Channel full, skip (non-blocking)
-		}
-	}
 }
 
 // getConnectedClientCount returns the number of connected clients.
