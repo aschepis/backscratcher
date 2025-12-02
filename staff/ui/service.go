@@ -34,13 +34,13 @@ type chatService struct {
 	db                *sql.DB
 	conversationStore *conversations.Store
 	timeout           time.Duration // Timeout for chat operations
-	config            *config.Config
+	config            *config.ServerConfig
 	logger            zerolog.Logger
 }
 
 // NewChatService creates a new ChatService that wraps the given crew and database.
 // timeoutSeconds is the timeout in seconds for chat operations (default: 60 if 0).
-func NewChatService(logger zerolog.Logger, crew *agent.Crew, db *sql.DB, conversationStore *conversations.Store, timeoutSeconds int, appConfig *config.Config) ChatService {
+func NewChatService(logger zerolog.Logger, crew *agent.Crew, db *sql.DB, conversationStore *conversations.Store, timeoutSeconds int, appConfig *config.ServerConfig) ChatService {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 60 // Default timeout
 	}

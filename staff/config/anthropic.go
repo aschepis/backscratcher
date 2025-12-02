@@ -5,9 +5,9 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// LoadAnthropicConfig loads Anthropic configuration from the main config.
+// LoadAnthropicConfig loads Anthropic configuration from server config.
 // It returns the API key to use for creating an Anthropic client.
-func LoadAnthropicConfig(cfg *Config) (apiKey string) {
+func LoadAnthropicConfig(cfg *ServerConfig) (apiKey string) {
 	if cfg == nil {
 		return ""
 	}
@@ -16,7 +16,7 @@ func LoadAnthropicConfig(cfg *Config) (apiKey string) {
 }
 
 // NewAnthropicClient creates a new Anthropic LLM client from the configuration.
-func NewAnthropicClient(cfg *Config, logger zerolog.Logger) (*llmanthropic.AnthropicClient, error) {
+func NewAnthropicClient(cfg *ServerConfig, logger zerolog.Logger) (*llmanthropic.AnthropicClient, error) {
 	apiKey := LoadAnthropicConfig(cfg)
 	return llmanthropic.NewAnthropicClient(apiKey, logger)
 }

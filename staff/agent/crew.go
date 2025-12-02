@@ -91,14 +91,13 @@ func (c *Crew) GetToolProvider() *ToolProviderFromRegistry {
 	return c.ToolProvider
 }
 
-// LoadCrewConfig loads crew configuration from the unified config.
-func (c *Crew) LoadCrewConfig(cfg *config.Config) error {
+// LoadCrewConfig loads crew configuration from server config.
+func (c *Crew) LoadCrewConfig(cfg *config.ServerConfig) error {
 	// Load agents
 	for id, agentCfg := range cfg.Agents {
 		if agentCfg.ID == "" {
 			agentCfg.ID = id
 		}
-		// AgentConfig is now a type alias to config.AgentConfig, so we can use it directly
 		c.Agents[id] = agentCfg
 	}
 

@@ -6,9 +6,9 @@ import (
 	llmollama "github.com/aschepis/backscratcher/staff/llm/ollama"
 )
 
-// LoadOllamaConfig loads Ollama configuration from the main config.
+// LoadOllamaConfig loads Ollama configuration from server config.
 // It returns the host and model to use for creating an Ollama client.
-func LoadOllamaConfig(cfg *Config) (host, model string) {
+func LoadOllamaConfig(cfg *ServerConfig) (host, model string) {
 	if cfg == nil {
 		// Return defaults
 		host = getOllamaHostFromEnv()
@@ -36,7 +36,7 @@ func LoadOllamaConfig(cfg *Config) (host, model string) {
 }
 
 // NewOllamaClient creates a new Ollama LLM client from the configuration.
-func NewOllamaClient(cfg *Config) (*llmollama.OllamaClient, error) {
+func NewOllamaClient(cfg *ServerConfig) (*llmollama.OllamaClient, error) {
 	host, model := LoadOllamaConfig(cfg)
 	return llmollama.NewOllamaClient(host, model)
 }

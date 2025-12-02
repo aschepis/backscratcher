@@ -87,38 +87,80 @@ type MCPServerConfig struct {
 	Env        []string `yaml:"env,omitempty"`         // Environment variables for STDIO
 }
 
-// Config represents the unified application configuration.
-type Config struct {
-	// Application settings
-	Anthropic            AnthropicConfig      `yaml:"anthropic,omitempty"` // Anthropic LLM provider configuration
-	Ollama               OllamaConfig         `yaml:"ollama,omitempty"`    // Ollama LLM provider configuration
-	OpenAI               OpenAIConfig         `yaml:"openai,omitempty"`    // OpenAI LLM provider configuration
-	Theme                string               `yaml:"theme,omitempty"`
-	ClaudeMCP            ClaudeMCPConfig      `yaml:"claude_mcp,omitempty"`
-	ChatTimeout          int                  `yaml:"chat_timeout,omitempty"`          // Timeout in seconds for chat operations (default: 60)
-	MessageSummarization MessageSummarization `yaml:"message_summarization,omitempty"` // Message summarization configuration
+// ServerConfig represents server-side configuration for staffd daemon.
+type ServerConfig struct {
+	// Server settings
+	Server struct {
+		Socket string `yaml:"socket,omitempty"` // Unix socket path (default: /tmp/staffd.sock)
+		TCP    string `yaml:"tcp,omitempty"`    // TCP address (e.g., localhost:50051)
+	} `yaml:"server,omitempty"`
 
-	// Agent/Crew configuration (from agents.yaml)
-	LLMProviders []string                    `yaml:"llm_providers,omitempty"` // Array of enabled LLM providers: "anthropic", "ollama", "openai" (default: ["anthropic"])
-	Agents       map[string]*AgentConfig     `yaml:"agents,omitempty"`        // Agent configurations
-	MCPServers   map[string]*MCPServerConfig `yaml:"mcp_servers,omitempty"`   // MCP server configurations
+	// LLM provider configurations
+	Anthropic AnthropicConfig `yaml:"anthropic,omitempty"`
+	Ollama    OllamaConfig    `yaml:"ollama,omitempty"`
+	OpenAI    OpenAIConfig    `yaml:"openai,omitempty"`
+
+	// Agent/Crew configuration
+	LLMProviders []string                    `yaml:"llm_providers,omitempty"`
+	Agents       map[string]*AgentConfig     `yaml:"agents,omitempty"`
+	MCPServers   map[string]*MCPServerConfig `yaml:"mcp_servers,omitempty"`
+
+	// Feature configurations
+	ClaudeMCP            ClaudeMCPConfig      `yaml:"claude_mcp,omitempty"`
+	ChatTimeout          int                  `yaml:"chat_timeout,omitempty"`
+	MessageSummarization MessageSummarization `yaml:"message_summarization,omitempty"`
 
 	// Internal: used for merging secrets from user config file
 	mcpServerSecrets map[string]MCPServerSecrets `yaml:"-"` // Not serialized, used only during merge
 }
 
-// GetConfigPath returns the default config file path, expanding ~ to home directory.
+type DaemonConfig struct {
+	Socket string `yaml:"socket,omitempty"` // Unix socket path (default: /tmp/staffd.sock)
+	TCP    string `yaml:"tcp,omitempty"`    // TCP address (e.g., localhost:50051)
+}
+
+// ClientConfig represents client-side configuration for staff CLI.
+type ClientConfig struct {
+	// Connection settings
+	Daemon DaemonConfig `yaml:"daemon,omitempty"`
+
+	// UI preferences
+	Theme       string `yaml:"theme,omitempty"`        // UI theme (default: solarized)
+	ChatTimeout int    `yaml:"chat_timeout,omitempty"` // Timeout in seconds for chat operations (default: 60)
+}
+
+// GetServerConfigPath returns the default server config file path.
 // Can be overridden via STAFF_CONFIG_PATH environment variable.
-func GetConfigPath() string {
+func GetServerConfigPath() string {
 	if envPath := os.Getenv("STAFF_CONFIG_PATH"); envPath != "" {
 		return expandPath(envPath)
 	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		// Fallback to current directory if home dir can't be determined
 		return "./.staffd/config.yaml"
 	}
 	return filepath.Join(homeDir, ".staffd", "config.yaml")
+}
+
+// GetClientConfigPath returns the default client config file path.
+// Can be overridden via STAFF_CLIENT_CONFIG_PATH environment variable.
+func GetClientConfigPath() string {
+	if envPath := os.Getenv("STAFF_CLIENT_CONFIG_PATH"); envPath != "" {
+		return expandPath(envPath)
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "./.staffd/cli.yaml"
+	}
+	return filepath.Join(homeDir, ".staffd", "cli.yaml")
+}
+
+// GetConfigPath returns the default config file path, expanding ~ to home directory.
+// Can be overridden via STAFF_CONFIG_PATH environment variable.
+// Deprecated: Use GetServerConfigPath() or GetClientConfigPath() instead.
+// This is kept for backward compatibility with ui/tui/settings.go.
+func GetConfigPath() string {
+	return GetServerConfigPath()
 }
 
 // expandPath expands ~ to the user's home directory.
@@ -133,15 +175,97 @@ func expandPath(path string) string {
 	return path
 }
 
-// LoadConfig loads the unified configuration by:
-// 1. Setting defaults
-// 2. Loading agents.yaml config
-// 3. Merging user config file onto the result
-// Returns a single Config with all configuration.
-// Uses mergo to properly merge nested structures.
-func LoadConfig(path string) (*Config, error) {
+// MergeMCPServerConfigs merges MCP server configurations from agents.yaml (base) with secrets from config file (overrides).
+// Uses mergo to properly merge nested structures, with config file values taking precedence.
+func MergeMCPServerConfigs(baseYAML []byte, configSecrets map[string]MCPServerSecrets) ([]byte, error) {
+	// Unmarshal base YAML to ServerConfig struct
+	var baseConfig ServerConfig
+	if err := yaml.Unmarshal(baseYAML, &baseConfig); err != nil {
+		return nil, fmt.Errorf("failed to parse base YAML: %w", err)
+	}
+
+	// Initialize maps if nil
+	if baseConfig.MCPServers == nil {
+		baseConfig.MCPServers = make(map[string]*MCPServerConfig)
+	}
+
+	// Create override ServerConfig from config secrets
+	overrideConfig := ServerConfig{
+		MCPServers: make(map[string]*MCPServerConfig),
+	}
+	for name, secrets := range configSecrets {
+		overrideConfig.MCPServers[name] = &MCPServerConfig{
+			Env: secrets.Env,
+		}
+	}
+
+	// Merge override onto base using mergo (override takes precedence)
+	if err := mergo.Merge(&baseConfig, overrideConfig, mergo.WithOverride); err != nil {
+		return nil, fmt.Errorf("failed to merge MCP server configs: %w", err)
+	}
+
+	// Marshal merged config back to YAML
+	mergedYAML, err := yaml.Marshal(&baseConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal merged config: %w", err)
+	}
+
+	return mergedYAML, nil
+}
+
+// SaveServerConfig saves the server configuration to the specified path.
+func SaveServerConfig(cfg *ServerConfig, path string) error {
+	expandedPath := expandPath(path)
+
+	// Ensure directory exists
+	dir := filepath.Dir(expandedPath)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Marshal to YAML
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	// Write file
+	if err := os.WriteFile(expandedPath, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	return nil
+}
+
+// SaveClientConfig saves the client configuration to the specified path.
+func SaveClientConfig(cfg *ClientConfig, path string) error {
+	expandedPath := expandPath(path)
+
+	// Ensure directory exists
+	dir := filepath.Dir(expandedPath)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Marshal to YAML
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	// Write file
+	if err := os.WriteFile(expandedPath, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	return nil
+}
+
+// LoadServerConfig loads server-side configuration.
+// Loads from agents.yaml and server config file, merging them together.
+func LoadServerConfig(path string) (*ServerConfig, error) {
 	// Step 1: Set defaults
-	defaults := Config{
+	defaults := ServerConfig{
 		LLMProviders: []string{"anthropic"},
 		Anthropic: AnthropicConfig{
 			APIKey: "",
@@ -158,7 +282,6 @@ func LoadConfig(path string) (*Config, error) {
 			Organization: "",
 		},
 		ChatTimeout: 60,
-		Theme:       "random",
 		Agents:      make(map[string]*AgentConfig),
 		MCPServers:  make(map[string]*MCPServerConfig),
 		ClaudeMCP: ClaudeMCPConfig{
@@ -174,6 +297,7 @@ func LoadConfig(path string) (*Config, error) {
 			MaxLineBreaks: 10,
 		},
 	}
+	defaults.Server.Socket = "/tmp/staffd.sock"
 
 	// Step 2: Load and merge agents.yaml config
 	agentsConfigPath := "agents.yaml"
@@ -186,12 +310,12 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read agents config from %q: %w", agentsConfigPath, err)
 	}
 
-	var agentsConfig Config
+	var agentsConfig ServerConfig
 	if err := yaml.Unmarshal(agentsYAML, &agentsConfig); err != nil {
 		return nil, fmt.Errorf("failed to parse agents config: %w", err)
 	}
 
-	// Merge agents config onto defaults (agents.yaml values take precedence over defaults)
+	// Merge agents config onto defaults
 	if err := mergo.Merge(&defaults, agentsConfig, mergo.WithOverride); err != nil {
 		return nil, fmt.Errorf("failed to merge agents config: %w", err)
 	}
@@ -204,24 +328,22 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	if _, err := os.Stat(expandedPath); err == nil {
-		// File exists, read it
 		userConfigYAML, err = os.ReadFile(expandedPath) //#nosec 304 -- intentional file read for config
 		if err != nil {
 			return nil, fmt.Errorf("failed to read user config file %q: %w", expandedPath, err)
 		}
 
-		var userConfig Config
+		var userConfig ServerConfig
 		if err := yaml.Unmarshal(userConfigYAML, &userConfig); err != nil {
 			return nil, fmt.Errorf("failed to parse user config: %w", err)
 		}
 
-		// Extract MCP server secrets separately (they use a different type)
+		// Extract MCP server secrets separately
 		if err := yaml.Unmarshal(userConfigYAML, &userConfigSecrets); err == nil {
 			defaults.mcpServerSecrets = userConfigSecrets.MCPServers
 		}
 
-		// Merge user config on top (user config takes precedence)
-		// Note: For MCP servers, we'll handle the secrets merge separately below
+		// Merge user config on top
 		if err := mergo.Merge(&defaults, userConfig, mergo.WithOverride); err != nil {
 			return nil, fmt.Errorf("failed to merge user config: %w", err)
 		}
@@ -238,17 +360,12 @@ func LoadConfig(path string) (*Config, error) {
 		defaults.mcpServerSecrets = make(map[string]MCPServerSecrets)
 	}
 
-	// Handle MCP server secrets from user config (if user config file exists)
-	// MCP server secrets in user config are MCPServerSecrets (only env vars),
-	// but we need to merge them into MCPServerConfig (full config from agents.yaml)
+	// Handle MCP server secrets from user config
 	if len(userConfigYAML) > 0 && len(userConfigSecrets.MCPServers) > 0 {
 		for name, secrets := range userConfigSecrets.MCPServers {
 			if defaults.MCPServers[name] == nil {
-				// Create new MCP server config if it doesn't exist
 				defaults.MCPServers[name] = &MCPServerConfig{}
 			}
-			// Convert MCPServerSecrets to MCPServerConfig and merge using mergo
-			// (user config takes precedence)
 			overrideServerConfig := &MCPServerConfig{
 				Env: secrets.Env,
 			}
@@ -274,64 +391,36 @@ func LoadConfig(path string) (*Config, error) {
 	return &defaults, nil
 }
 
-// MergeMCPServerConfigs merges MCP server configurations from agents.yaml (base) with secrets from config file (overrides).
-// Uses mergo to properly merge nested structures, with config file values taking precedence.
-func MergeMCPServerConfigs(baseYAML []byte, configSecrets map[string]MCPServerSecrets) ([]byte, error) {
-	// Unmarshal base YAML to Config struct
-	var baseConfig Config
-	if err := yaml.Unmarshal(baseYAML, &baseConfig); err != nil {
-		return nil, fmt.Errorf("failed to parse base YAML: %w", err)
+// LoadClientConfig loads client-side configuration.
+// Returns defaults if config file doesn't exist.
+func LoadClientConfig(path string) (*ClientConfig, error) {
+	defaults := ClientConfig{
+		Theme:       "solarized",
+		ChatTimeout: 60,
 	}
+	defaults.Daemon.Socket = "/tmp/staffd.sock"
 
-	// Initialize maps if nil
-	if baseConfig.MCPServers == nil {
-		baseConfig.MCPServers = make(map[string]*MCPServerConfig)
-	}
-
-	// Create override Config from config secrets
-	overrideConfig := Config{
-		MCPServers: make(map[string]*MCPServerConfig),
-	}
-	for name, secrets := range configSecrets {
-		overrideConfig.MCPServers[name] = &MCPServerConfig{
-			Env: secrets.Env,
-		}
-	}
-
-	// Merge override onto base using mergo (override takes precedence)
-	if err := mergo.Merge(&baseConfig, overrideConfig, mergo.WithOverride); err != nil {
-		return nil, fmt.Errorf("failed to merge MCP server configs: %w", err)
-	}
-
-	// Marshal merged config back to YAML
-	mergedYAML, err := yaml.Marshal(&baseConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal merged config: %w", err)
-	}
-
-	return mergedYAML, nil
-}
-
-// SaveConfig saves the configuration to the specified path.
-func SaveConfig(cfg *Config, path string) error {
+	// Load config file if it exists
 	expandedPath := expandPath(path)
-
-	// Ensure directory exists
-	dir := filepath.Dir(expandedPath)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
+	if _, err := os.Stat(expandedPath); err != nil {
+		// File doesn't exist, return defaults
+		return &defaults, nil
 	}
 
-	// Marshal to YAML
-	data, err := yaml.Marshal(cfg)
+	configYAML, err := os.ReadFile(expandedPath) //#nosec 304 -- intentional file read for config
 	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+		return nil, fmt.Errorf("failed to read client config file %q: %w", expandedPath, err)
 	}
 
-	// Write file
-	if err := os.WriteFile(expandedPath, data, 0o600); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
+	var config ClientConfig
+	if err := yaml.Unmarshal(configYAML, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse client config: %w", err)
 	}
 
-	return nil
+	// Merge loaded config onto defaults
+	if err := mergo.Merge(&defaults, config, mergo.WithOverride); err != nil {
+		return nil, fmt.Errorf("failed to merge client config: %w", err)
+	}
+
+	return &defaults, nil
 }

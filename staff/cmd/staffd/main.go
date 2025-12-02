@@ -91,13 +91,21 @@ func run() error {
 		Str("db", *dbPath).
 		Msg("staffd starting")
 
-	// Load unified configuration
-	configPath := config.GetConfigPath()
-	appConfig, err := config.LoadConfig(configPath)
+	// Load server configuration
+	configPath := config.GetServerConfigPath()
+	appConfig, err := config.LoadServerConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
+		return fmt.Errorf("failed to load server configuration: %w", err)
 	}
-	logger.Info().Msg("Loaded unified configuration")
+	logger.Info().Msg("Loaded server configuration")
+
+	// Override socket/TCP from command line flags if provided
+	if *socketPath != defaultSocketPath {
+		appConfig.Server.Socket = *socketPath
+	}
+	if *tcpAddress != "" {
+		appConfig.Server.TCP = *tcpAddress
+	}
 
 	// Get Anthropic API key from config file
 	anthropicAPIKey := appConfig.Anthropic.APIKey
@@ -187,7 +195,7 @@ func run() error {
 	// Register all tools (handlers and schemas)
 	registerAllTools(logger, crew, memoryRouter, workspacePath, db, crew.StateManager, anthropicAPIKey)
 
-	// Load crew config from unified config
+	// Load crew config from server config
 	if err := crew.LoadCrewConfig(appConfig); err != nil {
 		return fmt.Errorf("failed to load crew config: %w", err)
 	}
@@ -264,10 +272,19 @@ func run() error {
 	// 7. Create and Start gRPC Server
 	// ---------------------------
 
-	// Determine socket path to use
-	listenPath := *socketPath
-	if *tcpAddress != "" {
+	// Determine socket path to use (command line flags override config)
+	var listenPath string
+	switch {
+	case *tcpAddress != "":
 		listenPath = *tcpAddress
+	case appConfig.Server.TCP != "":
+		listenPath = appConfig.Server.TCP
+	case *socketPath != defaultSocketPath:
+		listenPath = *socketPath
+	case appConfig.Server.Socket != "":
+		listenPath = appConfig.Server.Socket
+	default:
+		listenPath = defaultSocketPath
 	}
 
 	srv := server.New(server.Config{
@@ -283,16 +300,24 @@ func run() error {
 	serverErr := make(chan error, 1)
 	go func() {
 		var err error
-		if *tcpAddress != "" {
-			logger.Info().Str("address", *tcpAddress).Msg("Starting gRPC server on TCP")
-			err = srv.ServeTCP(*tcpAddress)
-		} else {
-			// Remove existing socket file if it exists
-			if err := os.Remove(*socketPath); err != nil && !os.IsNotExist(err) {
-				logger.Warn().Err(err).Str("socket", *socketPath).Msg("Failed to remove existing socket file")
+		if appConfig.Server.TCP != "" || *tcpAddress != "" {
+			addr := *tcpAddress
+			if addr == "" {
+				addr = appConfig.Server.TCP
 			}
-			logger.Info().Str("socket", *socketPath).Msg("Starting gRPC server on Unix socket")
-			err = srv.ServeUnix(*socketPath)
+			logger.Info().Str("address", addr).Msg("Starting gRPC server on TCP")
+			err = srv.ServeTCP(addr)
+		} else {
+			sockPath := *socketPath
+			if sockPath == defaultSocketPath && appConfig.Server.Socket != "" {
+				sockPath = appConfig.Server.Socket
+			}
+			// Remove existing socket file if it exists
+			if err := os.Remove(sockPath); err != nil && !os.IsNotExist(err) {
+				logger.Warn().Err(err).Str("socket", sockPath).Msg("Failed to remove existing socket file")
+			}
+			logger.Info().Str("socket", sockPath).Msg("Starting gRPC server on Unix socket")
+			err = srv.ServeUnix(sockPath)
 		}
 		serverErr <- err
 	}()
@@ -310,9 +335,13 @@ func run() error {
 	}
 
 	// Cleanup socket file on shutdown
-	if *tcpAddress == "" {
-		if err := os.Remove(*socketPath); err != nil && !os.IsNotExist(err) {
-			logger.Warn().Err(err).Str("socket", *socketPath).Msg("Failed to remove socket file on shutdown")
+	if appConfig.Server.TCP == "" && *tcpAddress == "" {
+		sockPath := *socketPath
+		if sockPath == defaultSocketPath && appConfig.Server.Socket != "" {
+			sockPath = appConfig.Server.Socket
+		}
+		if err := os.Remove(sockPath); err != nil && !os.IsNotExist(err) {
+			logger.Warn().Err(err).Str("socket", sockPath).Msg("Failed to remove socket file on shutdown")
 		}
 	}
 
@@ -528,7 +557,7 @@ func registerMCPServers(logger zerolog.Logger, crew *agent.Crew, servers map[str
 }
 
 // loadClaudeMCPServers loads MCP servers from Claude configuration.
-func loadClaudeMCPServers(logger zerolog.Logger, appConfig *config.Config) {
+func loadClaudeMCPServers(logger zerolog.Logger, appConfig *config.ServerConfig) {
 	logger.Info().Msg("Claude MCP integration is enabled, loading Claude MCP servers")
 
 	claudeConfigPath := appConfig.ClaudeMCP.ConfigPath
