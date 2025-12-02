@@ -82,7 +82,7 @@ func (a *App) showChat(agentID string) {
 	if provider != "" && model != "" {
 		title += fmt.Sprintf(" (%s/%s)", provider, model)
 	}
-	title += " (Esc: back, Tab: focus input, /reset: reset context, /compress: compress context, exit: leave)"
+	title += " (Esc: back, Tab: focus input, Alt+Enter: send, /reset: reset context, /compress: compress context, exit: leave)"
 	chatDisplay.SetDynamicColors(true).
 		SetWordWrap(true).
 		SetBorder(true).
@@ -92,15 +92,14 @@ func (a *App) showChat(agentID string) {
 	// Display existing chat history
 	a.updateChatDisplay(chatDisplay, agentID, agentName, threadID)
 
-	// Input field
-	inputField := tview.NewInputField()
-	inputField.SetLabel("You: ").
-		SetFieldWidth(0).
+	// Text area for multi-line input
+	textArea := tview.NewTextArea()
+	textArea.SetLabel("You: ").
 		SetBorder(true).
-		SetTitle("Message (Enter: send, Tab: scroll chat, /reset: reset context, /compress: compress context, exit: leave, Esc: back)")
+		SetTitle("Message (Alt+Enter: send, Enter: new line, Tab: scroll chat, /reset: reset context, /compress: compress context, exit: leave, Esc: back)")
 
 	// Add input capture to chat display for arrow key scrolling
-	// Must be after inputField is declared so we can reference it
+	// Must be after textArea is declared so we can reference it
 	chatDisplay.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		switch ev.Key() {
 		case tcell.KeyUp:
@@ -141,8 +140,8 @@ func (a *App) showChat(agentID string) {
 			chatDisplay.ScrollToEnd()
 			return nil
 		case tcell.KeyTab:
-			// Switch focus to input field
-			a.app.SetFocus(inputField)
+			// Switch focus to text area
+			a.app.SetFocus(textArea)
 			return nil
 		case tcell.KeyEsc:
 			// Go back to main menu
@@ -153,26 +152,30 @@ func (a *App) showChat(agentID string) {
 		return ev
 	})
 
-	// Handle input submission - use a helper function to avoid blocking
-	inputField.SetDoneFunc(func(key tcell.Key) {
-		if key == tcell.KeyEnter {
-			message := strings.TrimSpace(inputField.GetText())
-			if message == "" {
-				return
-			}
+	// Helper function to handle sending message from text area
+	handleSendMessage := func() {
+		message := textArea.GetText()
+		// Trim only leading/trailing whitespace, preserve internal newlines
+		message = strings.TrimSpace(message)
+		if message == "" {
+			return
+		}
 
-			// Check if user wants to exit the chat
-			if strings.EqualFold(message, "exit") {
-				inputField.SetText("")
-				a.pages.SwitchToPage("main")
-				a.app.SetFocus(a.sidebar)
-				return
-			}
+		// Check if user wants to exit the chat (only if single line)
+		lines := strings.Split(message, "\n")
+		if len(lines) == 1 && strings.EqualFold(strings.TrimSpace(lines[0]), "exit") {
+			textArea.SetText("", true)
+			a.pages.SwitchToPage("main")
+			a.app.SetFocus(a.sidebar)
+			return
+		}
 
-			// Check for special commands
-			if strings.HasPrefix(message, "/") {
-				command := strings.ToLower(strings.TrimSpace(message))
-				inputField.SetText("")
+		// Check for special commands (only if single line or first line starts with command)
+		if len(lines) == 1 || (len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "/")) {
+			firstLine := strings.TrimSpace(lines[0])
+			if strings.HasPrefix(firstLine, "/") {
+				command := strings.ToLower(firstLine)
+				textArea.SetText("", true)
 
 				switch command {
 				case "/reset":
@@ -184,26 +187,36 @@ func (a *App) showChat(agentID string) {
 				default:
 					// Unknown command - show error and don't send
 					a.app.QueueUpdateDraw(func() {
-						_, _ = fmt.Fprintf(chatDisplay, "[red]Unknown command: %s[white]\n", message)
+						_, _ = fmt.Fprintf(chatDisplay, "[red]Unknown command: %s[white]\n", firstLine)
 						_, _ = fmt.Fprintf(chatDisplay, "[gray]Available commands: /reset, /compress, exit[white]\n\n")
 						chatDisplay.ScrollToEnd()
 					})
 					return
 				}
 			}
-
-			// Clear input immediately - this must be fast and non-blocking
-			inputField.SetText("")
-
-			// Launch message handling in background immediately
-			// This ensures the input handler returns immediately
-			go a.handleChatMessage(agentID, agentName, message, chatDisplay)
 		}
-	})
 
-	// Add input capture to input field to handle Tab for switching focus and Esc to exit
-	inputField.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		// Clear input immediately - this must be fast and non-blocking
+		textArea.SetText("", true)
+
+		// Launch message handling in background immediately
+		// This ensures the input handler returns immediately
+		go a.handleChatMessage(agentID, agentName, message, chatDisplay)
+	}
+
+	// Add input capture to text area to handle Alt+Enter for sending, Tab, and Esc
+	textArea.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		switch ev.Key() {
+		case tcell.KeyEnter:
+			// Check for Alt+Enter to send message
+			mods := ev.Modifiers()
+			if mods&tcell.ModAlt != 0 {
+				// Send message
+				handleSendMessage()
+				return nil
+			}
+			// Regular Enter creates new line (default behavior)
+			return ev
 		case tcell.KeyTab:
 			// Switch focus to chat display
 			a.app.SetFocus(chatDisplay)
@@ -217,10 +230,11 @@ func (a *App) showChat(agentID string) {
 		return ev
 	})
 
-	// Layout: chat display on top, input at bottom
+	// Layout: chat display on top, text area at bottom
+	// Text area has fixed height of 4 lines (enough for multi-line input without taking too much space)
 	chatLayout := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(chatDisplay, 0, 1, false).
-		AddItem(inputField, 3, 0, true)
+		AddItem(textArea, 7, 0, true)
 
 	// Note: Esc and Tab are now handled by individual components
 	// This handler only handles layout-level keys if needed
@@ -233,7 +247,7 @@ func (a *App) showChat(agentID string) {
 	pageName := fmt.Sprintf("chat_%s", agentID)
 	a.pages.AddPage(pageName, chatLayout, true, false)
 	a.pages.SwitchToPage(pageName)
-	a.app.SetFocus(inputField)
+	a.app.SetFocus(textArea)
 }
 
 func (a *App) updateChatDisplay(chatDisplay *tview.TextView, agentID, agentName, threadID string) {
