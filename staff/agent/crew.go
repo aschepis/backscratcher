@@ -15,6 +15,7 @@ import (
 	"github.com/aschepis/backscratcher/staff/mcp"
 	"github.com/aschepis/backscratcher/staff/tools"
 	"github.com/rs/zerolog"
+	"github.com/samber/lo"
 )
 
 type Crew struct {
@@ -37,7 +38,24 @@ type Crew struct {
 	mu          sync.RWMutex
 }
 
-func NewCrew(logger zerolog.Logger, apiKey string, db *sql.DB) *Crew {
+// CrewOption is a functional option for configuring a Crew.
+type CrewOption func(*Crew)
+
+// WithMessagePersister sets the message persister for the crew.
+func WithMessagePersister(persister MessagePersister) CrewOption {
+	return func(c *Crew) {
+		c.messagePersister = persister
+	}
+}
+
+// WithMessageSummarizer sets the message summarizer for the crew.
+func WithMessageSummarizer(summarizer *MessageSummarizer) CrewOption {
+	return func(c *Crew) {
+		c.messageSummarizer = summarizer
+	}
+}
+
+func NewCrew(logger zerolog.Logger, apiKey string, db *sql.DB, opts ...CrewOption) *Crew {
 	if db == nil {
 		panic("database connection is required for Crew")
 	}
@@ -46,7 +64,7 @@ func NewCrew(logger zerolog.Logger, apiKey string, db *sql.DB) *Crew {
 	stateManager := NewStateManager(logger, db)
 	statsManager := NewStatsManager(logger, db)
 
-	return &Crew{
+	c := &Crew{
 		Agents:       make(map[string]*config.AgentConfig),
 		Runners:      make(map[string]*AgentRunner),
 		ToolRegistry: reg,
@@ -59,6 +77,13 @@ func NewCrew(logger zerolog.Logger, apiKey string, db *sql.DB) *Crew {
 		MCPClients:   make(map[string]mcp.MCPClient),
 		logger:       logger.With().Str("component", "crew").Logger(),
 	}
+
+	// Apply options
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	return c
 }
 
 // GetToolProvider returns the tool provider for this crew
@@ -66,38 +91,13 @@ func (c *Crew) GetToolProvider() *ToolProviderFromRegistry {
 	return c.ToolProvider
 }
 
-// SetMessagePersister sets the message persister for this crew.
-// All runners will use this persister to save conversation messages.
-func (c *Crew) SetMessagePersister(persister MessagePersister) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.messagePersister = persister
-	// Update existing runners
-	for _, runner := range c.Runners {
-		runner.messagePersister = persister
-	}
-}
-
-// SetMessageSummarizer sets the message summarizer for this crew.
-// All runners will use this summarizer to summarize long messages.
-func (c *Crew) SetMessageSummarizer(summarizer *MessageSummarizer) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.messageSummarizer = summarizer
-	// Update existing runners
-	for _, runner := range c.Runners {
-		runner.messageSummarizer = summarizer
-	}
-}
-
-// LoadCrewConfig loads crew configuration from the unified config.
-func (c *Crew) LoadCrewConfig(cfg *config.Config) error {
+// LoadCrewConfig loads crew configuration from server config.
+func (c *Crew) LoadCrewConfig(cfg *config.ServerConfig) error {
 	// Load agents
 	for id, agentCfg := range cfg.Agents {
 		if agentCfg.ID == "" {
 			agentCfg.ID = id
 		}
-		// AgentConfig is now a type alias to config.AgentConfig, so we can use it directly
 		c.Agents[id] = agentCfg
 	}
 
@@ -132,7 +132,6 @@ func (c *Crew) InitializeAgents(registry *llm.ProviderRegistry) error {
 		// Convert agent config to registry format
 		agentLLMConfig := llm.AgentLLMConfig{
 			LLMPreferences: make([]llm.LLMPreference, len(cfg.LLM)),
-			Model:          cfg.Model,
 		}
 		for i, pref := range cfg.LLM {
 			agentLLMConfig.LLMPreferences[i] = llm.LLMPreference{
@@ -329,11 +328,9 @@ func (c *Crew) ListAgents() []*Agent {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	out := make([]*Agent, 0, len(c.Runners))
-	for _, runner := range c.Runners {
-		out = append(out, runner.agent)
-	}
-	return out
+	return lo.Map(lo.Values(c.Runners), func(runner *AgentRunner, _ int) *Agent {
+		return runner.agent
+	})
 }
 
 // IsAgentDisabled checks if an agent is disabled
@@ -391,6 +388,94 @@ func (c *Crew) GetRunner(agentID string) *AgentRunner {
 	return c.Runners[agentID]
 }
 
+// GetResolvedLLMInfo returns the resolved provider and model for an agent.
+// This is the authoritative source for LLM information - it uses the runner if available,
+// otherwise falls back to config-based resolution.
+func (c *Crew) GetResolvedLLMInfo(agentID string) ResolvedLLMInfo {
+	// Try to get from runner first (most accurate)
+	runner := c.GetRunner(agentID)
+	if runner != nil {
+		return ResolvedLLMInfo{
+			Provider: runner.GetResolvedProvider(),
+			Model:    runner.GetResolvedModel(),
+		}
+	}
+
+	// Runner not available (e.g., agent disabled or not initialized)
+	// Fall back to config-based resolution
+	c.mu.RLock()
+	cfg, ok := c.Agents[agentID]
+	c.mu.RUnlock()
+
+	if !ok {
+		// Agent not found, return defaults
+		return ResolvedLLMInfo{
+			Provider: llm.ProviderAnthropic,
+			Model:    "",
+		}
+	}
+
+	return ResolveLLMFromConfig(cfg)
+}
+
+// GetAgentInfos returns complete information for all agents.
+// This is the authoritative source for agent information, combining config with resolved LLM info.
+func (c *Crew) GetAgentInfos() []*AgentInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	infos := lo.Map(lo.Values(c.Runners), func(runner *AgentRunner, _ int) *AgentInfo {
+		ag := runner.agent
+		return c.buildAgentInfoLocked(ag)
+	})
+	return infos
+}
+
+// GetAgentInfo returns complete information for a specific agent.
+// Returns nil if the agent is not found.
+func (c *Crew) GetAgentInfo(agentID string) (*AgentInfo, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	runner, ok := c.Runners[agentID]
+	if !ok {
+		return nil, fmt.Errorf("agent %q not found or not initialized", agentID)
+	}
+
+	return c.buildAgentInfoLocked(runner.agent), nil
+}
+
+// buildAgentInfoLocked builds an AgentInfo from an Agent.
+// Caller must hold the read lock.
+func (c *Crew) buildAgentInfoLocked(ag *Agent) *AgentInfo {
+	cfg := ag.Config
+
+	// Get resolved LLM info - try runner first, then config
+	// TODO: do we really need a fallback to config or will there always be
+	// a runner? If a runner is not guaranteed, why not just use the config only?
+	var provider, model string
+	if runner, ok := c.Runners[ag.ID]; ok {
+		provider = runner.GetResolvedProvider()
+		model = runner.GetResolvedModel()
+	} else {
+		llmInfo := ResolveLLMFromConfig(cfg)
+		provider = llmInfo.Provider
+		model = llmInfo.Model
+	}
+
+	return &AgentInfo{
+		ID:           ag.ID,
+		Name:         cfg.Name,
+		Model:        model,
+		Provider:     provider,
+		Tools:        cfg.Tools,
+		Schedule:     cfg.Schedule,
+		Disabled:     cfg.Disabled,
+		SystemPrompt: cfg.System,
+		MaxTokens:    cfg.MaxTokens,
+	}
+}
+
 // getOrCreateClient gets or creates an LLM client for the given ClientKey with caching.
 // Clients are cached by ClientKey string representation to avoid creating duplicate clients.
 func (c *Crew) getOrCreateClient(key *llm.ClientKey, agentID string, agentConfig *config.AgentConfig) (llm.Client, error) {
@@ -412,22 +497,22 @@ func (c *Crew) getOrCreateClient(key *llm.ClientKey, agentID string, agentConfig
 	var err error
 
 	switch key.Provider {
-	case "anthropic":
+	case llm.ProviderAnthropic:
 		if key.APIKey == "" {
 			return nil, fmt.Errorf("anthropic API key is required")
 		}
-		baseClient, err = llmanthropic.NewAnthropicClient(key.APIKey)
+		baseClient, err = llmanthropic.NewAnthropicClient(key.APIKey, c.logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create anthropic client: %w", err)
 		}
 
-	case "ollama":
+	case llm.ProviderOllama:
 		baseClient, err = llmollama.NewOllamaClient(key.Host, key.Model)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ollama client: %w", err)
 		}
 
-	case "openai":
+	case llm.ProviderOpenAI:
 		if key.APIKey == "" {
 			return nil, fmt.Errorf("openai API key is required")
 		}
@@ -461,8 +546,7 @@ func (c *Crew) wrapClientWithMiddleware(baseClient llm.Client, agentID string, a
 	var middleware []llm.Middleware
 
 	// Add rate limit middleware
-	rateLimitHandler := NewRateLimitHandler(c.logger, c.StateManager)
-	rateLimitHandler.SetOnRateLimitCallback(func(agentID string, retryAfter time.Duration, attempt int) error {
+	rateLimitHandler := NewRateLimitHandler(c.logger, c.StateManager, func(agentID string, retryAfter time.Duration, attempt int) error {
 		c.logger.Info().Msgf("Rate limit callback: agent %s will retry after %v (attempt %d)", agentID, retryAfter, attempt)
 		return nil
 	})

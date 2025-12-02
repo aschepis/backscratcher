@@ -20,7 +20,7 @@ func (a *App) showSettings() {
 		configPath = config.GetConfigPath()
 	}
 
-	cfg, err := config.LoadConfig(configPath)
+	cfg, err := config.LoadServerConfig(configPath)
 	if err != nil {
 		a.showContent("Settings", fmt.Sprintf("Error loading config: %v\n\nPress Esc to go back.", err))
 		return
@@ -190,7 +190,7 @@ func (a *App) showSettings() {
 		}
 
 		// Save config
-		if err := config.SaveConfig(cfg, configPath); err != nil {
+		if err := config.SaveServerConfig(cfg, configPath); err != nil {
 			a.logger.Error().Err(err).Msg("Failed to save config")
 			modal := tview.NewModal().
 				SetText(fmt.Sprintf("Error saving config:\n%v\n\nPress Enter to continue.", err)).

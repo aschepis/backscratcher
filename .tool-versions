@@ -3,3 +3,7 @@ ruby 3.4.1
 python 3.12.3
 terraform 1.13.3
 nodejs 25.0.0
+protoc 33.1
+protoc-gen-go 1.36.10
+protoc-gen-go-grpc 1.6.0
+buf 1.61.0

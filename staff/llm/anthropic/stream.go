@@ -9,7 +9,7 @@ import (
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 	"github.com/aschepis/backscratcher/staff/llm"
-	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // anthropicStream implements the llm.Stream interface for Anthropic streaming responses.
@@ -23,15 +23,17 @@ type anthropicStream struct {
 	err     error
 	done    bool
 	started bool
+	logger  zerolog.Logger
 }
 
 // newAnthropicStream creates a new anthropicStream.
-func newAnthropicStream(ctx context.Context, stream *ssestream.Stream[anthropic.MessageStreamEventUnion]) *anthropicStream {
+func newAnthropicStream(ctx context.Context, stream *ssestream.Stream[anthropic.MessageStreamEventUnion], logger zerolog.Logger) *anthropicStream {
 	as := &anthropicStream{
 		ctx:     ctx,
 		stream:  stream,
 		events:  make([]*llm.StreamEvent, 0),
 		current: -1,
+		logger:  logger,
 	}
 	as.cond = sync.NewCond(&as.mu)
 	return as
@@ -226,13 +228,12 @@ func (s *anthropicStream) startStream() {
 				if usage.InputTokens > 0 {
 					cacheEfficiency = float64(usage.CacheReadInputTokens) / float64(usage.InputTokens) * 100
 				}
-				logger.Debug(
-					"Prompt cache stats (stream): input_tokens=%d, cache_creation_tokens=%d, cache_read_tokens=%d, cache_efficiency=%.2f%%",
-					usage.InputTokens,
-					usage.CacheCreationInputTokens,
-					usage.CacheReadInputTokens,
-					cacheEfficiency,
-				)
+				s.logger.Debug().
+					Int64("input_tokens", usage.InputTokens).
+					Int64("cache_creation_tokens", usage.CacheCreationInputTokens).
+					Int64("cache_read_tokens", usage.CacheReadInputTokens).
+					Float64("cache_efficiency", cacheEfficiency).
+					Msg("Prompt cache stats (stream)")
 			}
 
 		case anthropic.MessageStopEvent:

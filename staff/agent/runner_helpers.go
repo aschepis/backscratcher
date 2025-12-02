@@ -9,6 +9,7 @@ import (
 	"github.com/aschepis/backscratcher/staff/llm"
 	"github.com/aschepis/backscratcher/staff/ui/tui/debug"
 	"github.com/rs/zerolog"
+	"github.com/samber/lo"
 )
 
 // Constants for loop safeguards
@@ -190,25 +191,20 @@ func (tlc *toolLoopContext) persistFinalMessage(text string) {
 // buildToolResultBlocks builds deduplicated tool result content blocks.
 func buildToolResultBlocks(results []*toolExecutionResult) []llm.ContentBlock {
 	seenIDs := make(map[string]bool)
-	blocks := make([]llm.ContentBlock, 0, len(results))
-
-	for _, result := range results {
+	return lo.FilterMap(results, func(result *toolExecutionResult, _ int) (llm.ContentBlock, bool) {
 		if seenIDs[result.ToolID] {
-			continue
+			return llm.ContentBlock{}, false
 		}
 		seenIDs[result.ToolID] = true
-
-		blocks = append(blocks, llm.ContentBlock{
+		return llm.ContentBlock{
 			Type: llm.ContentBlockTypeToolResult,
 			ToolResult: &llm.ToolResultBlock{
 				ID:      result.ToolID,
 				Content: result.SummarizedJSON,
 				IsError: result.IsError,
 			},
-		})
-	}
-
-	return blocks
+		}, true
+	})
 }
 
 // buildToolResultMessage creates a user message containing tool results.
@@ -469,13 +465,12 @@ func executeToolLoopStream(
 		}
 
 		// Build and persist assistant message with tool uses
-		assistantBlocks := make([]llm.ContentBlock, 0, len(toolUsesSlice))
-		for _, tu := range toolUsesSlice {
-			assistantBlocks = append(assistantBlocks, llm.ContentBlock{
+		assistantBlocks := lo.Map(toolUsesSlice, func(tu *llm.ToolUseBlock, _ int) llm.ContentBlock {
+			return llm.ContentBlock{
 				Type:    llm.ContentBlockTypeToolUse,
 				ToolUse: tu,
-			})
-		}
+			}
+		})
 
 		// Persist tool calls using the content blocks
 		tlc.persistToolCalls(assistantBlocks)

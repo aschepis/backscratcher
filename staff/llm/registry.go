@@ -7,16 +7,15 @@ import (
 )
 
 const (
-	providerAnthropic = "anthropic"
-	providerOllama    = "ollama"
-	providerOpenAI    = "openai"
+	ProviderAnthropic = "anthropic"
+	ProviderOllama    = "ollama"
+	ProviderOpenAI    = "openai"
 )
 
 // AgentLLMConfig represents the LLM configuration portion of an agent config.
 // This is used to avoid import cycles.
 type AgentLLMConfig struct {
 	LLMPreferences []LLMPreference
-	Model          string // Legacy model field
 }
 
 // LLMPreference represents a single provider/model preference.
@@ -150,13 +149,13 @@ func (r *ProviderRegistry) ResolveAgentLLMConfig(agentID string, agentCfg AgentL
 // Must be called with r.mu already locked.
 func (r *ProviderRegistry) isProviderConfiguredUnlocked(provider string) bool {
 	switch provider {
-	case providerAnthropic:
+	case ProviderAnthropic:
 		// Check config only
 		return r.config.AnthropicAPIKey != ""
-	case providerOllama:
+	case ProviderOllama:
 		// Ollama doesn't require API key, just needs host (which has a default)
 		return true
-	case providerOpenAI:
+	case ProviderOpenAI:
 		// Check config first, then environment
 		apiKey := r.config.OpenAIAPIKey
 		if apiKey == "" {
@@ -176,7 +175,7 @@ func (r *ProviderRegistry) resolveProviderConfig(provider, modelOverride string)
 	}
 
 	switch provider {
-	case providerAnthropic:
+	case ProviderAnthropic:
 		// Get API key from config
 		if r.config.AnthropicAPIKey == "" {
 			return nil, fmt.Errorf("anthropic API key not configured")
@@ -187,7 +186,7 @@ func (r *ProviderRegistry) resolveProviderConfig(provider, modelOverride string)
 			key.Model = "claude-haiku-4-5" // Default Anthropic model
 		}
 
-	case providerOllama:
+	case ProviderOllama:
 		// Get host from config or environment
 		host := r.config.OllamaHost
 		if host == "" {
@@ -213,7 +212,7 @@ func (r *ProviderRegistry) resolveProviderConfig(provider, modelOverride string)
 			return nil, fmt.Errorf("ollama model not specified and no default configured")
 		}
 
-	case providerOpenAI:
+	case ProviderOpenAI:
 		// Get API key from config or environment
 		apiKey := r.config.OpenAIAPIKey
 		if apiKey == "" {

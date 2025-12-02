@@ -1,0 +1,13 @@
+version: v2
+modules:
+  - path: .
+    name: buf.build/aschepis/staff
+lint:
+  use:
+    - DEFAULT
+breaking:
+  use:
+    - FILE
+deps:
+  - buf.build/googleapis/googleapis
+

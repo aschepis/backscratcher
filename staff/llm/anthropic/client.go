@@ -8,16 +8,17 @@ import (
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/aschepis/backscratcher/staff/llm"
-	"github.com/aschepis/backscratcher/staff/logger"
+	"github.com/rs/zerolog"
 )
 
 // AnthropicClient implements the llm.Client interface for Anthropic's API.
 type AnthropicClient struct {
 	client *anthropic.Client
+	logger zerolog.Logger
 }
 
 // NewAnthropicClient creates a new AnthropicClient with the given API key.
-func NewAnthropicClient(apiKey string) (*AnthropicClient, error) {
+func NewAnthropicClient(apiKey string, logger zerolog.Logger) (*AnthropicClient, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("api key is required")
 	}
@@ -25,6 +26,7 @@ func NewAnthropicClient(apiKey string) (*AnthropicClient, error) {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	return &AnthropicClient{
 		client: &client,
+		logger: logger,
 	}, nil
 }
 
@@ -109,13 +111,12 @@ func (c *AnthropicClient) Synchronous(ctx context.Context, req *llm.Request) (*l
 		if usage.InputTokens > 0 {
 			cacheEfficiency = float64(usage.CacheReadInputTokens) / float64(usage.InputTokens) * 100
 		}
-		logger.Debug(
-			"Prompt cache stats: input_tokens=%d, cache_creation_tokens=%d, cache_read_tokens=%d, cache_efficiency=%.2f%%",
-			usage.InputTokens,
-			usage.CacheCreationInputTokens,
-			usage.CacheReadInputTokens,
-			cacheEfficiency,
-		)
+		c.logger.Debug().
+			Int64("input_tokens", usage.InputTokens).
+			Int64("cache_creation_tokens", usage.CacheCreationInputTokens).
+			Int64("cache_read_tokens", usage.CacheReadInputTokens).
+			Float64("cache_efficiency", cacheEfficiency).
+			Msg("Prompt cache stats")
 	}
 
 	// Extract stop reason
@@ -159,7 +160,7 @@ func (c *AnthropicClient) Stream(ctx context.Context, req *llm.Request) (llm.Str
 	stream := c.client.Messages.NewStreaming(ctx, params)
 
 	// Create and return our stream wrapper
-	return newAnthropicStream(ctx, stream), nil
+	return newAnthropicStream(ctx, stream, c.logger), nil
 }
 
 // buildSystemBlocks creates system text blocks with prompt caching enabled if appropriate.

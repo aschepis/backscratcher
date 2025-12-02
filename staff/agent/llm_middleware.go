@@ -9,7 +9,6 @@ import (
 
 	"github.com/aschepis/backscratcher/staff/config"
 	"github.com/aschepis/backscratcher/staff/llm"
-	"github.com/aschepis/backscratcher/staff/logger"
 	"github.com/rs/zerolog"
 )
 
@@ -202,7 +201,7 @@ func (m *CompressionMiddleware) compressContext(ctx context.Context, msgs []llm.
 	threadID := ""
 
 	// Use ContextManager to compress
-	cm := NewContextManager(logger.GetLogger(), m.messagePersister)
+	cm := NewContextManager(m.logger, m.messagePersister)
 	summary, err := cm.CompressContext(ctx, m.agentID, threadID, m.systemPrompt, msgs, m.messageSummarizer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compress context: %w", err)

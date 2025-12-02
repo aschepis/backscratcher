@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/rs/zerolog"
+	"github.com/samber/lo"
 )
 
 // ClaudeConfig represents the structure of Claude's configuration file.
@@ -47,10 +48,9 @@ func (c *ClaudeMCPServer) GetEnvAsStrings(logger zerolog.Logger) []string {
 	// If that fails, try as object/map
 	var envMap map[string]string
 	if err := json.Unmarshal(c.Env, &envMap); err == nil {
-		envStrings := make([]string, 0, len(envMap))
-		for key, value := range envMap {
-			envStrings = append(envStrings, fmt.Sprintf("%s=%s", key, value))
-		}
+		envStrings := lo.MapToSlice(envMap, func(key string, value string) string {
+			return fmt.Sprintf("%s=%s", key, value)
+		})
 		return envStrings
 	}
 
@@ -158,14 +158,13 @@ func ExtractMCPServersFromProjects(logger zerolog.Logger, claudeConfig *ClaudeCo
 
 	// Check if "Global" is in the project paths
 	includeGlobal := false
-	filteredProjectPaths := make([]string, 0, len(projectPaths))
-	for _, path := range projectPaths {
+	filteredProjectPaths := lo.FilterMap(projectPaths, func(path string, _ int) (string, bool) {
 		if path == "Global" {
 			includeGlobal = true
-		} else {
-			filteredProjectPaths = append(filteredProjectPaths, path)
+			return "", false
 		}
-	}
+		return path, true
+	})
 
 	// Normalize project paths for comparison
 	normalizedPaths := make(map[string]string)
@@ -186,12 +185,12 @@ func ExtractMCPServersFromProjects(logger zerolog.Logger, claudeConfig *ClaudeCo
 
 	// Extract global MCP servers if requested
 	if includeGlobal && claudeConfig.MCPServers != nil && len(claudeConfig.MCPServers) > 0 {
-		serverNames := make([]string, 0, len(claudeConfig.MCPServers))
-		for serverName, server := range claudeConfig.MCPServers {
+		lo.ForEach(lo.Keys(claudeConfig.MCPServers), func(serverName string, _ int) {
+			server := claudeConfig.MCPServers[serverName]
 			servers[serverName] = server
-			serverNames = append(serverNames, serverName)
 			logger.Debug().Str("server", serverName).Str("command", server.Command).Msg("Extracted global server")
-		}
+		})
+		serverNames := lo.Keys(claudeConfig.MCPServers)
 		projectToServers["Global"] = serverNames
 		logger.Debug().Int("server_count", len(serverNames)).Msg("Global contributed MCP servers")
 	} else if includeGlobal {
@@ -222,12 +221,12 @@ func ExtractMCPServersFromProjects(logger zerolog.Logger, claudeConfig *ClaudeCo
 		}
 
 		if shouldLoad && project.MCPServers != nil {
-			serverNames := make([]string, 0, len(project.MCPServers))
-			for serverName, server := range project.MCPServers {
+			lo.ForEach(lo.Keys(project.MCPServers), func(serverName string, _ int) {
+				server := project.MCPServers[serverName]
 				servers[serverName] = server
-				serverNames = append(serverNames, serverName)
 				logger.Debug().Str("server", serverName).Str("project", projectPath).Str("command", server.Command).Msg("Extracted server from project")
-			}
+			})
+			serverNames := lo.Keys(project.MCPServers)
 			projectToServers[projectPath] = serverNames
 			logger.Debug().Str("project", projectPath).Int("server_count", len(serverNames)).Msg("Project contributed MCP servers")
 			continue

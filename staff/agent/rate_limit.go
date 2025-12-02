@@ -76,18 +76,14 @@ type RateLimitHandler struct {
 }
 
 // NewRateLimitHandler creates a new rate limit handler with default settings
-func NewRateLimitHandler(logger zerolog.Logger, stateManager *StateManager) *RateLimitHandler {
+func NewRateLimitHandler(logger zerolog.Logger, stateManager *StateManager, onRateLimitFunc func(agentID string, retryAfter time.Duration, attempt int) error) *RateLimitHandler {
 	return &RateLimitHandler{
-		maxRetries:     5,
-		maxElapsedTime: 5 * time.Minute,
-		stateManager:   stateManager,
-		logger:         logger.With().Str("component", "rateLimitHandler").Logger(),
+		maxRetries:      5,
+		maxElapsedTime:  5 * time.Minute,
+		stateManager:    stateManager,
+		onRateLimitFunc: onRateLimitFunc,
+		logger:          logger.With().Str("component", "rateLimitHandler").Logger(),
 	}
-}
-
-// SetOnRateLimitCallback sets a callback function to be called when rate limit is encountered
-func (h *RateLimitHandler) SetOnRateLimitCallback(fn func(agentID string, retryAfter time.Duration, attempt int) error) {
-	h.onRateLimitFunc = fn
 }
 
 // CreateBackoff creates a backoff configuration for rate limit retries

@@ -6,6 +6,7 @@ import (
 
 	"github.com/aschepis/backscratcher/staff/llm"
 	openai "github.com/sashabaranov/go-openai"
+	// Note: Using loops instead of lo.Map due to error handling requirements
 )
 
 // ToOpenAIMessages converts llm.Messages to OpenAI chat message format.

@@ -6,9 +6,9 @@ import (
 	llmopenai "github.com/aschepis/backscratcher/staff/llm/openai"
 )
 
-// LoadOpenAIConfig loads OpenAI configuration from the main config.
+// LoadOpenAIConfig loads OpenAI configuration from server config.
 // It returns the API key, base URL, model, and organization to use for creating an OpenAI client.
-func LoadOpenAIConfig(cfg *Config) (apiKey, baseURL, model, organization string) {
+func LoadOpenAIConfig(cfg *ServerConfig) (apiKey, baseURL, model, organization string) {
 	if cfg == nil {
 		// Return defaults from environment
 		apiKey = getOpenAIAPIKeyFromEnv()
@@ -41,7 +41,7 @@ func LoadOpenAIConfig(cfg *Config) (apiKey, baseURL, model, organization string)
 }
 
 // NewOpenAIClient creates a new OpenAI LLM client from the configuration.
-func NewOpenAIClient(cfg *Config) (*llmopenai.OpenAIClient, error) {
+func NewOpenAIClient(cfg *ServerConfig) (*llmopenai.OpenAIClient, error) {
 	apiKey, baseURL, model, organization := LoadOpenAIConfig(cfg)
 	return llmopenai.NewOpenAIClient(apiKey, baseURL, model, organization)
 }
