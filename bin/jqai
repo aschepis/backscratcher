@@ -5,7 +5,7 @@ usage() {
     echo "Usage: jqai <description> [file]"
     echo "       cat file.json | jqai <description>"
     echo ""
-    echo "Like jq, but takes a plain text description instead of a query selector."
+    echo "Like jq, but for dummies."
     echo "Uses Claude to generate the jq selector from your description."
     echo ""
     echo "Examples:"
@@ -29,15 +29,15 @@ fi
 
 json_sample=$(echo "$json_input" | head -c 4096)
 
-prompt="You are a jq expert. Given this JSON sample and the user's request, output ONLY the jq selector/filter that accomplishes their goal. Output nothing else - no explanation, no markdown, just the raw jq expression.
+prompt="Generate jq selector for: $description
 
-JSON sample:
+JSON:
 $json_sample
 
-User wants: $description"
+Output ONLY the jq expression, nothing else."
 
 echo "Generating jq selector..." >&2
-selector=$(claude -p "$prompt" --model haiku 2>/dev/null | sed 's/^```jq//; s/^```//; s/```$//; /^$/d' | tr -d '\n')
+selector=$(claude -p "$prompt" --model haiku --max-tokens 100 --temperature 0 2>/dev/null | sed 's/^```jq//; s/^```//; s/```$//; /^$/d' | tr -d '\n')
 echo "Running: jq '$selector'" >&2
 
 echo "$json_input" | jq "$selector"
