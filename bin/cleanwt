@@ -1,0 +1,134 @@
+#!/bin/bash
+# Batch delete all "safe" worktrees (merged, no uncommitted changes, no unpushed commits)
+
+if ! git rev-parse --git-dir &>/dev/null; then
+    echo "Not in a git repository"
+    exit 1
+fi
+
+main_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+if [ -z "$main_branch" ]; then
+    main_branch="main"
+fi
+
+check_worktree_safety() {
+    local wt_path="$1"
+    local branch="$2"
+
+    if [ ! -d "$wt_path" ]; then
+        echo "safe"  # Missing path is safe to remove from git's perspective
+        return
+    fi
+
+    # Check for uncommitted changes
+    if [ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]; then
+        echo "uncommitted changes"
+        return
+    fi
+
+    # Check for unpushed commits
+    if [ -n "$branch" ]; then
+        unpushed=$(git -C "$wt_path" log --oneline "origin/$branch..$branch" 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$unpushed" -gt 0 ]; then
+            echo "$unpushed unpushed"
+            return
+        fi
+
+        # Check if merged
+        if ! git merge-base --is-ancestor "$branch" "origin/$main_branch" 2>/dev/null; then
+            if [ "$branch" != "$main_branch" ]; then
+                echo "not merged"
+                return
+            fi
+        fi
+    fi
+
+    echo "safe"
+}
+
+# Collect worktrees
+declare -a safe_paths
+declare -a safe_branches
+declare -a unsafe_items
+
+while IFS= read -r line; do
+    if [[ "$line" =~ ^worktree\ (.+)$ ]]; then
+        wt_path="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^branch\ refs/heads/(.+)$ ]]; then
+        wt_branch="${BASH_REMATCH[1]}"
+    elif [[ "$line" == "" && -n "$wt_path" ]]; then
+        # Skip main worktree
+        is_main=$(git -C "$wt_path" rev-parse --git-dir 2>/dev/null)
+        if [[ "$is_main" != ".git" ]]; then
+            safety=$(check_worktree_safety "$wt_path" "$wt_branch")
+            if [ "$safety" == "safe" ]; then
+                safe_paths+=("$wt_path")
+                safe_branches+=("$wt_branch")
+            else
+                unsafe_items+=("$(basename "$wt_path") [${wt_branch:-(detached)}] - $safety")
+            fi
+        fi
+        wt_path=""
+        wt_branch=""
+    fi
+done < <(git worktree list --porcelain; echo "")
+
+# Report findings
+echo "=== Worktree Cleanup ==="
+echo ""
+
+if [ ${#unsafe_items[@]} -gt 0 ]; then
+    echo "Skipping ${#unsafe_items[@]} unsafe worktree(s):"
+    for item in "${unsafe_items[@]}"; do
+        echo "  ⚠ $item"
+    done
+    echo ""
+fi
+
+if [ ${#safe_paths[@]} -eq 0 ]; then
+    echo "No safe worktrees to clean up."
+    exit 0
+fi
+
+echo "Found ${#safe_paths[@]} safe worktree(s) to remove:"
+for i in "${!safe_paths[@]}"; do
+    echo "  ✓ $(basename "${safe_paths[$i]}") [${safe_branches[$i]:-(detached)}]"
+done
+echo ""
+
+read -p "Delete all safe worktrees? (y/n): " confirm
+if [[ "$confirm" != "y" && "$confirm" != "yes" ]]; then
+    echo "Cancelled."
+    exit 0
+fi
+
+echo ""
+
+# Also delete branches?
+read -p "Also delete their branches? (y/n): " del_branches
+
+echo ""
+
+# Perform deletions
+deleted=0
+for i in "${!safe_paths[@]}"; do
+    path="${safe_paths[$i]}"
+    branch="${safe_branches[$i]}"
+    name=$(basename "$path")
+
+    if git worktree remove "$path" 2>/dev/null; then
+        echo "✓ Removed worktree: $name"
+        ((deleted++))
+
+        if [[ "$del_branches" == "y" || "$del_branches" == "yes" ]] && [ -n "$branch" ]; then
+            if git branch -d "$branch" 2>/dev/null; then
+                echo "  ✓ Deleted branch: $branch"
+            fi
+        fi
+    else
+        echo "✗ Failed to remove: $name"
+    fi
+done
+
+echo ""
+echo "Cleaned up $deleted worktree(s)."

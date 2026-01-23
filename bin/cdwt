@@ -1,0 +1,12 @@
+#!/bin/bash
+# Get a list of worktree paths
+PS3="Select a worktree to switch to: "
+select dir in $(git worktree list --porcelain | grep "^worktree" | cut -d' ' -f2); do
+    if [ -n "$dir" ]; then
+        cd "$dir" || exit
+        break
+    else
+        echo "Invalid selection."
+    fi
+done
+exec $SHELL # Keeps the shell open in the new directory

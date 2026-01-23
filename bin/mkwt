@@ -1,0 +1,127 @@
+#!/bin/bash
+# Create a git worktree from a branch name or PR number
+
+set -e
+
+if ! git rev-parse --git-dir &>/dev/null; then
+    echo "Not in a git repository"
+    exit 1
+fi
+
+usage() {
+    echo "Usage: mkwt <branch-name|PR-number> [worktree-path]"
+    echo ""
+    echo "Examples:"
+    echo "  mkwt feature-auth        # Create worktree for existing branch"
+    echo "  mkwt -b new-feature      # Create worktree with new branch"
+    echo "  mkwt 1234                # Create worktree for PR #1234"
+    exit 1
+}
+
+if [ -z "$1" ]; then
+    usage
+fi
+
+# Parse arguments
+new_branch=false
+if [ "$1" == "-b" ]; then
+    new_branch=true
+    shift
+fi
+
+target="$1"
+custom_path="$2"
+
+# Find the repo root (main worktree location)
+repo_root=$(git worktree list --porcelain | grep "^worktree" | head -1 | cut -d' ' -f2)
+repo_name=$(basename "$repo_root")
+
+# Default worktree location: sibling directory to main repo
+worktrees_base=$(dirname "$repo_root")
+
+# Check if target is a PR number
+if [[ "$target" =~ ^[0-9]+$ ]]; then
+    if ! command -v gh &>/dev/null; then
+        echo "Error: 'gh' CLI required for PR checkout"
+        exit 1
+    fi
+
+    echo "Fetching PR #$target..."
+    pr_info=$(gh pr view "$target" --json headRefName,headRepository,headRepositoryOwner 2>/dev/null) || {
+        echo "Error: Could not find PR #$target"
+        exit 1
+    }
+
+    branch=$(echo "$pr_info" | jq -r '.headRefName')
+    pr_owner=$(echo "$pr_info" | jq -r '.headRepositoryOwner.login')
+    repo_owner=$(gh repo view --json owner -q '.owner.login')
+
+    if [ "$pr_owner" != "$repo_owner" ]; then
+        # Fork PR - need to fetch from fork
+        echo "PR is from fork ($pr_owner), fetching..."
+        git fetch "https://github.com/$pr_owner/$repo_name.git" "$branch:$branch" 2>/dev/null || \
+        git fetch origin "pull/$target/head:$branch"
+    else
+        git fetch origin "$branch"
+    fi
+
+    worktree_name="${repo_name}-pr-${target}"
+else
+    branch="$target"
+    worktree_name="${repo_name}-${branch}"
+
+    if [ "$new_branch" = true ]; then
+        # New branch - will be created with worktree
+        :
+    else
+        # Existing branch - fetch it first
+        git fetch origin "$branch" 2>/dev/null || true
+    fi
+fi
+
+# Determine worktree path
+if [ -n "$custom_path" ]; then
+    worktree_path="$custom_path"
+else
+    worktree_path="${worktrees_base}/${worktree_name}"
+fi
+
+# Check if worktree already exists
+if [ -d "$worktree_path" ]; then
+    echo "Worktree already exists at: $worktree_path"
+    read -p "Switch to it? (y/n): " switch
+    if [[ "$switch" == "y" || "$switch" == "yes" ]]; then
+        cd "$worktree_path" && exec $SHELL
+    fi
+    exit 0
+fi
+
+# Create the worktree
+echo ""
+if [ "$new_branch" = true ]; then
+    echo "Creating worktree with new branch '$branch'..."
+    git worktree add -b "$branch" "$worktree_path"
+else
+    echo "Creating worktree for branch '$branch'..."
+    if git show-ref --verify --quiet "refs/heads/$branch"; then
+        git worktree add "$worktree_path" "$branch"
+    elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        git worktree add "$worktree_path" "$branch"
+    else
+        echo "Branch '$branch' not found locally or on origin."
+        read -p "Create new branch? (y/n): " create
+        if [[ "$create" == "y" || "$create" == "yes" ]]; then
+            git worktree add -b "$branch" "$worktree_path"
+        else
+            exit 1
+        fi
+    fi
+fi
+
+echo ""
+echo "✓ Worktree created at: $worktree_path"
+echo ""
+read -p "Switch to it? (y/n): " switch
+if [[ "$switch" == "y" || "$switch" == "yes" ]]; then
+    cd "$worktree_path" && exec $SHELL
+fi

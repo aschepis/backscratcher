@@ -1,0 +1,153 @@
+#!/bin/bash
+# Delete a git worktree safely with interactive selection
+
+if ! git rev-parse --git-dir &>/dev/null; then
+    echo "Not in a git repository"
+    exit 1
+fi
+
+main_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+if [ -z "$main_branch" ]; then
+    main_branch="main"
+fi
+
+check_worktree_safety() {
+    local wt_path="$1"
+    local branch="$2"
+    local issues=()
+
+    if [ ! -d "$wt_path" ]; then
+        echo "path missing"
+        return
+    fi
+
+    # Check for uncommitted changes
+    if [ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]; then
+        issues+=("uncommitted changes")
+    fi
+
+    # Check for unpushed commits
+    if [ -n "$branch" ]; then
+        unpushed=$(git -C "$wt_path" log --oneline "origin/$branch..$branch" 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$unpushed" -gt 0 ]; then
+            issues+=("$unpushed unpushed commit(s)")
+        fi
+
+        # Check if merged
+        if ! git merge-base --is-ancestor "$branch" "origin/$main_branch" 2>/dev/null; then
+            if [ "$branch" != "$main_branch" ]; then
+                issues+=("not merged to $main_branch")
+            fi
+        fi
+    fi
+
+    if [ ${#issues[@]} -eq 0 ]; then
+        echo "safe"
+    else
+        echo "${issues[*]}"
+    fi
+}
+
+# Build list of worktrees (excluding main)
+declare -a worktrees
+declare -a branches
+declare -a display_items
+
+while IFS= read -r line; do
+    if [[ "$line" =~ ^worktree\ (.+)$ ]]; then
+        wt_path="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^branch\ refs/heads/(.+)$ ]]; then
+        wt_branch="${BASH_REMATCH[1]}"
+    elif [[ "$line" == "" && -n "$wt_path" ]]; then
+        # Skip main worktree
+        is_main=$(git -C "$wt_path" rev-parse --git-dir 2>/dev/null)
+        if [[ "$is_main" != ".git" ]]; then
+            safety=$(check_worktree_safety "$wt_path" "$wt_branch")
+            if [ "$safety" == "safe" ]; then
+                status="✓"
+            else
+                status="⚠ $safety"
+            fi
+            worktrees+=("$wt_path")
+            branches+=("$wt_branch")
+            display_items+=("$(basename "$wt_path") [${wt_branch:-(detached)}] $status")
+        fi
+        wt_path=""
+        wt_branch=""
+    fi
+done < <(git worktree list --porcelain; echo "")
+
+if [ ${#worktrees[@]} -eq 0 ]; then
+    echo "No removable worktrees found."
+    exit 0
+fi
+
+echo "Select a worktree to delete:"
+echo ""
+PS3="Selection (or 'q' to quit): "
+select item in "${display_items[@]}"; do
+    if [[ "$REPLY" == "q" ]]; then
+        echo "Cancelled."
+        exit 0
+    fi
+
+    if [ -n "$item" ]; then
+        idx=$((REPLY - 1))
+        selected_path="${worktrees[$idx]}"
+        selected_branch="${branches[$idx]}"
+        safety=$(check_worktree_safety "$selected_path" "$selected_branch")
+
+        echo ""
+        echo "Worktree: $selected_path"
+        echo "Branch:   ${selected_branch:-(detached)}"
+
+        if [ "$safety" != "safe" ]; then
+            echo ""
+            echo "⚠ WARNING: $safety"
+            echo ""
+            read -p "This worktree has issues. Delete anyway? (yes/no): " confirm
+            if [ "$confirm" != "yes" ]; then
+                echo "Cancelled."
+                exit 0
+            fi
+            force_flag="--force"
+        else
+            echo "Status:   ✓ safe to delete"
+            echo ""
+            read -p "Delete this worktree? (y/n): " confirm
+            if [[ "$confirm" != "y" && "$confirm" != "yes" ]]; then
+                echo "Cancelled."
+                exit 0
+            fi
+            force_flag=""
+        fi
+
+        echo ""
+        echo "Removing worktree..."
+        if git worktree remove $force_flag "$selected_path"; then
+            echo "✓ Worktree removed."
+
+            # Offer to delete the branch too
+            if [ -n "$selected_branch" ]; then
+                read -p "Also delete branch '$selected_branch'? (y/n): " del_branch
+                if [[ "$del_branch" == "y" || "$del_branch" == "yes" ]]; then
+                    if git branch -d "$selected_branch" 2>/dev/null; then
+                        echo "✓ Branch deleted."
+                    else
+                        read -p "Branch not fully merged. Force delete? (y/n): " force_del
+                        if [[ "$force_del" == "y" || "$force_del" == "yes" ]]; then
+                            git branch -D "$selected_branch"
+                            echo "✓ Branch force deleted."
+                        fi
+                    fi
+                fi
+            fi
+        else
+            echo "✗ Failed to remove worktree."
+            exit 1
+        fi
+        break
+    else
+        echo "Invalid selection."
+    fi
+done
