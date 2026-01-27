@@ -10,6 +10,12 @@ require "mail"
 
 # Agent that summarizes unread emails based on a filter query
 class EmailDigestAgent < PromptAgent
+  # Anthropic hard limit (per error message): 200_000 input tokens.
+  # We stay under this with a conservative approximation and a safety margin.
+  # Using a larger margin to account for token estimation inaccuracy.
+  MAX_INPUT_TOKENS = 200_000
+  INPUT_TOKEN_SAFETY_MARGIN = 10_000
+
   PROMPT = <<~PROMPT
     Analyze the contents of the attached emails and produce a **detailed, deeply researched summary** that includes:
     1. **Thematic Organization:** Group insights by subject area (e.g., Immigration, Economy, Foreign Policy, Technology, Media, etc.).
@@ -47,12 +53,45 @@ class EmailDigestAgent < PromptAgent
 
     return [] unless response&.messages
 
-    # Fetch full message details
-    response
-      .messages
-      .map { |msg| @gmail_client.get_user_message("me", msg.id) }
-      .map { |msg| extract_message_content(msg) }
-      .join("\n\n")
+    prompt_tokens = approx_input_tokens(@prompt.to_s)
+    max_data_tokens = [
+      MAX_INPUT_TOKENS - INPUT_TOKEN_SAFETY_MARGIN - prompt_tokens,
+      0
+    ].max
+
+    # Fetch full message details, sort newest -> oldest, and then accumulate until
+    # we're near the input cap so older emails are simply not covered.
+    messages =
+      response
+        .messages
+        .map { |msg| @gmail_client.get_user_message("me", msg.id) }
+        .sort_by { |msg| -(msg.internal_date.to_i) }
+
+    chunks = []
+    used_tokens = 0
+
+    messages.each do |msg|
+      chunk = extract_message_content(msg)
+      chunk_tokens = approx_input_tokens(chunk)
+
+      if used_tokens + chunk_tokens <= max_data_tokens
+        chunks << chunk
+        used_tokens += chunk_tokens
+        next
+      end
+
+      remaining = max_data_tokens - used_tokens
+      break if remaining <= 0
+
+      # If we can't fit the full email, include a truncated version and stop.
+      truncated = truncate_to_approx_tokens(chunk, remaining)
+      if truncated && !truncated.empty?
+        chunks << "#{truncated}\n\n[Truncated due to input limit]\n"
+      end
+      break
+    end
+
+    chunks.join("\n\n")
   end
 
   def generate_output(output)
@@ -105,6 +144,27 @@ class EmailDigestAgent < PromptAgent
   end
 
   private
+
+  # Conservative input-token approximation for Anthropic.
+  # Using bytes tends to be more conservative than chars for UTF-8 content.
+  def approx_input_tokens(text)
+    return 0 if text.nil? || text.empty?
+
+    # Over-estimate tokens to avoid hitting the hard cap.
+    # Roughly: ~3.5 bytes per token for typical English/newsletter-ish text.
+    (text.to_s.bytesize / 3.5).ceil
+  end
+
+  def truncate_to_approx_tokens(text, token_budget)
+    return "" if token_budget <= 0
+
+    # Invert approx_input_tokens: bytes ~= tokens * 3.5
+    max_bytes = (token_budget * 3.5).floor
+    s = text.to_s
+    return s if s.bytesize <= max_bytes
+
+    s.byteslice(0, max_bytes).to_s.force_encoding("UTF-8").scrub
+  end
 
   def extract_message_content(message)
     headers = message.payload.headers
