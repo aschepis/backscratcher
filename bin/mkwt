@@ -1,5 +1,5 @@
 #!/bin/bash
-# Create a git worktree from a branch name or PR number
+# Create a git worktree from a branch name
 
 set -e
 
@@ -9,12 +9,11 @@ if ! git rev-parse --git-dir &>/dev/null; then
 fi
 
 usage() {
-    echo "Usage: mkwt <branch-name|PR-number> [worktree-path]"
+    echo "Usage: mkwt <branch-name> [worktree-path]"
     echo ""
     echo "Examples:"
     echo "  mkwt feature-auth        # Create worktree for existing branch"
     echo "  mkwt -b new-feature      # Create worktree with new branch"
-    echo "  mkwt 1234                # Create worktree for PR #1234"
     exit 1
 }
 
@@ -39,44 +38,15 @@ repo_name=$(basename "$repo_root")
 # Default worktree location: sibling directory to main repo
 worktrees_base=$(dirname "$repo_root")
 
-# Check if target is a PR number
-if [[ "$target" =~ ^[0-9]+$ ]]; then
-    if ! command -v gh &>/dev/null; then
-        echo "Error: 'gh' CLI required for PR checkout"
-        exit 1
-    fi
+branch="$target"
+worktree_name="${repo_name}-${branch}"
 
-    echo "Fetching PR #$target..."
-    pr_info=$(gh pr view "$target" --json headRefName,headRepository,headRepositoryOwner 2>/dev/null) || {
-        echo "Error: Could not find PR #$target"
-        exit 1
-    }
-
-    branch=$(echo "$pr_info" | jq -r '.headRefName')
-    pr_owner=$(echo "$pr_info" | jq -r '.headRepositoryOwner.login')
-    repo_owner=$(gh repo view --json owner -q '.owner.login')
-
-    if [ "$pr_owner" != "$repo_owner" ]; then
-        # Fork PR - need to fetch from fork
-        echo "PR is from fork ($pr_owner), fetching..."
-        git fetch "https://github.com/$pr_owner/$repo_name.git" "$branch:$branch" 2>/dev/null || \
-        git fetch origin "pull/$target/head:$branch"
-    else
-        git fetch origin "$branch"
-    fi
-
-    worktree_name="${repo_name}-pr-${target}"
+if [ "$new_branch" = true ]; then
+    # New branch - will be created with worktree
+    :
 else
-    branch="$target"
-    worktree_name="${repo_name}-${branch}"
-
-    if [ "$new_branch" = true ]; then
-        # New branch - will be created with worktree
-        :
-    else
-        # Existing branch - fetch it first
-        git fetch origin "$branch" 2>/dev/null || true
-    fi
+    # Existing branch - fetch it first
+    git fetch origin "$branch" 2>/dev/null || true
 fi
 
 # Determine worktree path
