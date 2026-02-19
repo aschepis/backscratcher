@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+gh api graphql \
+  -F pr=$(gh pr view --json number -q .number) \
+  -f owner=$(gh repo view --json owner -q .owner.login) \
+  -f repo=$(gh repo view --json name -q .name) \
+  -f query='
+    query($owner: String!, $repo: String!, $pr: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $pr) {
+          reviewThreads(first: 100) {
+            nodes {
+              isResolved
+              comments(first: 50) {
+                nodes {
+                  author { login }
+                  body
+                  path
+                  line
+                  createdAt
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ' | jq '
+    [.data.repository.pullRequest.reviewThreads.nodes[]
+    | select(.isResolved == false)
+    | {
+        path: .comments.nodes[0].path,
+        line: .comments.nodes[0].line,
+        author: .comments.nodes[0].author.login,
+        comment_count: (.comments.nodes | length),
+        latest_comment: .comments.nodes[-1].body,
+        created_at: .comments.nodes[0].createdAt
+      }
+    ]
+  '
