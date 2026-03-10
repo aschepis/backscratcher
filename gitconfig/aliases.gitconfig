@@ -1,0 +1,20 @@
+[alias]
+	co = checkout
+	br = branch
+	st = status
+	ci = commit
+	cm = commit -m
+	cam = commit -am
+	ca = commit --amend
+	ri = rebase -i
+	rb = rebase
+	re = reset
+	pr = pull-request
+	lg = log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
+	recent = branch --sort=-committerdate --format=\"%(committerdate:relative)%09%(refname:short)\"
+	staged = diff --cached
+	cb = checkout -b
+	main = \\!git checkout main && git pull
+	cleanup = \\!git branch --merged | grep -v \"\\\\*\\\\|main\\\\|master\" | xargs -n 1 git branch -d
+	uncommit = reset --soft HEAD~1
+	nevermind = checkout -- .
