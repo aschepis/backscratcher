@@ -8,13 +8,20 @@ require "redcarpet"
 require "loofah"
 require "mail"
 
-# Agent that summarizes unread emails based on a filter query
+# Agent that summarizes unread emails per digest label topic.
+# Discovers all digestme/* sub-labels, runs a separate digest per topic,
+# and falls back to a top-level "General" digest for the bare digestme label.
 class EmailDigestAgent < PromptAgent
   # Anthropic hard limit (per error message): 200_000 input tokens.
   # We stay under this with a conservative approximation and a safety margin.
   # Using a larger margin to account for token estimation inaccuracy.
   MAX_INPUT_TOKENS = 200_000
   INPUT_TOKEN_SAFETY_MARGIN = 10_000
+
+  # Ignore emails older than this (in hours). Gmail API uses days for newer_than.
+  MAX_EMAIL_AGE_HOURS = 48
+
+  DIGEST_LABEL_PREFIX = "digestme"
 
   PROMPT = <<~PROMPT
     Analyze the contents of the attached emails and produce a **detailed, deeply researched summary** that includes:
@@ -36,22 +43,76 @@ class EmailDigestAgent < PromptAgent
     Emails:
   PROMPT
 
-  def initialize(filter_query:)
-    @filter_query = filter_query
-    super(prompt: PROMPT.gsub("{{filter_query}}", filter_query))
+  def initialize
+    super(prompt: PROMPT)
     @gmail_client = create_gmail_client
   end
 
-  def fetch_data
-    # Fetch list of messages
+  def run
+    @logger.info("Running agent #{name}")
+
+    digest_labels = discover_digest_labels
+
+    if digest_labels.empty?
+      @logger.info("No digestme labels found")
+      return
+    end
+
+    @logger.info("Found digest labels: #{digest_labels.keys.join(', ')}")
+
+    digest_labels.each do |topic, label_id|
+      @logger.info("Processing digest for topic: #{topic}")
+
+      data = fetch_data_for_label(label_id)
+
+      if data.nil? || data.empty?
+        @logger.info("No unread messages for topic: #{topic}, skipping")
+        next
+      end
+
+      summary = process_data(data)
+      send_digest_email(summary, topic)
+    end
+  end
+
+  private
+
+  # Discover all Gmail labels matching digestme or digestme/* and return
+  # a hash of { topic_name => label_id }. The bare digestme label maps to "General".
+  def discover_digest_labels
+    labels_response = @gmail_client.list_user_labels("me")
+    return {} unless labels_response&.labels
+
+    digest_labels = {}
+
+    labels_response.labels.each do |label|
+      name = label.name
+      lower = name.downcase
+
+      if lower == DIGEST_LABEL_PREFIX
+        digest_labels["General"] = label.id
+      elsif lower.start_with?("#{DIGEST_LABEL_PREFIX}/")
+        # Use original casing for the topic name
+        topic = name.split("/", 2).last
+        digest_labels[topic] = label.id
+      end
+    end
+
+    digest_labels
+  end
+
+  def fetch_data_for_label(label_id)
+    newer_than_days = (MAX_EMAIL_AGE_HOURS / 24.0).ceil
+    query = "is:unread newer_than:#{newer_than_days}d"
+
     response =
       @gmail_client.list_user_messages(
         "me",
-        label_ids: ["INBOX"],
-        q: @filter_query
+        label_ids: ["INBOX", label_id],
+        q: query
       )
 
-    return [] unless response&.messages
+    return "" unless response&.messages
 
     prompt_tokens = approx_input_tokens(@prompt.to_s)
     max_data_tokens = [
@@ -59,13 +120,15 @@ class EmailDigestAgent < PromptAgent
       0
     ].max
 
-    # Fetch full message details, sort newest -> oldest, and then accumulate until
-    # we're near the input cap so older emails are simply not covered.
+    # Fetch full message details, filter by age, sort newest -> oldest, and then
+    # accumulate until we're near the input cap so older emails are simply not covered.
+    cutoff_timestamp = (Time.now - (MAX_EMAIL_AGE_HOURS * 3600)).to_i
     messages =
       response
-        .messages
-        .map { |msg| @gmail_client.get_user_message("me", msg.id) }
-        .sort_by { |msg| -(msg.internal_date.to_i) }
+      .messages
+      .map { |msg| @gmail_client.get_user_message("me", msg.id) }
+      .select { |msg| msg.internal_date.to_i >= cutoff_timestamp }
+      .sort_by { |msg| -msg.internal_date.to_i }
 
     chunks = []
     used_tokens = 0
@@ -80,25 +143,19 @@ class EmailDigestAgent < PromptAgent
         next
       end
 
-      remaining = max_data_tokens - used_tokens
-      break if remaining <= 0
-
-      # If we can't fit the full email, include a truncated version and stop.
-      truncated = truncate_to_approx_tokens(chunk, remaining)
-      if truncated && !truncated.empty?
-        chunks << "#{truncated}\n\n[Truncated due to input limit]\n"
-      end
+      # If we can't fit the full email, just stop accumulating more.
       break
     end
 
     chunks.join("\n\n")
   end
 
-  def generate_output(output)
+  def send_digest_email(output, topic)
     profile = @gmail_client.get_user_profile("me")
     user_email = profile.email_address.to_s.strip.gsub(/[<>]/, "")
 
-    subject_line = "Your Daily Gmail Digest #{Time.now.strftime("%Y-%m-%d")}"
+    topic_suffix = topic == "General" ? "" : ": #{topic}"
+    subject_line = "Your Daily Gmail Digest#{topic_suffix} #{Time.now.strftime('%Y-%m-%d')}"
     html_output = markdown_to_html(output)
 
     # Construct RFC 2822 message with all standard headers
@@ -139,11 +196,9 @@ class EmailDigestAgent < PromptAgent
 
     raise "Gmail API error: #{response.body}" if response.code.to_i >= 400
 
-    puts "✅ Email sent successfully! Message ID: #{JSON.parse(response.body)["id"]}"
+    puts "Email sent for #{topic} digest! Message ID: #{JSON.parse(response.body)['id']}"
     response
   end
-
-  private
 
   # Conservative input-token approximation for Anthropic.
   # Using bytes tends to be more conservative than chars for UTF-8 content.
@@ -206,9 +261,7 @@ class EmailDigestAgent < PromptAgent
     return decode_body(html_to_markdown(html_part.body.data)) if html_part
 
     # If payload itself is text, decode it directly
-    if %w[text/plain text/html].include?(payload.mime_type)
-      return decode_body(payload.body.data)
-    end
+    return decode_body(payload.body.data) if %w[text/plain text/html].include?(payload.mime_type)
 
     ""
   end
