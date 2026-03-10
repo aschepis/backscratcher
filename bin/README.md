@@ -116,6 +116,82 @@ Also delete their branches? (y/n): y
 Cleaned up 2 worktree(s).
 ```
 
+## GitHub Scripts
+
+### gh-pr-unresolved
+
+List all unresolved review threads on the current PR. Must be run from a repo with an open PR checked out.
+
+Output is JSON — one object per unresolved thread with file path, line, author, comment count, the latest comment body, and creation timestamp.
+
+```bash
+$ gh-pr-unresolved
+[
+  {
+    "path": "pkg/auth/login.go",
+    "line": 42,
+    "author": "reviewer",
+    "comment_count": 2,
+    "latest_comment": "Still needs a nil check here.",
+    "created_at": "2024-01-15T10:23:00Z"
+  }
+]
+```
+
+**Dependencies:** `gh` CLI, `jq`
+
+## Go Test Scripts
+
+### go-test-files.sh
+
+Run tests for one or more Go files. Accepts source or test files — if you pass a non-test file it finds the matching `_test.go` automatically.
+
+```bash
+go-test-files.sh pkg/auth/login.go pkg/store/user.go
+go-test-files.sh pkg/auth/login_test.go
+
+# Filter out JSON status lines from verbose output
+go-test-files.sh --clean pkg/auth/login.go
+```
+
+### go-test-changes.sh
+
+Run tests for all Go test files that have uncommitted changes (staged or unstaged).
+
+```bash
+go-test-changes.sh
+
+# Filter out JSON status lines from verbose output
+go-test-changes.sh --clean
+```
+
+### clean-test-output.sh
+
+A pipe filter that strips noise from `go test -v` output, leaving only test results. Filters:
+
+- `go test` JSON status lines
+- JSON log output (zap, logrus, zerolog, slog)
+- logrus text format (`time="..."`, `level=...`)
+- zap console format (ISO timestamp + level)
+- stdlib log / slog text format (`YYYY/MM/DD HH:MM:SS`)
+
+```bash
+go test -v ./... | clean-test-output.sh
+```
+
+## AI Tools
+
+### jqai
+
+Like `jq`, but you describe what you want in plain English. Uses Claude to generate the jq expression and runs it for you.
+
+```bash
+jqai 'get all user names' data.json
+cat data.json | jqai 'extract ids where status is active'
+```
+
+**Dependencies:** `claude` CLI, `jq`
+
 ## Git Aliases
 
 ### Pre-existing
@@ -158,67 +234,6 @@ git config --global alias.uncommit 'reset --soft HEAD~1'
 git config --global alias.nevermind 'checkout -- .'
 ```
 
-## Shell Enhancements
-
-### fzf (Fuzzy Finder)
-
-A general-purpose fuzzy finder that integrates with the shell.
-
-**Installation:**
-```bash
-brew install fzf
-```
-
-**Keybindings (added to .zshrc):**
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+R` | Fuzzy search command history |
-| `Ctrl+T` | Fuzzy find files, insert path at cursor |
-| `Alt+C` | Fuzzy cd into subdirectory |
-
-**Configuration (.zshrc):**
-```bash
-source <(fzf --zsh)
-export FZF_DEFAULT_OPTS='--height 40% --layout=reverse --border'
-```
-
-**Custom functions:**
-```bash
-# Fuzzy git branch checkout
-gcof() {
-  git checkout $(git branch --all | fzf --prompt="checkout> " | sed 's/remotes\/origin\///' | xargs)
-}
-
-# Fuzzy git log browser with preview
-glogf() {
-  git log --oneline --graph --decorate | fzf --preview 'git show --color=always {+1}' --no-sort
-}
-```
-
-### zoxide (Smarter cd)
-
-A smarter `cd` command that learns your habits and lets you jump to directories by partial name.
-
-**Installation:**
-```bash
-brew install zoxide
-```
-
-**Configuration (.zshrc):**
-```bash
-eval "$(zoxide init zsh)"
-```
-
-**Usage:**
-```bash
-z proj          # Jump to most frequently used dir matching "proj"
-z foo bar       # Jump to dir matching both "foo" and "bar"
-zi              # Interactive mode with fzf
-```
-
-zoxide ranks directories by "frecency" (frequency + recency). The more you visit a directory, the higher it ranks.
-
 ## Setup
 
 1. Clone this repo and add the `bin/` directory to your PATH:
@@ -226,27 +241,11 @@ zoxide ranks directories by "frecency" (frequency + recency). The more you visit
    export PATH="$PATH:/path/to/this/repo/bin"
    ```
 
-2. Install dependencies:
-   ```bash
-   brew install fzf zoxide
-   ```
-
-3. Add shell configuration to your `.zshrc`:
-   ```bash
-   # fzf
-   source <(fzf --zsh)
-   export FZF_DEFAULT_OPTS='--height 40% --layout=reverse --border'
-
-   # zoxide
-   eval "$(zoxide init zsh)"
-   ```
-
-4. Restart your shell or run `source ~/.zshrc`
+2. Restart your shell or run `source ~/.zshrc`
 
 ## Dependencies
 
 - `git` - required for all worktree scripts
-- `gh` - GitHub CLI, optional, enables `mkwt <PR-number>`
-- `fzf` - fuzzy finder
-- `zoxide` - smarter cd
-- `jq` - JSON parsing, used by mkwt for PR info
+- `gh` - GitHub CLI, optional, enables `mkwt <PR-number>` and `gh-pr-unresolved`
+- `jq` - JSON parsing, used by `mkwt` and `gh-pr-unresolved`
+- `claude` - Claude Code CLI, required by `jqai`

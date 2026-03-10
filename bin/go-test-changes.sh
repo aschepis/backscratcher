@@ -5,8 +5,25 @@ if [[ "$1" == "--clean" ]]; then
     clean=true
 fi
 
-  # Get all changed test files (staged and unstaged)
-  test_files=$( (git diff --cached --name-only; git diff --name-only) | grep '_test\.go$' | sort -u)
+  # Get all changed .go files (staged and unstaged)
+  changed_go_files=$( (git diff --cached --name-only; git diff --name-only) | grep '\.go$' | sort -u)
+
+  if [ -z "$changed_go_files" ]; then
+      echo "No changed Go files found"
+      exit 0
+  fi
+
+  # For non-test .go files, find their corresponding _test.go files
+  test_files=$(echo "$changed_go_files" | while read -r f; do
+      if echo "$f" | grep -q '_test\.go$'; then
+          echo "$f"
+      else
+          test_file="${f%.go}_test.go"
+          if [ -f "$test_file" ]; then
+              echo "$test_file"
+          fi
+      fi
+  done | sort -u)
 
   if [ -z "$test_files" ]; then
       echo "No changed test files found"
