@@ -75,7 +75,7 @@ class PromptAgent < BaseAgent
       original_est_tokens = approx_input_tokens(data_str)
       trimmed_est_tokens = approx_input_tokens(trimmed_data)
       @logger.info(
-        "Truncation: original=#{original_size} bytes (#{original_est_tokens} est tokens), trimmed=#{trimmed_size} bytes (#{trimmed_est_tokens} est tokens), reduction=#{((1.0 - trimmed_size.to_f / original_size) * 100).round(1)}%"
+        "Truncation: original=#{original_size} bytes (#{original_est_tokens} est tokens), trimmed=#{trimmed_size} bytes (#{trimmed_est_tokens} est tokens), reduction=#{((1.0 - (trimmed_size.to_f / original_size)) * 100).round(1)}%"
       )
 
       retry_content = "#{@prompt}\n\n#{trimmed_data}"
@@ -96,94 +96,90 @@ class PromptAgent < BaseAgent
         result
       rescue Anthropic::Errors::BadRequestError => retry_error
         # If retry still fails, truncate more aggressively using iterative approach
-        if prompt_too_long_error?(retry_error)
-          @logger.warn("Retry also failed, truncating more aggressively")
+        raise unless prompt_too_long_error?(retry_error)
 
-          # Keep truncating until we're well under the limit
-          current_data = trimmed_data
-          retry_count = 0
-          max_retries = 5
+        @logger.warn("Retry also failed, truncating more aggressively")
 
-          loop do
-            retry_count += 1
-            raise "Too many retry attempts" if retry_count > max_retries
+        # Keep truncating until we're well under the limit
+        current_data = trimmed_data
+        retry_count = 0
+        max_retries = 5
 
-            prompt_tokens, actual_tokens, max_tokens =
-              parse_prompt_too_long_tokens(retry_error)
-            max_tokens ||= MAX_INPUT_TOKENS
-            actual_tokens ||= max_tokens + 1
+        loop do
+          retry_count += 1
+          raise "Too many retry attempts" if retry_count > max_retries
 
-            # Calculate new target - be much more aggressive using ratio
-            safety = 40_000 + (retry_count * 15_000)
-            target_total_tokens = max_tokens - safety
+          prompt_tokens, actual_tokens, max_tokens =
+            parse_prompt_too_long_tokens(retry_error)
+          max_tokens ||= MAX_INPUT_TOKENS
+          actual_tokens ||= max_tokens + 1
 
-            # Use ratio-based truncation for more accurate reduction
-            # Be very aggressive - reduce to at most 5% of original, or use calculated ratio
-            truncation_ratio = [
-              target_total_tokens.to_f / actual_tokens,
-              0.03
-            ].max
+          # Calculate new target - be much more aggressive using ratio
+          safety = 40_000 + (retry_count * 15_000)
+          target_total_tokens = max_tokens - safety
 
-            prompt_tokens ||= approx_input_tokens(@prompt.to_s)
-            estimated_current_data_tokens = [
-              actual_tokens - prompt_tokens,
-              0
-            ].max
-            target_data_tokens = [
-              (estimated_current_data_tokens * truncation_ratio).floor,
-              0
-            ].max
+          # Use ratio-based truncation for more accurate reduction
+          # Be very aggressive - reduce to at most 5% of original, or use calculated ratio
+          truncation_ratio = [
+            target_total_tokens.to_f / actual_tokens,
+            0.03
+          ].max
 
-            # Apply additional safety factor - reduce by another 15% each retry
-            safety_factor = 1.0 - (0.15 * retry_count)
-            safety_factor = [safety_factor, 0.5].max # Don't go below 50%
-            target_data_tokens = (target_data_tokens * safety_factor).floor
+          prompt_tokens ||= approx_input_tokens(@prompt.to_s)
+          estimated_current_data_tokens = [
+            actual_tokens - prompt_tokens,
+            0
+          ].max
+          target_data_tokens = [
+            (estimated_current_data_tokens * truncation_ratio).floor,
+            0
+          ].max
 
-            @logger.warn(
-              "Aggressive truncation attempt #{retry_count}: actual=#{actual_tokens}, target_total=#{target_total_tokens}, ratio=#{truncation_ratio.round(3)}, target_data=#{target_data_tokens}"
-            )
+          # Apply additional safety factor - reduce by another 15% each retry
+          safety_factor = 1.0 - (0.15 * retry_count)
+          safety_factor = [safety_factor, 0.5].max # Don't go below 50%
+          target_data_tokens = (target_data_tokens * safety_factor).floor
 
-            current_data_before = current_data
-            current_data =
-              truncate_to_approx_tokens(current_data, target_data_tokens)
+          @logger.warn(
+            "Aggressive truncation attempt #{retry_count}: actual=#{actual_tokens}, target_total=#{target_total_tokens}, ratio=#{truncation_ratio.round(3)}, target_data=#{target_data_tokens}"
+          )
 
-            # Log truncation details
-            before_size = current_data_before.bytesize
-            after_size = current_data.bytesize
-            before_tokens = approx_input_tokens(current_data_before)
-            after_tokens = approx_input_tokens(current_data)
-            @logger.warn(
-              "Truncation: before=#{before_size} bytes (#{before_tokens} est tokens), after=#{after_size} bytes (#{after_tokens} est tokens), reduction=#{((1.0 - after_size.to_f / before_size) * 100).round(1)}%"
-            )
+          current_data_before = current_data
+          current_data =
+            truncate_to_approx_tokens(current_data, target_data_tokens)
 
-            retry_content = "#{@prompt}\n\n#{current_data}"
-            retry_est_tokens = approx_input_tokens(retry_content)
-            @logger.warn("Retry content estimated tokens: #{retry_est_tokens}")
+          # Log truncation details
+          before_size = current_data_before.bytesize
+          after_size = current_data.bytesize
+          before_tokens = approx_input_tokens(current_data_before)
+          after_tokens = approx_input_tokens(current_data)
+          @logger.warn(
+            "Truncation: before=#{before_size} bytes (#{before_tokens} est tokens), after=#{after_size} bytes (#{after_tokens} est tokens), reduction=#{((1.0 - (after_size.to_f / before_size)) * 100).round(1)}%"
+          )
 
-            begin
-              stream =
-                @anthropic_client.messages.stream(
-                  model: "claude-sonnet-4-5-20250929",
-                  max_tokens: 32_000,
-                  messages: [{ role: "user", content: retry_content }]
-                )
+          retry_content = "#{@prompt}\n\n#{current_data}"
+          retry_est_tokens = approx_input_tokens(retry_content)
+          @logger.warn("Retry content estimated tokens: #{retry_est_tokens}")
 
-              result = +""
-              stream.text.each { |text| result << text }
-              return result
-            rescue Anthropic::Errors::BadRequestError => inner_error
-              if prompt_too_long_error?(inner_error)
-                # Update retry_error with the new error for next iteration
-                retry_error = inner_error
-                # Recalculate with new error values
-                next
-              else
-                raise
-              end
-            end
+          begin
+            stream =
+              @anthropic_client.messages.stream(
+                model: "claude-sonnet-4-5-20250929",
+                max_tokens: 32_000,
+                messages: [{ role: "user", content: retry_content }]
+              )
+
+            result = +""
+            stream.text.each { |text| result << text }
+            return result
+          rescue Anthropic::Errors::BadRequestError => inner_error
+            raise unless prompt_too_long_error?(inner_error)
+
+            # Update retry_error with the new error for next iteration
+            retry_error = inner_error
+            # Recalculate with new error values
+            next
           end
-        else
-          raise
         end
       end
     end
@@ -195,21 +191,21 @@ class PromptAgent < BaseAgent
     # Check error.message first
     msg = error.message.to_s
     if msg.include?("prompt is too long") &&
-         (msg.include?("maximum") || msg.include?("tokens"))
+       (msg.include?("maximum") || msg.include?("tokens"))
       return true
     end
 
     # Check error.to_s / inspect which might contain the full error details
     error_str = error.to_s
     if error_str.include?("prompt is too long") &&
-         (error_str.include?("maximum") || error_str.include?("tokens"))
+       (error_str.include?("maximum") || error_str.include?("tokens"))
       return true
     end
 
     # Check error.inspect which might have the full structure
     error_inspect = error.inspect
     if error_inspect.include?("prompt is too long") &&
-         (error_inspect.include?("maximum") || error_inspect.include?("tokens"))
+       (error_inspect.include?("maximum") || error_inspect.include?("tokens"))
       return true
     end
 
@@ -218,7 +214,7 @@ class PromptAgent < BaseAgent
       body = error.body
       body_str = body.is_a?(Hash) ? body.to_json : body.to_s
       if body_str.include?("prompt is too long") &&
-           (body_str.include?("maximum") || body_str.include?("tokens"))
+         (body_str.include?("maximum") || body_str.include?("tokens"))
         return true
       end
     end
@@ -228,7 +224,7 @@ class PromptAgent < BaseAgent
       resp_body = error.response.body
       resp_str = resp_body.is_a?(Hash) ? resp_body.to_json : resp_body.to_s
       if resp_str.include?("prompt is too long") &&
-           (resp_str.include?("maximum") || resp_str.include?("tokens"))
+         (resp_str.include?("maximum") || resp_str.include?("tokens"))
         return true
       end
     end
@@ -319,11 +315,13 @@ class PromptAgent < BaseAgent
   # Conservative input-token approximation for Anthropic.
   def approx_input_tokens(text)
     return 0 if text.nil? || text.empty?
+
     (text.to_s.bytesize / 3.5).ceil
   end
 
   def truncate_to_approx_tokens(text, token_budget)
     return "" if token_budget <= 0
+
     max_bytes = (token_budget * 3.5).floor
     s = text.to_s
     return s if s.bytesize <= max_bytes
@@ -333,7 +331,7 @@ class PromptAgent < BaseAgent
 
     # Safety check: if truncation didn't actually reduce size (shouldn't happen, but just in case),
     # force a more aggressive truncation
-    if truncated.bytesize >= s.bytesize && s.bytesize > 0
+    if truncated.bytesize >= s.bytesize && s.bytesize.positive?
       @logger.warn("Truncation didn't reduce size, forcing more aggressive cut")
       # Force to 80% of target to be extra safe
       max_bytes = (max_bytes * 0.8).floor

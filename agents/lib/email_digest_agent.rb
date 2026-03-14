@@ -8,15 +8,20 @@ require "redcarpet"
 require "loofah"
 require "mail"
 
-# Agent that summarizes unread emails based on a filter query
+# Agent that fetches unread emails from the "digestme" label and generates
+# a separate digest for each topic of interest via a single Claude request per topic.
 class EmailDigestAgent < PromptAgent
-  # Anthropic hard limit (per error message): 200_000 input tokens.
-  # We stay under this with a conservative approximation and a safety margin.
-  # Using a larger margin to account for token estimation inaccuracy.
-  MAX_INPUT_TOKENS = 200_000
+  MAX_INPUT_TOKENS      = 1_000_000
   INPUT_TOKEN_SAFETY_MARGIN = 10_000
+  MAX_EMAIL_AGE_HOURS   = 48
+  DIGEST_LABEL          = "digestme"
+  LONG_CONTEXT_BETA     = "context-1m-2025-08-07"
 
-  PROMPT = <<~PROMPT
+  TOPICS = %w[Education SocialJustice AITech DevTools General Politics].freeze
+
+  PROMPT_TEMPLATE = <<~PROMPT.freeze
+    You are generating a digest for emails on the topic: **%<topic>s**.
+
     Analyze the contents of the attached emails and produce a **detailed, deeply researched summary** that includes:
     1. **Thematic Organization:** Group insights by subject area (e.g., Immigration, Economy, Foreign Policy, Technology, Media, etc.).
     2. **Urgency & Deadlines:** Call out anything time-sensitive or urgent, including policy deadlines, legal actions,
@@ -36,72 +41,100 @@ class EmailDigestAgent < PromptAgent
     Emails:
   PROMPT
 
-  def initialize(filter_query:)
-    @filter_query = filter_query
-    super(prompt: PROMPT.gsub("{{filter_query}}", filter_query))
+  def initialize
+    super(prompt: "")
     @gmail_client = create_gmail_client
   end
 
-  def fetch_data
-    # Fetch list of messages
-    response =
-      @gmail_client.list_user_messages(
-        "me",
-        label_ids: ["INBOX"],
-        q: @filter_query
-      )
+  def run
+    @logger.info("Running agent #{name}")
 
-    return [] unless response&.messages
+    email_data = fetch_emails
+    if email_data.empty?
+      @logger.info("No unread messages in #{DIGEST_LABEL}, skipping")
+      return
+    end
 
-    prompt_tokens = approx_input_tokens(@prompt.to_s)
-    max_data_tokens = [
-      MAX_INPUT_TOKENS - INPUT_TOKEN_SAFETY_MARGIN - prompt_tokens,
-      0
-    ].max
+    TOPICS.each do |topic|
+      @logger.info("Generating digest for topic: #{topic}")
+      prompt = format(PROMPT_TEMPLATE, topic: topic)
+      summary = stream_request(prompt, email_data)
+      send_digest_email(summary, topic)
+    end
+  end
 
-    # Fetch full message details, sort newest -> oldest, and then accumulate until
-    # we're near the input cap so older emails are simply not covered.
-    messages =
-      response
-        .messages
-        .map { |msg| @gmail_client.get_user_message("me", msg.id) }
-        .sort_by { |msg| -(msg.internal_date.to_i) }
+  private
+
+  # Returns all unread emails from the digestme label as a single string.
+  def fetch_emails
+    label_id = find_label_id(DIGEST_LABEL)
+    unless label_id
+      @logger.warn("Label '#{DIGEST_LABEL}' not found in Gmail")
+      return ""
+    end
+
+    newer_than_days = (MAX_EMAIL_AGE_HOURS / 24.0).ceil
+    response = @gmail_client.list_user_messages(
+      "me",
+      label_ids: ["INBOX", label_id],
+      q: "is:unread newer_than:#{newer_than_days}d"
+    )
+    return "" unless response&.messages
+
+    cutoff = (Time.now - (MAX_EMAIL_AGE_HOURS * 3600)).to_i
+    max_data_tokens = MAX_INPUT_TOKENS - INPUT_TOKEN_SAFETY_MARGIN
 
     chunks = []
     used_tokens = 0
 
-    messages.each do |msg|
-      chunk = extract_message_content(msg)
-      chunk_tokens = approx_input_tokens(chunk)
+    response
+      .messages
+      .map { |msg| @gmail_client.get_user_message("me", msg.id) }
+      .select { |msg| msg.internal_date.to_i >= cutoff }
+      .sort_by { |msg| -msg.internal_date.to_i }
+      .each do |msg|
+        chunk = extract_message_content(msg)
+        chunk_tokens = approx_input_tokens(chunk)
+        break if used_tokens + chunk_tokens > max_data_tokens
 
-      if used_tokens + chunk_tokens <= max_data_tokens
         chunks << chunk
         used_tokens += chunk_tokens
-        next
       end
 
-      remaining = max_data_tokens - used_tokens
-      break if remaining <= 0
-
-      # If we can't fit the full email, include a truncated version and stop.
-      truncated = truncate_to_approx_tokens(chunk, remaining)
-      if truncated && !truncated.empty?
-        chunks << "#{truncated}\n\n[Truncated due to input limit]\n"
-      end
-      break
-    end
-
+    @logger.info("Loaded #{chunks.size} emails (~#{used_tokens} tokens)")
     chunks.join("\n\n")
   end
 
-  def generate_output(output)
+  def stream_request(prompt, data)
+    content = "#{prompt}\n\n#{data}"
+    stream = @anthropic_client.beta.messages.stream(
+      model: "claude-sonnet-4-6",
+      max_tokens: 32_000,
+      messages: [{ role: "user", content: content }],
+      betas: [LONG_CONTEXT_BETA]
+    )
+
+    result = +""
+    stream.text.each { |text| result << text }
+    result
+  end
+
+  def find_label_id(name)
+    labels_response = @gmail_client.list_user_labels("me")
+    return nil unless labels_response&.labels
+
+    label = labels_response.labels.find { |l| l.name.downcase == name.downcase }
+    label&.id
+  end
+
+  def send_digest_email(output, topic)
     profile = @gmail_client.get_user_profile("me")
     user_email = profile.email_address.to_s.strip.gsub(/[<>]/, "")
 
-    subject_line = "Your Daily Gmail Digest #{Time.now.strftime("%Y-%m-%d")}"
+    topic_suffix = topic == "General" ? "" : ": #{topic}"
+    subject_line = "Your Daily Gmail Digest#{topic_suffix} #{Time.now.strftime('%Y-%m-%d')}"
     html_output = markdown_to_html(output)
 
-    # Construct RFC 2822 message with all standard headers
     message_id = "<#{SecureRandom.hex(8)}@#{Socket.gethostname}>"
     date = Time.now.rfc2822
 
@@ -117,10 +150,8 @@ class EmailDigestAgent < PromptAgent
       #{html_output}
     EMAIL
 
-    # Gmail API requires base64url encoding with no newlines
     encoded = Base64.urlsafe_encode64(raw_message).delete("\n")
 
-    # Use REST API directly (google-api-client gem has issues with send_user_message)
     require "net/http"
     require "json"
 
@@ -136,88 +167,47 @@ class EmailDigestAgent < PromptAgent
     request.body = JSON.generate({ raw: encoded })
 
     response = http.request(request)
-
     raise "Gmail API error: #{response.body}" if response.code.to_i >= 400
 
-    puts "✅ Email sent successfully! Message ID: #{JSON.parse(response.body)["id"]}"
+    puts "Email sent for #{topic} digest! Message ID: #{JSON.parse(response.body)['id']}"
     response
-  end
-
-  private
-
-  # Conservative input-token approximation for Anthropic.
-  # Using bytes tends to be more conservative than chars for UTF-8 content.
-  def approx_input_tokens(text)
-    return 0 if text.nil? || text.empty?
-
-    # Over-estimate tokens to avoid hitting the hard cap.
-    # Roughly: ~3.5 bytes per token for typical English/newsletter-ish text.
-    (text.to_s.bytesize / 3.5).ceil
-  end
-
-  def truncate_to_approx_tokens(text, token_budget)
-    return "" if token_budget <= 0
-
-    # Invert approx_input_tokens: bytes ~= tokens * 3.5
-    max_bytes = (token_budget * 3.5).floor
-    s = text.to_s
-    return s if s.bytesize <= max_bytes
-
-    s.byteslice(0, max_bytes).to_s.force_encoding("UTF-8").scrub
   end
 
   def extract_message_content(message)
     headers = message.payload.headers
+    from    = headers.find { |h| h.name.downcase == "from" }&.value || "Unknown"
+    subject = headers.find { |h| h.name.downcase == "subject" }&.value || "No Subject"
+    link    = message.thread_id ? "https://mail.google.com/mail/u/0/#inbox/#{message.thread_id}" : nil
+    body    = get_main_text_part(message.payload)
 
-    from = headers.find { |h| h.name.downcase == "from" }&.value || "Unknown"
-    subject =
-      headers.find { |h| h.name.downcase == "subject" }&.value || "No Subject"
-
-    # Create Gmail web link to message
-    thread_id = message.thread_id
-    gmail_link =
-      (thread_id ? "https://mail.google.com/mail/u/0/#inbox/#{thread_id}" : nil)
-
-    body_text = get_main_text_part(message.payload)
-
-    "From: #{from}\nSubject: #{subject}\nLink: #{gmail_link}\n\n#{body_text}\n"
+    "From: #{from}\nSubject: #{subject}\nLink: #{link}\n\n#{body}\n"
   end
 
-  # Extract the body: prefer 'text/plain', fallback to 'text/html'
   def decode_body(body_data)
     return "" unless body_data
 
     Base64.urlsafe_decode64(body_data.to_s)
   rescue StandardError
-    # it wasn't base64 encoded, so just return the string
-    # avoid incompatible character encodings: UTF-8 and BINARY (ASCII-8BIT)
     body_data.to_s.force_encoding("UTF-8")
   end
 
   def get_main_text_part(payload)
-    # Recursively collect all parts
     all_parts = collect_all_parts(payload)
 
-    # Prefer text/plain, fallback to text/html
     text_part = all_parts.find { |part| part.mime_type == "text/plain" }
     return decode_body(text_part.body.data) if text_part
 
     html_part = all_parts.find { |part| part.mime_type == "text/html" }
     return decode_body(html_to_markdown(html_part.body.data)) if html_part
 
-    # If payload itself is text, decode it directly
-    if %w[text/plain text/html].include?(payload.mime_type)
-      return decode_body(payload.body.data)
-    end
+    return decode_body(payload.body.data) if %w[text/plain text/html].include?(payload.mime_type)
 
     ""
   end
 
   def collect_all_parts(payload)
-    # Base case: if no parts or empty parts, return the payload itself
     return [payload] unless payload.parts && !payload.parts.empty?
 
-    # Recursive case: collect parts from all nested parts
     [payload] + payload.parts.flat_map { |p| collect_all_parts(p) }
   end
 
@@ -230,25 +220,19 @@ class EmailDigestAgent < PromptAgent
   end
 
   def create_gmail_client
-    %w[
-      GMAIL_CLIENT_ID
-      GMAIL_CLIENT_SECRET
-      GMAIL_REFRESH_TOKEN
-    ].each do |env_var|
-      raise "#{env_var} is not set" unless ENV.fetch(env_var, nil)
+    %w[GMAIL_CLIENT_ID GMAIL_CLIENT_SECRET GMAIL_REFRESH_TOKEN].each do |var|
+      raise "#{var} is not set" unless ENV.fetch(var, nil)
     end
 
-    # Specify scopes when using refresh token
-    creds =
-      Google::Auth::UserRefreshCredentials.new(
-        client_id: ENV.fetch("GMAIL_CLIENT_ID", nil),
-        client_secret: ENV.fetch("GMAIL_CLIENT_SECRET", nil),
-        refresh_token: ENV.fetch("GMAIL_REFRESH_TOKEN", nil),
-        scope: [
-          Google::Apis::GmailV1::AUTH_GMAIL_SEND,
-          Google::Apis::GmailV1::AUTH_GMAIL_MODIFY
-        ]
-      )
+    creds = Google::Auth::UserRefreshCredentials.new(
+      client_id:     ENV.fetch("GMAIL_CLIENT_ID"),
+      client_secret: ENV.fetch("GMAIL_CLIENT_SECRET"),
+      refresh_token: ENV.fetch("GMAIL_REFRESH_TOKEN"),
+      scope: [
+        Google::Apis::GmailV1::AUTH_GMAIL_SEND,
+        Google::Apis::GmailV1::AUTH_GMAIL_MODIFY
+      ]
+    )
 
     gmail = Google::Apis::GmailV1::GmailService.new
     gmail.authorization = creds
