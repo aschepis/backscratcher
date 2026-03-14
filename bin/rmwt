@@ -11,6 +11,8 @@ if [ -z "$main_branch" ]; then
     main_branch="main"
 fi
 
+has_gh=$(command -v gh &>/dev/null && gh auth status &>/dev/null && echo "yes" || echo "no")
+
 check_worktree_safety() {
     local wt_path="$1"
     local branch="$2"
@@ -33,10 +35,14 @@ check_worktree_safety() {
             issues+=("$unpushed unpushed commit(s)")
         fi
 
-        # Check if merged
+        # Check if merged (handles regular merges and squash merges)
         if ! git merge-base --is-ancestor "$branch" "origin/$main_branch" 2>/dev/null; then
             if [ "$branch" != "$main_branch" ]; then
-                issues+=("not merged to $main_branch")
+                if [ "$has_gh" = "yes" ] && gh pr view "$branch" --json state --jq '.state' 2>/dev/null | grep -q "MERGED"; then
+                    : # PR was squash-merged, consider it merged
+                else
+                    issues+=("not merged to $main_branch")
+                fi
             fi
         fi
     fi

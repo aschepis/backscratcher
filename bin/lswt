@@ -39,8 +39,10 @@ while IFS= read -r line; do
                     issues+=("$unpushed unpushed commit(s)")
                 fi
 
-                # Check if branch is merged into main
+                # Check if branch is merged into main (handles regular merges and squash merges)
                 if git merge-base --is-ancestor "$branch" "origin/$main_branch" 2>/dev/null; then
+                    merged="yes"
+                elif [ "$has_gh" = "yes" ] && gh pr view "$branch" --json state --jq '.state' 2>/dev/null | grep -q "MERGED"; then
                     merged="yes"
                 else
                     merged="no"
