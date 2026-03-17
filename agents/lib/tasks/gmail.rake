@@ -94,9 +94,21 @@ namespace :gmail do
       puts e.message
     end
 
-    # 🎁 Show user where refresh token lives now
-    puts "\nRefresh Token:"
-    puts credentials.refresh_token
-    puts "\n→ Save this in ENV[GMAIL_REFRESH_TOKEN]\n"
+    # 🎁 Update ../.env with the new refresh token
+    env_path = File.expand_path("../../.env", __dir__)
+    if File.exist?(env_path)
+      env_content = File.read(env_path)
+      if env_content.match?(/^GMAIL_REFRESH_TOKEN=/)
+        env_content = env_content.gsub(/^GMAIL_REFRESH_TOKEN=.*$/, "GMAIL_REFRESH_TOKEN=#{credentials.refresh_token}")
+      else
+        env_content += "\nGMAIL_REFRESH_TOKEN=#{credentials.refresh_token}"
+      end
+      File.write(env_path, env_content)
+      puts "\n✅ GMAIL_REFRESH_TOKEN updated in #{env_path}\n"
+    else
+      puts "\nRefresh Token:"
+      puts credentials.refresh_token
+      puts "\n→ Save this in ENV[GMAIL_REFRESH_TOKEN]\n"
+    end
   end
 end
