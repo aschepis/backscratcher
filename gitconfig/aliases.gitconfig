@@ -14,7 +14,7 @@
 	recent = branch --sort=-committerdate --format=\"%(committerdate:relative)%09%(refname:short)\"
 	staged = diff --cached
 	cb = checkout -b
-	main = \\!git checkout main && git pull
-	cleanup = \\!git branch --merged | grep -v \"\\\\*\\\\|main\\\\|master\" | xargs -n 1 git branch -d
+	main = !git checkout main && git pull
+	cleanup = !git branch --merged | grep -v \"\\*\\|main\\|master\" | xargs -n 1 git branch -d
 	uncommit = reset --soft HEAD~1
 	nevermind = checkout -- .

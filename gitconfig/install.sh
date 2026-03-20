@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ALIASES_FILE="$REPO_DIR/gitconfig/aliases.gitconfig"
+ALIASES_FILE="$REPO_DIR/aliases.gitconfig"
 GITCONFIG="$HOME/.gitconfig"
 INCLUDE_LINE="path = $ALIASES_FILE"
 
