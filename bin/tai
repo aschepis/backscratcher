@@ -1,0 +1,143 @@
+#!/bin/bash
+set -e
+
+usage() {
+    echo "Usage: tai <description>"
+    echo ""
+    echo "Like tmux, but for dummies."
+    echo "Uses Claude to generate the tmux command from your description, then runs it."
+    echo ""
+    echo "Examples:"
+    echo "  tai 'split the current window vertically'"
+    echo "  tai 'create a new session called work'"
+    echo "  tai 'rename the current window to server'"
+    echo "  tai 'kill the pane to the right'"
+    echo ""
+    echo "Flags:"
+    echo "  -n, --dry-run   Print the command without executing it"
+    exit 1
+}
+
+dry_run=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            ;;
+        -n|--dry-run)
+            dry_run=1
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [ -z "$1" ]; then
+    usage
+fi
+
+description="$*"
+
+if command -v tmux >/dev/null 2>&1; then
+    tmux_version=$(tmux -V 2>/dev/null || echo "unknown")
+else
+    echo "Error: tmux is not installed" >&2
+    exit 1
+fi
+
+inside_tmux="no"
+if [ -n "$TMUX" ]; then
+    inside_tmux="yes"
+fi
+
+sessions=$(tmux list-sessions 2>/dev/null || echo "(no server running)")
+windows=""
+panes=""
+current_session=""
+current_window=""
+current_pane=""
+if [ "$inside_tmux" = "yes" ]; then
+    windows=$(tmux list-windows 2>/dev/null || echo "")
+    panes=$(tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_current_command} #{pane_width}x#{pane_height}' 2>/dev/null || echo "")
+    current_session=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "")
+    current_window=$(tmux display-message -p '#{window_index}:#{window_name}' 2>/dev/null || echo "")
+    current_pane=$(tmux display-message -p '#{pane_index}' 2>/dev/null || echo "")
+fi
+
+prompt="Output ONLY a single-line shell command (or a sequence joined by ';' or '&&') that uses tmux to accomplish the user's request. No explanation, no markdown, no code blocks, no text before or after. Just the command.
+
+Constraints:
+- The command must start with 'tmux '.
+- Prefer the most idiomatic tmux subcommand.
+- If the request is ambiguous, choose the most common interpretation.
+- Do not invent session, window, or pane names that aren't present unless the user asked to create one.
+- Do not include shell redirection unless necessary.
+
+Environment:
+- tmux version: $tmux_version
+- inside tmux session: $inside_tmux
+- current session: $current_session
+- current window: $current_window
+- current pane index: $current_pane
+
+Existing sessions:
+$sessions
+
+Existing windows:
+$windows
+
+Existing panes:
+$panes
+
+Request: $description"
+
+echo "Generating tmux command..." >&2
+raw_output=$(claude -p "$prompt" --model sonnet --no-session-persistence 2>&1)
+claude_exit=$?
+if [ $claude_exit -ne 0 ]; then
+    echo "Error: Claude command failed (exit code: $claude_exit)" >&2
+    echo "Output: $raw_output" >&2
+    exit 1
+fi
+if [ -z "$raw_output" ]; then
+    echo "Error: Claude returned empty output" >&2
+    exit 1
+fi
+
+cleaned=$(echo "$raw_output" | sed 's/^```bash//; s/^```sh//; s/^```//; s/```$//')
+command_line=$(echo "$cleaned" | grep -E '^\s*tmux\b' | head -1 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+
+if [ -z "$command_line" ]; then
+    command_line=$(echo "$cleaned" | grep -v '^[[:space:]]*$' | head -1 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+fi
+
+if [ -z "$command_line" ]; then
+    echo "Error: Failed to extract tmux command from Claude output" >&2
+    echo "Raw output was:" >&2
+    echo "$raw_output" >&2
+    exit 1
+fi
+
+case "$command_line" in
+    tmux*) ;;
+    *)
+        echo "Error: Generated command does not start with 'tmux':" >&2
+        echo "  $command_line" >&2
+        exit 1
+        ;;
+esac
+
+echo "Running: $command_line" >&2
+
+if [ "$dry_run" = "1" ]; then
+    exit 0
+fi
+
+eval "$command_line"
