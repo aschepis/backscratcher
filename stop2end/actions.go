@@ -54,6 +54,36 @@ func saveIgnored(ignored map[string]struct{}) error {
 	return os.WriteFile(ignorePath, data, 0o644)
 }
 
+// importBlockList reads a JSON array of phone strings from path.
+// path is cleaned and stat-checked before reading; it is never passed to a shell.
+func importBlockList(path string) ([]string, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("cannot access file: %w", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+	var phones []string
+	if err := json.Unmarshal(data, &phones); err != nil {
+		return nil, fmt.Errorf("invalid JSON (expected array of strings): %w", err)
+	}
+	return phones, nil
+}
+
+// exportBlockList writes the block list as a JSON array to path.
+// path is cleaned before writing; it is never passed to a shell.
+func exportBlockList(phones []string, path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create dir: %w", err)
+	}
+	data, err := json.MarshalIndent(phones, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
 const appleScriptTimeout = 10 * time.Second
 
 func runAppleScript(script string) error {

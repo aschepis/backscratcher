@@ -80,17 +80,28 @@ type Message struct {
 	Text   string
 }
 
-// Convo represents a conversation that matched our spam patterns.
-// Keyword and Count are set for pending; Confirm is set for done.
+// Convo represents a conversation.
+// Keyword and Count are set for spam-pending; Confirm is set for spam-done.
+// DisplayName is populated from Contacts when available.
 type Convo struct {
 	Phone          string
 	ChatIdentifier string
+	DisplayName    string    // from Contacts cache; empty if not found
+	IsGroup        bool
 	Sample         string
 	Keyword        string
 	Count          int
 	Confirm        string
-	LastDate       time.Time // most recent message in the conversation
-	Messages       []Message
+	LastDate       time.Time
+	Messages       []Message // may be nil for convos loaded without full messages
+}
+
+// Label returns the display name if available, otherwise the phone number.
+func (c Convo) Label() string {
+	if c.DisplayName != "" {
+		return c.DisplayName
+	}
+	return c.Phone
 }
 
 func chatDBPath() (string, error) {
@@ -142,41 +153,11 @@ type chatEntry struct {
 }
 
 func readDB(ignored map[string]struct{}) (pending, done []Convo, err error) {
-	path, err := chatDBPath()
+	db, cleanup, err := openDBCopy()
 	if err != nil {
-		return nil, nil, fmt.Errorf("home dir: %w", err)
+		return nil, nil, err
 	}
-
-	// Copy to temp so we don't contend with Messages holding a write lock.
-	tmp, err := os.CreateTemp("", "stop2end-*.db")
-	if err != nil {
-		return nil, nil, fmt.Errorf("temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	tmp.Close()
-	defer os.Remove(tmpPath)
-
-	src, err := os.Open(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open chat.db: %w", err)
-	}
-	dst, err := os.Create(tmpPath)
-	if err != nil {
-		src.Close()
-		return nil, nil, fmt.Errorf("write temp: %w", err)
-	}
-	_, copyErr := io.Copy(dst, src)
-	src.Close()
-	dst.Close()
-	if copyErr != nil {
-		return nil, nil, fmt.Errorf("copy chat.db: %w", copyErr)
-	}
-
-	db, err := sql.Open("sqlite", "file:"+tmpPath+"?mode=ro")
-	if err != nil {
-		return nil, nil, fmt.Errorf("open sqlite: %w", err)
-	}
-	defer db.Close()
+	defer cleanup()
 
 	cutoff := fmt.Sprintf(
 		"(strftime('%%s',datetime('now','-%d days'))-strftime('%%s','2001-01-01'))*1000000000",
@@ -290,4 +271,148 @@ func readDB(ignored map[string]struct{}) (pending, done []Convo, err error) {
 	}
 
 	return pending, done, nil
+}
+
+// openDBCopy copies chat.db to a temp file and opens it read-only.
+// Caller must close the returned *sql.DB and the cleanup func removes the temp file.
+func openDBCopy() (*sql.DB, func(), error) {
+	path, err := chatDBPath()
+	if err != nil {
+		return nil, nil, fmt.Errorf("home dir: %w", err)
+	}
+	tmp, err := os.CreateTemp("", "stop2end-*.db")
+	if err != nil {
+		return nil, nil, fmt.Errorf("temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+
+	src, err := os.Open(path)
+	if err != nil {
+		os.Remove(tmpPath)
+		return nil, nil, fmt.Errorf("open chat.db: %w", err)
+	}
+	dst, err := os.Create(tmpPath)
+	if err != nil {
+		src.Close()
+		os.Remove(tmpPath)
+		return nil, nil, fmt.Errorf("write temp: %w", err)
+	}
+	_, copyErr := io.Copy(dst, src)
+	src.Close()
+	dst.Close()
+	if copyErr != nil {
+		os.Remove(tmpPath)
+		return nil, nil, fmt.Errorf("copy chat.db: %w", copyErr)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+tmpPath+"?mode=ro")
+	if err != nil {
+		os.Remove(tmpPath)
+		return nil, nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	return db, func() { db.Close(); os.Remove(tmpPath) }, nil
+}
+
+// readAllConvos returns every conversation in chat.db within the lookback window,
+// ordered by most-recent message descending. Messages are not loaded; call
+// loadMessages to populate them on demand.
+func readAllConvos(ignored map[string]struct{}) ([]Convo, error) {
+	db, cleanup, err := openDBCopy()
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	cutoff := fmt.Sprintf(
+		"(strftime('%%s',datetime('now','-%d days'))-strftime('%%s','2001-01-01'))*1000000000",
+		lookbackDays,
+	)
+	rows, err := db.Query(fmt.Sprintf(`
+		SELECT
+			c.chat_identifier,
+			c.display_name,
+			c.style,
+			MAX(m.date) AS last_date,
+			(SELECT text FROM message m2
+			 JOIN chat_message_join cmj2 ON cmj2.message_id = m2.rowid
+			 WHERE cmj2.chat_id = c.rowid AND m2.text IS NOT NULL AND m2.text != ''
+			 ORDER BY m2.date DESC LIMIT 1) AS last_text
+		FROM chat c
+		JOIN chat_message_join cmj ON cmj.chat_id = c.rowid
+		JOIN message m ON m.rowid = cmj.message_id
+		WHERE m.date > %s
+		GROUP BY c.rowid
+		ORDER BY last_date DESC
+	`, cutoff))
+	if err != nil {
+		return nil, fmt.Errorf("query: %w", err)
+	}
+	defer rows.Close()
+
+	var convos []Convo
+	for rows.Next() {
+		var chatID string
+		var displayName sql.NullString
+		var style int
+		var lastDate int64
+		var lastText sql.NullString
+		if err := rows.Scan(&chatID, &displayName, &style, &lastDate, &lastText); err != nil {
+			continue
+		}
+		phone := chatID
+		if displayName.Valid && displayName.String != "" && style == 43 {
+			// style 43 = group chat; chat_identifier is a UUID-like group ID
+			phone = displayName.String
+		}
+		if _, ign := ignored[phone]; ign {
+			continue
+		}
+		convos = append(convos, Convo{
+			Phone:          phone,
+			ChatIdentifier: chatID,
+			IsGroup:        style == 43,
+			Sample:         trunc(lastText.String, 80),
+			LastDate:       appleNsToTime(lastDate),
+		})
+	}
+	return convos, nil
+}
+
+// loadMessages fetches all messages for the given chat_identifier.
+func loadMessages(chatIdentifier string) ([]Message, error) {
+	db, cleanup, err := openDBCopy()
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	rows, err := db.Query(`
+		SELECT m.text, m.is_from_me, m.date
+		FROM message m
+		JOIN chat_message_join cmj ON cmj.message_id = m.rowid
+		JOIN chat c ON c.rowid = cmj.chat_id
+		WHERE c.chat_identifier = ?
+		ORDER BY m.date ASC
+	`, chatIdentifier)
+	if err != nil {
+		return nil, fmt.Errorf("query messages: %w", err)
+	}
+	defer rows.Close()
+
+	var msgs []Message
+	for rows.Next() {
+		var textNull sql.NullString
+		var fromMe int
+		var date int64
+		if err := rows.Scan(&textNull, &fromMe, &date); err != nil {
+			continue
+		}
+		msgs = append(msgs, Message{
+			FromMe: fromMe != 0,
+			Time:   appleNsToTime(date),
+			Text:   textNull.String,
+		})
+	}
+	return msgs, nil
 }

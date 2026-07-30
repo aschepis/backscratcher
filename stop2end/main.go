@@ -7,6 +7,10 @@ import (
 )
 
 func main() {
+	fmt.Print("Loading contacts… ")
+	contacts := loadContacts()
+	fmt.Printf("done (%d names).\n", len(contacts.names))
+
 	fmt.Print("Scanning iMessage database… ")
 
 	ignored, err := loadIgnored()
@@ -25,28 +29,25 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	fmt.Println("done.")
 
-	if len(pending) == 0 && len(done) == 0 {
-		fmt.Printf("No unsubscribe-pattern messages found in the last %d days.\n", lookbackDays)
-		return
+	all, err := readAllConvos(ignored)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nWarning: could not load all conversations: %v\n", err)
+		all = nil
 	}
 
-	if len(pending) > 0 {
-		fmt.Printf("Found %d conversation(s) with pending opt-out instructions.\n", len(pending))
-		runUI(pending, modePending, ignored, func() ([]Convo, error) {
-			p, _, e := readDB(ignored)
-			return p, e
-		})
-	}
+	fmt.Printf("done (%d spam, %d total).\n", len(pending)+len(done), len(all))
 
-	if len(done) > 0 {
-		fmt.Printf("\nFound %d already-unsubscribed conversation(s).\n", len(done))
-		runUI(done, modeDone, ignored, func() ([]Convo, error) {
-			_, d, e := readDB(ignored)
-			return d, e
-		})
-	}
+	runUI(
+		pending, done, all,
+		contacts, ignored,
+		func() ([]Convo, []Convo, error) {
+			return readDB(ignored)
+		},
+		func() ([]Convo, error) {
+			return readAllConvos(ignored)
+		},
+	)
 
 	fmt.Println("\nDone.")
 }
