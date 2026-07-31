@@ -163,10 +163,14 @@ func readDB(ignored map[string]struct{}) (pending, done []Convo, err error) {
 		"(strftime('%%s',datetime('now','-%d days'))-strftime('%%s','2001-01-01'))*1000000000",
 		lookbackDays,
 	)
+	// LEFT JOIN handle so short-code messages (handle_id=0) aren't silently dropped.
+	// COALESCE falls back to chat_identifier when handle is missing.
 	rows, err := db.Query(fmt.Sprintf(`
-		SELECT m.text, m.is_from_me, m.date, h.id, c.rowid, c.chat_identifier
+		SELECT m.text, m.is_from_me, m.date,
+		       COALESCE(h.id, c.chat_identifier) AS phone,
+		       c.rowid, c.chat_identifier
 		FROM message m
-		JOIN handle h              ON m.handle_id  = h.rowid
+		LEFT JOIN handle h         ON m.handle_id  = h.rowid
 		JOIN chat_message_join cmj ON cmj.message_id = m.rowid
 		JOIN chat c                ON c.rowid       = cmj.chat_id
 		WHERE m.date > %s
@@ -187,7 +191,8 @@ func readDB(ignored map[string]struct{}) (pending, done []Convo, err error) {
 			continue
 		}
 		if chats[chatRowid] == nil {
-			chats[chatRowid] = &chatEntry{phone: phone, chatID: chatID}
+			// Prefer chat_identifier as the canonical phone; it's what deleteConversation uses.
+			chats[chatRowid] = &chatEntry{phone: chatID, chatID: chatID}
 		}
 		text := ""
 		if textNull.Valid {

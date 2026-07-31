@@ -119,14 +119,36 @@ func sendUnsubscribe(phone, keyword string) error {
 }
 
 // deleteConversation deletes the conversation from Messages.app (syncs via iCloud).
-// chatIdentifier is the phone number — validated and quote-stripped before use.
+// chatIdentifier is the phone/short-code from chat.db — quote-stripped before embedding.
+// Three strategies are tried in order: by chat id, by chat name, by SMS buddy.
+// Short codes (e.g. "74681") have a registered sender name in Messages.app so the
+// name-based lookup fails; the buddy-based fallback handles those.
 func deleteConversation(chatIdentifier string) error {
 	safe := strings.ReplaceAll(chatIdentifier, `"`, "")
-	return runAppleScript(fmt.Sprintf(
-		"tell application \"Messages\"\n"+
-			"    set tgt to (first chat whose name is \"%s\")\n"+
-			"    delete tgt\n"+
-			"end tell",
-		safe,
-	))
+	script := fmt.Sprintf(`
+tell application "Messages"
+	-- Strategy 1: match by the chat's internal id (often equals chat_identifier from DB)
+	try
+		set tgt to first chat whose id is "%s"
+		delete tgt
+		return
+	end try
+	-- Strategy 2: match by display name (works when number is unknown to Contacts)
+	try
+		set tgt to first chat whose name is "%s"
+		delete tgt
+		return
+	end try
+	-- Strategy 3: find chat via SMS buddy (handles short codes with registered sender names)
+	try
+		set SMS to first service whose service type = SMS
+		set bud to buddy "%s" of SMS
+		repeat with c in (every chat whose participants contains bud)
+			delete c
+		end repeat
+		return
+	end try
+	error "Could not find conversation for %s"
+end tell`, safe, safe, safe, safe)
+	return runAppleScript(script)
 }
