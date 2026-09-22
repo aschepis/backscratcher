@@ -2,9 +2,84 @@
 
 A collection of shell scripts, git aliases, and CLI tools for a faster development workflow.
 
-## Git Worktree Scripts
+## wt — unified worktree CLI
 
-Scripts for managing git worktrees efficiently. All scripts are interactive and use `select` menus for easy navigation.
+`wt` is a single, first-class replacement for the five `*wt` scripts below
+(`cdwt`/`lswt`/`rmwt`/`mkwt`/`cleanwt`, which still work and are documented further
+down). It adds a fuzzy [fzf](https://github.com/junegunn/fzf) picker (type a name
+instead of a number), real in-shell `cd` (no nested-shell `exec $SHELL` hack), shell
+tab-completion of subcommands / branches / worktree names, and a single shared
+safety check.
+
+### Install
+
+`wt` is a shell **function**, so it must be *sourced* (a subprocess can't change the
+parent shell's directory). Add one line to your shell rc:
+
+```bash
+# ~/.zshrc  (or ~/.bashrc)
+source /path/to/backscratcher/bin/wt.sh
+```
+
+Restart your shell, then run `wt doctor` to verify the setup.
+
+**Dependencies:** `git` (required), `fzf` (recommended — falls back to a numbered
+menu without it), `gh` (optional — enables squash-merge detection).
+
+### Commands
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `wt [switch] [name]` | `cd`, `sw` | Fuzzy-pick a worktree and `cd` into it (the default command) |
+| `wt new <branch> [path]` | `add`, `mk` | Create a worktree for a branch (sibling dir), then `cd` |
+| `wt new -b <branch> [path]` | | Create a worktree with a brand-new branch |
+| `wt ls` | `list`, `l` | List worktrees with safety status |
+| `wt rm [name]` | `remove` | Remove a worktree (safety-gated), optionally its branch |
+| `wt clean` | `prune` | Batch-remove every "safe" worktree |
+| `wt doctor` | | Check your setup (fzf, gh, shell integration, config) |
+| `wt help` | | Show usage |
+
+```bash
+$ wt                       # fuzzy-pick a worktree → cd into it
+$ wt new feature-auth      # worktree for an existing branch, then cd
+$ wt new -b new-feature    # worktree with a fresh branch
+$ wt ls
+$ wt rm feature-x          # or: wt rm   (then pick)
+$ wt clean
+```
+
+A worktree is **safe to delete** when it has no uncommitted changes, no unpushed
+commits, and its branch is merged into the main branch (squash-merges are detected
+via `gh` when authenticated). Removing an unsafe worktree requires an explicit `yes`.
+
+### Configuration
+
+Optional config at `~/.config/wt/config` (or `$WT_CONFIG`), `KEY=value` lines.
+Environment variables override the config file.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `WT_BASE_DIR` | sibling of main repo | Where new worktrees are created |
+| `WT_DEFAULT_BRANCH` | origin `HEAD` / `main` | Override the detected main branch |
+| `WT_AUTO_CD` | `0` (prompt) | `1` = `cd` after `new` without asking |
+| `WT_USE_FZF` | `1` | `0` = always use the numbered menu |
+| `WT_COPY_UNTRACKED` | _(off)_ | Space-separated globs copied into a new worktree, e.g. `".env .env.local"` |
+| `WT_POST_CREATE` | _(none)_ | Shell command run inside a newly created worktree |
+| `WT_NO_COLOR` / `NO_COLOR` | | Disable colored output |
+
+```ini
+# ~/.config/wt/config
+WT_AUTO_CD=1
+WT_COPY_UNTRACKED=".env .env.local"
+WT_POST_CREATE="direnv allow; npm install"
+```
+
+---
+
+## Git Worktree Scripts (legacy)
+
+> Superseded by `wt` above, but kept for reference. All are interactive and use
+> `select` numbered menus.
 
 | Command | Description |
 |---------|-------------|
