@@ -9,11 +9,12 @@ if ! git rev-parse --git-dir &>/dev/null; then
 fi
 
 usage() {
-    echo "Usage: mkwt <branch-name> [worktree-path]"
+    echo "Usage: mkwt [-b] <branch-name> [worktree-path] [--from <base-branch>]"
     echo ""
     echo "Examples:"
-    echo "  mkwt feature-auth        # Create worktree for existing branch"
-    echo "  mkwt -b new-feature      # Create worktree with new branch"
+    echo "  mkwt feature-auth                    # Create worktree for existing branch"
+    echo "  mkwt -b new-feature                   # Create worktree with new branch off current HEAD"
+    echo "  mkwt -b new-feature --from develop    # Create worktree with new branch off 'develop'"
     exit 1
 }
 
@@ -28,8 +29,23 @@ if [ "$1" == "-b" ]; then
     shift
 fi
 
-target="$1"
-custom_path="$2"
+base_branch=""
+positional=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --from)
+            base_branch="$2"
+            shift 2
+            ;;
+        *)
+            positional+=("$1")
+            shift
+            ;;
+    esac
+done
+
+target="${positional[0]}"
+custom_path="${positional[1]}"
 
 # Find the repo root (main worktree location)
 repo_root=$(git worktree list --porcelain | grep "^worktree" | head -1 | cut -d' ' -f2)
@@ -42,8 +58,10 @@ branch="$target"
 worktree_name="${repo_name}-${branch}"
 
 if [ "$new_branch" = true ]; then
-    # New branch - will be created with worktree
-    :
+    if [ -n "$base_branch" ]; then
+        # Fetch the base branch first so the new branch starts from an up-to-date point
+        git fetch origin "$base_branch" 2>/dev/null || true
+    fi
 else
     # Existing branch - fetch it first
     git fetch origin "$branch" 2>/dev/null || true
@@ -66,11 +84,29 @@ if [ -d "$worktree_path" ]; then
     exit 0
 fi
 
+# Resolve the start-point for a new branch, if a base was requested
+start_point=""
+if [ "$new_branch" = true ] && [ -n "$base_branch" ]; then
+    if git show-ref --verify --quiet "refs/heads/$base_branch"; then
+        start_point="$base_branch"
+    elif git show-ref --verify --quiet "refs/remotes/origin/$base_branch"; then
+        start_point="origin/$base_branch"
+    else
+        echo "Base branch '$base_branch' not found locally or on origin."
+        exit 1
+    fi
+fi
+
 # Create the worktree
 echo ""
 if [ "$new_branch" = true ]; then
-    echo "Creating worktree with new branch '$branch'..."
-    git worktree add -b "$branch" "$worktree_path"
+    if [ -n "$start_point" ]; then
+        echo "Creating worktree with new branch '$branch' from '$start_point'..."
+        git worktree add -b "$branch" "$worktree_path" "$start_point"
+    else
+        echo "Creating worktree with new branch '$branch'..."
+        git worktree add -b "$branch" "$worktree_path"
+    fi
 else
     echo "Creating worktree for branch '$branch'..."
     if git show-ref --verify --quiet "refs/heads/$branch"; then
