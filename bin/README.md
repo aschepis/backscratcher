@@ -30,23 +30,31 @@ menu without it), `gh` (optional — enables squash-merge detection).
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `wt [switch] [name]` | `cd`, `sw` | Fuzzy-pick a worktree and `cd` into it (the default command) |
+| `wt [switch] [query]` | `cd`, `sw` | Fuzzy-pick a worktree and `cd` into it (the default command) |
 | `wt new <branch> [path]` | `add`, `mk` | Create a worktree for a branch (sibling dir), then `cd` |
 | `wt new -b <branch> [path]` | | Create a worktree with a brand-new branch |
+| `wt new -b <branch> --from <base>` | | Branch off `<base>` rather than current `HEAD` |
 | `wt ls` | `list`, `l` | List worktrees with safety status |
-| `wt rm [name]` | `remove` | Remove a worktree (safety-gated), optionally its branch |
+| `wt rm [query]` | `remove` | Remove a worktree (safety-gated), optionally its branch |
 | `wt clean` | `prune` | Batch-remove every "safe" worktree |
 | `wt doctor` | | Check your setup (fzf, gh, shell integration, config) |
 | `wt help` | | Show usage |
 
 ```bash
 $ wt                       # fuzzy-pick a worktree → cd into it
+$ wt bugfix                # pre-filter the list; a single match goes straight there
 $ wt new feature-auth      # worktree for an existing branch, then cd
 $ wt new -b new-feature    # worktree with a fresh branch
+$ wt new -b hotfix --from release-2  # fresh branch off an up-to-date release-2
 $ wt ls
 $ wt rm feature-x          # or: wt rm   (then pick)
 $ wt clean
 ```
+
+`switch` and `rm` take a query rather than an exact name: an exact worktree, branch
+or path name wins, otherwise the query pre-filters the picker and resolves on its own
+when exactly one worktree matches. Without `fzf` the filter is a case-insensitive
+substring match.
 
 A worktree is **safe to delete** when it has no uncommitted changes, no unpushed
 commits, and its branch is merged into the main branch (squash-merges are detected
@@ -161,6 +169,9 @@ mkwt feature-auth
 
 # Create new branch
 mkwt -b new-feature
+
+# Create new branch off a specific base
+mkwt -b hotfix --from release-2
 
 # From GitHub PR (requires gh CLI)
 mkwt 1234

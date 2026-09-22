@@ -224,13 +224,35 @@ EOF
 # All UI goes to the tty/stderr so the path can be captured via $(...).
 # --------------------------------------------------------------------------
 
+# Case-insensitive substring test. Neither ${var,,} (bash 4+) nor ${var:l}
+# (zsh) exists in both shells, so lowercase through tr.
+_wt_matches() {
+    local haystack needle
+    haystack=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    needle=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+    case "$haystack" in *"$needle"*) return 0 ;; esac
+    return 1
+}
+
+_wt_no_match() {
+    if [ -n "$1" ]; then
+        echo "wt: no worktree matching '$1'" >&2
+    else
+        echo "wt: no worktrees found" >&2
+    fi
+}
+
 _wt_pick() {
-    local header="$1" out
+    local header="$1" query="$2" out fzf_status
     if [ "${WT_USE_FZF:-1}" != 0 ] && command -v fzf >/dev/null 2>&1; then
         out=$(fzf --ansi --delimiter=$'\t' --with-nth=1 --nth=1 \
+                  --query="$query" --select-1 --exit-0 \
                   --height=45% --reverse --header="$header" \
                   --preview='git -C {2} log --oneline -10 2>/dev/null; echo; git -C {2} status -s 2>/dev/null' \
                   --preview-window='right,55%,wrap')
+        fzf_status=$?
+        # fzf exits 1 when --exit-0 matches nothing, 130 when the user aborts.
+        [ "$fzf_status" -eq 1 ] && return 1
         [ -n "$out" ] && printf '%s' "${out#*$'\t'}"
         return 0
     fi
@@ -239,10 +261,19 @@ _wt_pick() {
     local -a _renders _paths
     local r p
     while IFS=$'\t' read -r r p; do
+        if [ -n "$query" ] && ! _wt_matches "$r" "$query"; then
+            continue
+        fi
         _renders+=("$r")
         _paths+=("$p")
     done
-    [ "${#_paths[@]}" -gt 0 ] || return 0
+    [ "${#_paths[@]}" -gt 0 ] || return 1
+
+    if [ "${#_paths[@]}" -eq 1 ]; then
+        # Avoid indexing: zsh arrays are 1-based, bash arrays 0-based.
+        for p in "${_paths[@]}"; do printf '%s' "$p"; done
+        return 0
+    fi
 
     {
         echo "$header" >&2
@@ -263,7 +294,7 @@ _wt_pick() {
     } </dev/tty
 }
 
-# Resolve a name/branch/path argument to a worktree path.
+# Resolve an exact name/branch/path argument to a worktree path.
 #   $1 = query, $2 = exclude_main (1 to skip the main worktree)
 _wt_resolve_name() {
     local q="$1" exclude_main="$2" wtp branch ismain detached bare locked
@@ -277,6 +308,21 @@ _wt_resolve_name() {
 $(_wt_list_records)
 EOF
     return 1
+}
+
+# Resolve a query to a worktree path: exact match first, otherwise hand the
+# query to the picker, which resolves a unique fuzzy match without any UI.
+#   $1 = query (may be empty), $2 = exclude_main, $3 = picker header
+_wt_find() {
+    local q="$1" exclude_main="$2" header="$3" wtp
+    if [ -n "$q" ]; then
+        wtp=$(_wt_resolve_name "$q" "$exclude_main")
+        if [ -n "$wtp" ]; then
+            printf '%s' "$wtp"
+            return 0
+        fi
+    fi
+    _wt_render_rows "$exclude_main" | _wt_pick "$header" "$q"
 }
 
 # --------------------------------------------------------------------------
@@ -312,11 +358,7 @@ EOF
 _wt_cmd_switch() {
     _wt_repo_setup || return 1
     local target="$1" wtp
-    if [ -n "$target" ]; then
-        wtp=$(_wt_resolve_name "$target" 0) || { echo "wt: no worktree matching '$target'" >&2; return 1; }
-    else
-        wtp=$(_wt_render_rows 0 | _wt_pick "Switch to which worktree?")
-    fi
+    wtp=$(_wt_find "$target" 0 "Switch to which worktree?") || { _wt_no_match "$target"; return 1; }
     [ -n "$wtp" ] || return 0
     if [ ! -d "$wtp" ]; then
         echo "wt: path no longer exists: $wtp" >&2
@@ -368,15 +410,42 @@ _wt_maybe_cd() {
 _wt_cmd_new() {
     _wt_repo_setup || return 1
 
-    local new_branch=0
-    if [ "$1" = "-b" ]; then
-        new_branch=1
-        shift
-    fi
-    local target="$1" custom_path="$2"
+    local new_branch=0 base_branch="" target="" custom_path=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -b)
+                new_branch=1
+                shift
+                ;;
+            --from)
+                # Guard the missing value: a bare `shift 2` here would loop forever.
+                if [ -z "$2" ]; then
+                    echo "wt: --from requires a branch name" >&2
+                    return 1
+                fi
+                base_branch="$2"
+                shift 2
+                ;;
+            *)
+                if [ -z "$target" ]; then
+                    target="$1"
+                elif [ -z "$custom_path" ]; then
+                    custom_path="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
     if [ -z "$target" ]; then
-        echo "Usage: wt new <branch> [path]      create worktree for a branch"
-        echo "       wt new -b <new-branch> [path] create worktree with a new branch"
+        echo "Usage: wt new <branch> [path]                  create worktree for a branch"
+        echo "       wt new -b <new-branch> [path]           create worktree with a new branch"
+        echo "       wt new -b <new-branch> --from <base>    branch off <base> instead of HEAD"
+        return 1
+    fi
+
+    if [ -n "$base_branch" ] && [ "$new_branch" != 1 ]; then
+        echo "wt: --from only applies to a new branch (add -b)" >&2
         return 1
     fi
 
@@ -395,10 +464,29 @@ _wt_cmd_new() {
         return 0
     fi
 
+    local start_point=""
+    if [ -n "$base_branch" ]; then
+        # Fetch first so the new branch starts from an up-to-date base.
+        git fetch origin "$base_branch" >/dev/null 2>&1 || true
+        if git show-ref --verify --quiet "refs/heads/$base_branch"; then
+            start_point="$base_branch"
+        elif git show-ref --verify --quiet "refs/remotes/origin/$base_branch"; then
+            start_point="origin/$base_branch"
+        else
+            echo "wt: base branch '$base_branch' not found locally or on origin" >&2
+            return 1
+        fi
+    fi
+
     echo ""
     if [ "$new_branch" = 1 ]; then
-        echo "Creating worktree with new branch '$branch'..."
-        git worktree add -b "$branch" "$wtpath" || return 1
+        if [ -n "$start_point" ]; then
+            echo "Creating worktree with new branch '$branch' from '$start_point'..."
+            git worktree add -b "$branch" "$wtpath" "$start_point" || return 1
+        else
+            echo "Creating worktree with new branch '$branch'..."
+            git worktree add -b "$branch" "$wtpath" || return 1
+        fi
     else
         git fetch origin "$branch" 2>/dev/null || true
         if git show-ref --verify --quiet "refs/heads/$branch" \
@@ -500,9 +588,11 @@ _wt_cmd_rm() {
         return 0
     fi
     if [ -n "$target" ]; then
-        wtp=$(_wt_resolve_name "$target" 1) || { echo "wt: no worktree matching '$target'" >&2; return 1; }
-    else
-        wtp=$(printf '%s\n' "$rows" | _wt_pick "Select a worktree to delete")
+        wtp=$(_wt_resolve_name "$target" 1)
+    fi
+    if [ -z "$wtp" ]; then
+        wtp=$(printf '%s\n' "$rows" | _wt_pick "Select a worktree to delete" "$target") \
+            || { _wt_no_match "$target"; return 1; }
     fi
     if [ -z "$wtp" ]; then
         echo "Cancelled."
@@ -659,11 +749,14 @@ _wt_usage() {
 wt — git worktree manager
 
 Usage:
-  wt [switch] [name]    Fuzzy-pick a worktree and cd into it (default command)
+  wt [switch] [query]   Fuzzy-pick a worktree and cd into it (default command)
+                        A query pre-filters the list and goes straight there
+                        on a single match.
   wt new <branch> [path]  Create a worktree for a branch (sibling dir), then cd
   wt new -b <branch> [path]  Create a worktree with a brand-new branch
+  wt new -b <branch> --from <base>  Branch off <base> rather than current HEAD
   wt ls                 List worktrees with safety status
-  wt rm [name]          Remove a worktree (safety-gated), optionally its branch
+  wt rm [query]         Remove a worktree (safety-gated), optionally its branch
   wt clean              Batch-remove every "safe" worktree
   wt doctor             Check your setup (fzf, gh, shell integration, config)
   wt help               Show this help
