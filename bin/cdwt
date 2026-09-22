@@ -1,12 +1,109 @@
 #!/bin/bash
-# Get a list of worktree paths
-PS3="Select a worktree to switch to: "
-select dir in $(git worktree list --porcelain | grep "^worktree" | cut -d' ' -f2); do
-    if [ -n "$dir" ]; then
-        cd "$dir" || exit
-        break
-    else
-        echo "Invalid selection."
+# Switch to a git worktree, chosen by fuzzy search
+
+if ! git rev-parse --git-dir &>/dev/null; then
+    echo "Not in a git repository"
+    exit 1
+fi
+
+case "$1" in
+    -h|--help)
+        echo "Usage: cdwt [query]"
+        echo ""
+        echo "Fuzzy-select a worktree and open a shell in it."
+        echo "A query pre-filters the list and goes straight there on a single match."
+        exit 0
+        ;;
+esac
+
+query="$1"
+
+declare -a paths
+declare -a display_items
+declare -a entries
+
+while IFS= read -r line; do
+    if [[ "$line" =~ ^worktree\ (.+)$ ]]; then
+        wt_path="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^branch\ refs/heads/(.+)$ ]]; then
+        wt_branch="${BASH_REMATCH[1]}"
+    elif [[ "$line" == "" && -n "$wt_path" ]]; then
+        paths+=("$wt_path")
+        display_items+=("$(printf '%-40s [%s]' "$(basename "$wt_path")" "${wt_branch:-detached}")")
+        wt_path=""
+        wt_branch=""
     fi
-done
-exec $SHELL # Keeps the shell open in the new directory
+done < <(git worktree list --porcelain; echo "")
+
+if [ ${#paths[@]} -eq 0 ]; then
+    echo "No worktrees found."
+    exit 1
+fi
+
+selected_path=""
+
+if command -v fzf &>/dev/null; then
+    # Field 2 carries the path so the label can stay human-readable.
+    for i in "${!paths[@]}"; do
+        entries+=("${display_items[$i]}"$'\t'"${paths[$i]}")
+    done
+
+    match=$(printf '%s\n' "${entries[@]}" | fzf \
+        --delimiter=$'\t' --with-nth=1 --nth=1 \
+        --query="$query" --select-1 --exit-0 \
+        --height=40% --reverse --prompt='worktree> ')
+    fzf_status=$?
+
+    # fzf exits 1 when --exit-0 finds nothing, 130 when the user aborts.
+    if [ "$fzf_status" -eq 1 ]; then
+        echo "No worktree matches '$query'."
+        exit 1
+    fi
+
+    if [ -z "$match" ]; then
+        exit 0
+    fi
+    selected_path="${match##*$'\t'}"
+else
+    declare -a filtered_paths
+    declare -a filtered_items
+
+    shopt -s nocasematch
+    for i in "${!paths[@]}"; do
+        if [ -z "$query" ] || [[ "${display_items[$i]}" == *"$query"* ]]; then
+            filtered_paths+=("${paths[$i]}")
+            filtered_items+=("${display_items[$i]}")
+        fi
+    done
+    shopt -u nocasematch
+
+    if [ ${#filtered_paths[@]} -eq 0 ]; then
+        echo "No worktree matches '$query'."
+        exit 1
+    fi
+
+    if [ ${#filtered_paths[@]} -eq 1 ]; then
+        selected_path="${filtered_paths[0]}"
+    else
+        PS3="Select a worktree (or 'q' to quit): "
+        select item in "${filtered_items[@]}"; do
+            if [[ "$REPLY" == "q" ]]; then
+                exit 0
+            fi
+
+            if [ -n "$item" ]; then
+                selected_path="${filtered_paths[$((REPLY - 1))]}"
+                break
+            fi
+
+            echo "Invalid selection."
+        done
+    fi
+fi
+
+if [ -z "$selected_path" ]; then
+    exit 0
+fi
+
+cd "$selected_path" || exit 1
+exec "$SHELL" # Keeps the shell open in the new directory

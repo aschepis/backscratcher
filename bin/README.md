@@ -8,7 +8,7 @@ Scripts for managing git worktrees efficiently. All scripts are interactive and 
 
 | Command | Description |
 |---------|-------------|
-| `cdwt` | Switch to a worktree interactively |
+| `cdwt` | Switch to a worktree by fuzzy search |
 | `lswt` | List all worktrees with safety status |
 | `rmwt` | Delete a worktree with safety checks |
 | `mkwt` | Create a worktree from branch or PR |
@@ -16,15 +16,25 @@ Scripts for managing git worktrees efficiently. All scripts are interactive and 
 
 ### cdwt
 
-Switch to a git worktree using an interactive menu.
+Switch to a git worktree by typing part of its name or branch. Uses `fzf` when
+it's installed, and falls back to a numbered `select` menu when it isn't.
 
 ```bash
 $ cdwt
-1) /Users/you/project
-2) /Users/you/project-feature-x
-3) /Users/you/project-bugfix-y
-Select a worktree to switch to: 2
+> feat
+  1/3
+> project-feature-x                          [feature-x]
+worktree>
 ```
+
+Pass a query to pre-filter the list. A single match goes straight there:
+
+```bash
+$ cdwt bugfix
+# now in /Users/you/project-bugfix-y
+```
+
+Opens a nested shell in the worktree — `exit` returns you to where you started.
 
 ### lswt
 
