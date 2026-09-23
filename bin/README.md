@@ -94,7 +94,7 @@ WT_POST_CREATE="direnv allow; npm install"
 | `cdwt` | Switch to a worktree by fuzzy search |
 | `lswt` | List all worktrees with safety status |
 | `rmwt` | Delete a worktree with safety checks |
-| `mkwt` | Create a worktree from branch or PR |
+| `mkwt` | Create a worktree from a branch |
 | `cleanwt` | Batch delete all "safe" worktrees |
 
 ### cdwt
@@ -161,7 +161,7 @@ Also delete branch 'feature-x'? (y/n): y
 
 ### mkwt
 
-Create a new worktree from a branch name or GitHub PR number.
+Create a new worktree from a branch name.
 
 ```bash
 # From existing branch
@@ -172,9 +172,6 @@ mkwt -b new-feature
 
 # Create new branch off a specific base
 mkwt -b hotfix --from release-2
-
-# From GitHub PR (requires gh CLI)
-mkwt 1234
 ```
 
 Worktrees are created as siblings to the main repo directory:
@@ -182,7 +179,7 @@ Worktrees are created as siblings to the main repo directory:
 ~/src/
 ├── my-project/           # main worktree
 ├── my-project-feature-x/ # created by: mkwt feature-x
-└── my-project-pr-1234/   # created by: mkwt 1234
+└── my-project-hotfix/    # created by: mkwt -b hotfix
 ```
 
 ### cleanwt
@@ -342,6 +339,6 @@ git config --global alias.nevermind 'checkout -- .'
 ## Dependencies
 
 - `git` - required for all worktree scripts
-- `gh` - GitHub CLI, optional, enables `mkwt <PR-number>` and `gh-pr-unresolved`
-- `jq` - JSON parsing, used by `mkwt` and `gh-pr-unresolved`
+- `gh` - GitHub CLI, optional, enables squash-merge detection in `wt` and `gh-pr-unresolved`
+- `jq` - JSON parsing, used by `gh-pr-unresolved`
 - `claude` - Claude Code CLI, required by `jqai`
