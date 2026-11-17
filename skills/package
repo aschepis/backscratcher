@@ -1,0 +1,46 @@
+#!/bin/bash
+# Zip skills for upload to Claude desktop/claude.ai, which can't read ~/.claude/skills.
+set -euo pipefail
+
+skills_dir="$(cd "$(dirname "$0")" && pwd)"
+out_dir="$HOME/Desktop"
+
+usage() {
+    echo "Usage: package [-o out_dir] [skill ...]"
+    echo ""
+    echo "Zip each named skill (default: all skills in $skills_dir) into out_dir"
+    echo "(default: ~/Desktop), ready to upload under Settings > Capabilities > Skills."
+}
+
+while getopts "o:h" opt; do
+    case "$opt" in
+        o) out_dir="$OPTARG" ;;
+        h) usage; exit 0 ;;
+        *) usage; exit 1 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+skills=("$@")
+if [ ${#skills[@]} -eq 0 ]; then
+    for skill_md in "$skills_dir"/*/SKILL.md; do
+        skills+=("$(basename "$(dirname "$skill_md")")")
+    done
+fi
+
+mkdir -p "$out_dir"
+out_dir="$(cd "$out_dir" && pwd)"
+
+for skill in "${skills[@]}"; do
+    skill="${skill%/}"
+    if [ ! -f "$skills_dir/$skill/SKILL.md" ]; then
+        echo "Skipping $skill: no SKILL.md in $skills_dir/$skill" >&2
+        continue
+    fi
+
+    zip_path="$out_dir/$skill.zip"
+    rm -f "$zip_path"
+    (cd "$skills_dir" && zip -rq "$zip_path" "$skill" \
+        -x '*/__pycache__/*' '*.pyc' '*/.DS_Store' '*/.pytest_cache/*' '*/.venv/*')
+    echo "$zip_path"
+done
