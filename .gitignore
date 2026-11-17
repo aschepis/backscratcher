@@ -4,3 +4,6 @@
 .DS_Store
 google-credentials.json
 .gmail_oauth_token.yaml
+
+__pycache__/
+*.pyc
