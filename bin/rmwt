@@ -1,6 +1,14 @@
 #!/bin/bash
 # Delete a git worktree safely with interactive selection
 
+force=0
+while getopts "f" opt; do
+    case "$opt" in
+        f) force=1 ;;
+        *) echo "Usage: rmwt [-f]"; exit 1 ;;
+    esac
+done
+
 if ! git rev-parse --git-dir &>/dev/null; then
     echo "Not in a git repository"
     exit 1
@@ -107,7 +115,12 @@ select item in "${display_items[@]}"; do
         echo "Worktree: $selected_path"
         echo "Branch:   ${selected_branch:-(detached)}"
 
-        if [ "$safety" != "safe" ]; then
+        force_args=()
+        if [ "$force" -eq 1 ]; then
+            # Two --force flags are required for git to remove a locked worktree.
+            force_args=(--force --force)
+            [ "$safety" != "safe" ] && echo "⚠ Forcing removal: $safety"
+        elif [ "$safety" != "safe" ]; then
             echo ""
             echo "⚠ WARNING: $safety"
             echo ""
@@ -116,7 +129,7 @@ select item in "${display_items[@]}"; do
                 echo "Cancelled."
                 exit 0
             fi
-            force_flag="--force"
+            force_args=(--force)
         else
             echo "Status:   ✓ safe to delete"
             echo ""
@@ -125,12 +138,11 @@ select item in "${display_items[@]}"; do
                 echo "Cancelled."
                 exit 0
             fi
-            force_flag=""
         fi
 
         echo ""
         echo "Removing worktree..."
-        if git worktree remove $force_flag "$selected_path"; then
+        if remove_output=$(git worktree remove "${force_args[@]}" "$selected_path" 2>&1); then
             echo "✓ Worktree removed."
 
             # Offer to delete the branch too
@@ -149,6 +161,10 @@ select item in "${display_items[@]}"; do
                 fi
             fi
         else
+            echo "$remove_output"
+            if [[ "$remove_output" == *"locked"* ]]; then
+                echo "Worktree is locked. Re-run with 'rmwt -f' to override the lock."
+            fi
             echo "✗ Failed to remove worktree."
             exit 1
         fi

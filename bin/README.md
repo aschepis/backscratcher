@@ -139,6 +139,8 @@ WORKTREE                                           BRANCH               STATUS
 
 Interactively delete a worktree with safety checks. Requires explicit "yes" confirmation for unsafe worktrees. Optionally deletes the associated branch.
 
+Pass `-f` to skip the delete confirmation and force removal, including worktrees that are locked (e.g. by Supacode) or have uncommitted changes. The branch prompt still appears.
+
 ```bash
 $ rmwt
 Select a worktree to delete:
