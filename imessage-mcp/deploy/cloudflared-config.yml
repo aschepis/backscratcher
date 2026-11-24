@@ -1,0 +1,8 @@
+# ~/.cloudflared/config.yml — see README.md for the commands that create the tunnel.
+tunnel: imessage
+credentials-file: /Users/YOUR_USER/.cloudflared/TUNNEL_ID.json
+
+ingress:
+  - hostname: imessage.example.com
+    service: http://127.0.0.1:8765
+  - service: http_status:404
