@@ -166,7 +166,7 @@ func readDB(ignored map[string]struct{}) (pending, done []Convo, err error) {
 	// LEFT JOIN handle so short-code messages (handle_id=0) aren't silently dropped.
 	// COALESCE falls back to chat_identifier when handle is missing.
 	rows, err := db.Query(fmt.Sprintf(`
-		SELECT m.text, m.is_from_me, m.date,
+		SELECT m.text, m.attributedBody, m.is_from_me, m.date,
 		       COALESCE(h.id, c.chat_identifier) AS phone,
 		       c.rowid, c.chat_identifier
 		FROM message m
@@ -184,20 +184,18 @@ func readDB(ignored map[string]struct{}) (pending, done []Convo, err error) {
 	chats := map[int64]*chatEntry{}
 	for rows.Next() {
 		var textNull sql.NullString
+		var body []byte
 		var fromMe int
 		var date, chatRowid int64
 		var phone, chatID string
-		if err := rows.Scan(&textNull, &fromMe, &date, &phone, &chatRowid, &chatID); err != nil {
+		if err := rows.Scan(&textNull, &body, &fromMe, &date, &phone, &chatRowid, &chatID); err != nil {
 			continue
 		}
 		if chats[chatRowid] == nil {
 			// Prefer chat_identifier as the canonical phone; it's what deleteConversation uses.
 			chats[chatRowid] = &chatEntry{phone: chatID, chatID: chatID}
 		}
-		text := ""
-		if textNull.Valid {
-			text = textNull.String
-		}
+		text := messageText(textNull, body)
 		chats[chatRowid].messages = append(chats[chatRowid].messages, rawMsg{
 			text: text, fromMe: fromMe != 0, date: date,
 		})
@@ -333,22 +331,30 @@ func readAllConvos(ignored map[string]struct{}) ([]Convo, error) {
 		"(strftime('%%s',datetime('now','-%d days'))-strftime('%%s','2001-01-01'))*1000000000",
 		lookbackDays,
 	)
+	// The preview comes from the latest message that has either a text column
+	// or an attributedBody (Ventura+ often leaves text NULL); it is decoded in Go.
 	rows, err := db.Query(fmt.Sprintf(`
-		SELECT
-			c.chat_identifier,
-			c.display_name,
-			c.style,
-			MAX(m.date) AS last_date,
-			(SELECT text FROM message m2
-			 JOIN chat_message_join cmj2 ON cmj2.message_id = m2.rowid
-			 WHERE cmj2.chat_id = c.rowid AND m2.text IS NOT NULL AND m2.text != ''
-			 ORDER BY m2.date DESC LIMIT 1) AS last_text
-		FROM chat c
-		JOIN chat_message_join cmj ON cmj.chat_id = c.rowid
-		JOIN message m ON m.rowid = cmj.message_id
-		WHERE m.date > %s
-		GROUP BY c.rowid
-		ORDER BY last_date DESC
+		SELECT x.chat_identifier, x.display_name, x.style, x.last_date,
+		       lm.text, lm.attributedBody
+		FROM (
+			SELECT
+				c.chat_identifier,
+				c.display_name,
+				c.style,
+				MAX(m.date) AS last_date,
+				(SELECT m2.rowid FROM message m2
+				 JOIN chat_message_join cmj2 ON cmj2.message_id = m2.rowid
+				 WHERE cmj2.chat_id = c.rowid
+				   AND ((m2.text IS NOT NULL AND m2.text != '') OR m2.attributedBody IS NOT NULL)
+				 ORDER BY m2.date DESC LIMIT 1) AS last_id
+			FROM chat c
+			JOIN chat_message_join cmj ON cmj.chat_id = c.rowid
+			JOIN message m ON m.rowid = cmj.message_id
+			WHERE m.date > %s
+			GROUP BY c.rowid
+		) x
+		LEFT JOIN message lm ON lm.rowid = x.last_id
+		ORDER BY x.last_date DESC
 	`, cutoff))
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
@@ -362,7 +368,8 @@ func readAllConvos(ignored map[string]struct{}) ([]Convo, error) {
 		var style int
 		var lastDate int64
 		var lastText sql.NullString
-		if err := rows.Scan(&chatID, &displayName, &style, &lastDate, &lastText); err != nil {
+		var lastBody []byte
+		if err := rows.Scan(&chatID, &displayName, &style, &lastDate, &lastText, &lastBody); err != nil {
 			continue
 		}
 		phone := chatID
@@ -377,7 +384,7 @@ func readAllConvos(ignored map[string]struct{}) ([]Convo, error) {
 			Phone:          phone,
 			ChatIdentifier: chatID,
 			IsGroup:        style == 43,
-			Sample:         trunc(lastText.String, 80),
+			Sample:         trunc(messageText(lastText, lastBody), 80),
 			LastDate:       appleNsToTime(lastDate),
 		})
 	}
@@ -393,7 +400,7 @@ func loadMessages(chatIdentifier string) ([]Message, error) {
 	defer cleanup()
 
 	rows, err := db.Query(`
-		SELECT m.text, m.is_from_me, m.date
+		SELECT m.text, m.attributedBody, m.is_from_me, m.date
 		FROM message m
 		JOIN chat_message_join cmj ON cmj.message_id = m.rowid
 		JOIN chat c ON c.rowid = cmj.chat_id
@@ -408,15 +415,16 @@ func loadMessages(chatIdentifier string) ([]Message, error) {
 	var msgs []Message
 	for rows.Next() {
 		var textNull sql.NullString
+		var body []byte
 		var fromMe int
 		var date int64
-		if err := rows.Scan(&textNull, &fromMe, &date); err != nil {
+		if err := rows.Scan(&textNull, &body, &fromMe, &date); err != nil {
 			continue
 		}
 		msgs = append(msgs, Message{
 			FromMe: fromMe != 0,
 			Time:   appleNsToTime(date),
-			Text:   textNull.String,
+			Text:   messageText(textNull, body),
 		})
 	}
 	return msgs, nil
