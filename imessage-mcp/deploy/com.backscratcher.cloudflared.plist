@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Copy to ~/Library/LaunchAgents/ and replace YOUR_USER. See README.md. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.backscratcher.cloudflared</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/cloudflared</string>
+    <string>tunnel</string>
+    <string>--config</string>
+    <string>/Users/YOUR_USER/.cloudflared/config.yml</string>
+    <string>run</string>
+    <string>imessage</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOUR_USER/Library/Logs/cloudflared.log</string>
+  <key>StandardOutPath</key>
+  <string>/Users/YOUR_USER/Library/Logs/cloudflared.log</string>
+</dict>
+</plist>

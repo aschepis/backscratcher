@@ -116,11 +116,17 @@ Copy `deploy/cloudflared-config.yml` to `~/.cloudflared/config.yml`, then fill
 in your hostname, user name and tunnel ID. Set `public_url` in `config.json` to
 `https://imessage.example.com`.
 
-Install cloudflared as a service so it survives reboots:
+Run the tunnel at login with launchd so it survives reboots:
 
 ```sh
-sudo cloudflared service install
+sed "s/YOUR_USER/$USER/g" deploy/com.backscratcher.cloudflared.plist \
+  > ~/Library/LaunchAgents/com.backscratcher.cloudflared.plist
+launchctl load ~/Library/LaunchAgents/com.backscratcher.cloudflared.plist
+tail -f ~/Library/Logs/cloudflared.log   # wait for "Registered tunnel connection"
 ```
+
+`brew services start cloudflared` does not work here: it runs `cloudflared`
+with no arguments, so it never starts the tunnel.
 
 > Don't put Cloudflare Access in front of this hostname. Claude's servers need
 > to reach the OAuth discovery and token endpoints without a browser login.
