@@ -348,8 +348,13 @@ button{margin-top:14px;width:100%;padding:10px;font-size:16px;border:0;border-ra
 </form></body></html>`))
 
 func (a *AuthServer) renderLogin(w http.ResponseWriter, p authzParams) {
+	formAction := "'self'"
+	// Browsers apply form-action to the post-approval redirect, so the validated callback origin must be allowed.
+	if u, err := url.Parse(p.RedirectURI); err == nil && u.Scheme != "" && u.Host != "" {
+		formAction += " " + u.Scheme + "://" + u.Host
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action "+formAction+"; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Cache-Control", "no-store")
 	loginPage.Execute(w, p)
